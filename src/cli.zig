@@ -220,14 +220,20 @@ fn runFilesUpload(
         return exit_failure;
     }
 
-    const file_name = api.files.decodeUploadedFileName(gpa, response.body) catch |err| {
+    var file = api.files.decodeUploadedFile(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
         return exit_response_parse;
     };
-    defer gpa.free(file_name);
+    defer file.deinit(gpa);
 
-    writeStdoutLine(init.io, file_name) catch |err| {
-        std.debug.print("error: failed to print uploaded file id: {s}\n", .{@errorName(err)});
+    const output = fileMetadataJson(gpa, file) catch |err| {
+        std.debug.print("error: failed to format uploaded file metadata: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer gpa.free(output);
+
+    writeStdoutLine(init.io, output) catch |err| {
+        std.debug.print("error: failed to print uploaded file metadata: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
 
@@ -878,6 +884,86 @@ test "parseArgs accepts files delete traffic log flags" {
     try std.testing.expectEqualStrings("files/abc123", files_delete.name);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
+test "files upload json formats all metadata fields" {
+    const gpa = std.testing.allocator;
+    var file = try testFile(gpa, .{
+        .name = "files/abc123",
+        .display_name = "sample",
+        .mime_type = "image/jpeg",
+        .size_bytes = "229046",
+        .create_time = "2026-05-18T08:14:20.799526Z",
+        .update_time = "2026-05-18T08:14:20.799526Z",
+        .expiration_time = "2026-05-20T08:14:20.425492423Z",
+        .sha256_hash = "hash",
+        .uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123",
+        .state = "ACTIVE",
+        .source = "UPLOADED",
+    });
+    defer file.deinit(gpa);
+
+    const json = try fileMetadataJson(gpa, file);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"files/abc123\",\n" ++
+            "  \"displayName\": \"sample\",\n" ++
+            "  \"mimeType\": \"image/jpeg\",\n" ++
+            "  \"sizeBytes\": \"229046\",\n" ++
+            "  \"createTime\": \"2026-05-18T08:14:20.799526Z\",\n" ++
+            "  \"updateTime\": \"2026-05-18T08:14:20.799526Z\",\n" ++
+            "  \"expirationTime\": \"2026-05-20T08:14:20.425492423Z\",\n" ++
+            "  \"sha256Hash\": \"hash\",\n" ++
+            "  \"uri\": \"https://generativelanguage.googleapis.com/v1beta/files/abc123\",\n" ++
+            "  \"state\": \"ACTIVE\",\n" ++
+            "  \"source\": \"UPLOADED\"\n" ++
+            "}",
+        json,
+    );
+}
+
+test "files upload json omits absent metadata fields" {
+    const gpa = std.testing.allocator;
+    var file = try testFile(gpa, .{
+        .name = "files/abc123",
+        .mime_type = "image/jpeg",
+    });
+    defer file.deinit(gpa);
+
+    const json = try fileMetadataJson(gpa, file);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"files/abc123\",\n" ++
+            "  \"mimeType\": \"image/jpeg\"\n" ++
+            "}",
+        json,
+    );
+}
+
+test "files upload json escapes string content" {
+    const gpa = std.testing.allocator;
+    var file = try testFile(gpa, .{
+        .name = "files/abc123",
+        .display_name = "sample, \"quoted\"\nname",
+        .mime_type = "image/jpeg",
+    });
+    defer file.deinit(gpa);
+
+    const json = try fileMetadataJson(gpa, file);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"files/abc123\",\n" ++
+            "  \"displayName\": \"sample, \\\"quoted\\\"\\nname\",\n" ++
+            "  \"mimeType\": \"image/jpeg\"\n" ++
+            "}",
+        json,
+    );
 }
 
 test "files get json formats all metadata fields" {

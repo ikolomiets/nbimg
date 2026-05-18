@@ -75,7 +75,7 @@ Delete one uploaded file:
 zig-out/bin/nbimg files delete --name files/abc123
 ```
 
-The list and get commands print JSON metadata to stdout.
+The upload, list, and get commands print JSON metadata to stdout.
 The delete command prints `OK` on success.
 
 Debug traffic:
@@ -87,9 +87,8 @@ zig-out/bin/nbimg gen \
   --prompt "Create a photo of my fair lady"
 ```
 
-Traffic logs go to stderr. Command results, such as generated filenames,
-uploaded `files/...` IDs, Files API metadata JSON, or delete `OK`, go to
-stdout.
+Traffic logs go to stderr. Command results, such as generated filenames, Files
+API metadata JSON, or delete `OK`, go to stdout.
 
 ## Testing
 

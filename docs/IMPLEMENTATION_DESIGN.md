@@ -316,12 +316,13 @@ On successful upload, `nbimg files upload` parses the upload response:
 {"file":{"name":"files/...","displayName":"..."}}
 ```
 
-and prints only the `files/...` name to stdout. That value is the uploaded file
-ID used for later API references. Response decoding requires a non-empty
-`name`. The upload File decoder also copies currently observed optional Gemini
-metadata fields when present: `displayName`, `mimeType`, `sizeBytes`,
-`createTime`, `updateTime`, `expirationTime`, `sha256Hash`, `uri`, `state`, and
-`source`.
+and prints normalized, pretty-printed File metadata JSON to stdout using the
+same object shape as `files get`, without Gemini's outer `file` wrapper.
+Callers that need the uploaded resource name should read the `name` field from
+that JSON. Response decoding requires a non-empty `name`. The upload File
+decoder also copies currently observed optional Gemini metadata fields when
+present: `displayName`, `mimeType`, `sizeBytes`, `createTime`, `updateTime`,
+`expirationTime`, `sha256Hash`, `uri`, `state`, and `source`.
 
 Listing sends:
 
@@ -383,7 +384,7 @@ printed; the request log uses an omission marker containing the byte count and
 MIME type. When print flags are enabled for `files upload`, `files list`,
 `files get`, or `files delete`,
 traffic logs are separated from command results by using stderr for diagnostics
-and stdout for uploaded IDs, metadata JSON, or delete `OK`.
+and stdout for metadata JSON or delete `OK`.
 
 ## CountTokens Validation Helper
 
@@ -522,8 +523,9 @@ Allocator ownership is explicit:
 - `api.files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
 - `api.files.decodeUploadedFile` returns owned File metadata for upload
-  responses. `api.files.decodeUploadedFileName` returns only an owned copy of
-  the uploaded `files/...` name for the CLI.
+  responses. The CLI uses this for upload stdout.
+  `api.files.decodeUploadedFileName` remains as a helper that returns only an
+  owned copy of the uploaded `files/...` name.
 - `api.files.decodeFile` and `api.files.decodeFileListPage` return owned File
   metadata. `decodeFileListPage` also returns an optional owned next page token.
 - `api.gen.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
