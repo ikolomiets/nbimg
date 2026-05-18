@@ -128,6 +128,25 @@ pub fn getJson(
     api_key: []const u8,
     url: []const u8,
 ) !HttpResponse {
+    return requestJsonWithoutBody(gpa, io, api_key, url, .GET);
+}
+
+pub fn deleteJson(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+) !HttpResponse {
+    return requestJsonWithoutBody(gpa, io, api_key, url, .DELETE);
+}
+
+fn requestJsonWithoutBody(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+    method: std.http.Method,
+) !HttpResponse {
     assert(api_key.len > 0);
     assert(url.len > 0);
 
@@ -149,7 +168,7 @@ pub fn getJson(
     var response_writer: std.Io.Writer = .fixed(response_buffer);
     const result = try client.fetch(.{
         .location = .{ .url = url },
-        .method = .GET,
+        .method = method,
         .headers = .{
             .user_agent = .{ .override = "nbimg/0.0.0" },
         },

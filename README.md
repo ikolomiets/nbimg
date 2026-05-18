@@ -7,7 +7,7 @@ The current implementation is intentionally narrow:
 
 - generate image output from a text prompt
 - upload supported image files to Gemini Files API
-- list uploaded Gemini file IDs
+- list, get, and delete uploaded Gemini files
 - optionally print sanitized request/response traffic for debugging
 
 See [docs/IMPLEMENTATION_DESIGN.md](docs/IMPLEMENTATION_DESIGN.md) for the
@@ -49,11 +49,34 @@ Upload an image:
 zig-out/bin/nbimg files upload --path sample_images/good_night.jpeg
 ```
 
-List uploaded file IDs:
+Upload an image with a Gemini display name:
+
+```sh
+zig-out/bin/nbimg files upload \
+  --path sample_images/good_night.jpeg \
+  --display-name "nbimg sample image"
+```
+
+List uploaded file metadata:
 
 ```sh
 zig-out/bin/nbimg files list
 ```
+
+Get one uploaded file's metadata:
+
+```sh
+zig-out/bin/nbimg files get --name files/abc123
+```
+
+Delete one uploaded file:
+
+```sh
+zig-out/bin/nbimg files delete --name files/abc123
+```
+
+The list and get commands print JSON metadata to stdout.
+The delete command prints `OK` on success.
 
 Debug traffic:
 
@@ -64,8 +87,9 @@ zig-out/bin/nbimg gen \
   --prompt "Create a photo of my fair lady"
 ```
 
-Traffic logs go to stderr. Command results, such as generated filenames or
-uploaded `files/...` IDs, go to stdout.
+Traffic logs go to stderr. Command results, such as generated filenames,
+uploaded `files/...` IDs, Files API metadata JSON, or delete `OK`, go to
+stdout.
 
 ## Testing
 
@@ -81,6 +105,8 @@ against the real Gemini API:
 ```sh
 zig build test-live-api-generate-content-request-validity
 zig build test-live-api-files-upload-list
+zig build test-live-api-files-get
+zig build test-live-api-files-delete
 ```
 
 `generateContent` is billable, so the generate-content request validity test

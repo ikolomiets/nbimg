@@ -79,6 +79,24 @@ pub fn build(b: *std.Build) void {
         "src/files.zig",
         "live API files upload is visible in file list",
     );
+    addLiveApiTestStep(
+        b,
+        target,
+        optimize,
+        "test-live-api-files-get",
+        "Run live Gemini Files API get test",
+        "src/files.zig",
+        "live API files get returns uploaded file metadata",
+    );
+    addLiveApiTestStep(
+        b,
+        target,
+        optimize,
+        "test-live-api-files-delete",
+        "Run live Gemini Files API delete test",
+        "src/files.zig",
+        "live API files delete removes uploaded file and reports missing files",
+    );
 }
 
 fn testModule(

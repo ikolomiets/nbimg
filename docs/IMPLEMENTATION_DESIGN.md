@@ -11,19 +11,22 @@ generation. The implemented command surface is:
 
 ```sh
 nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-nbimg files upload [--print-request] [--print-response] --path PATH
+nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
+nbimg files get [--print-request] [--print-response] --name files/ID
+nbimg files delete [--print-request] [--print-response] --name files/ID
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
 binary accepts one prompt through `--prompt`, sends a fixed image-generation
 request to the Gemini API, decodes image or text parts from the response, and
-writes each generated part to the current working directory. It can also upload
-image files to Gemini's Files API and list uploaded file IDs.
+writes each generated part to the current working directory. It can also
+upload image files to Gemini's Files API, list or get uploaded file metadata,
+and delete uploaded files.
 
 The current implementation does not yet support image editing, chat, model
-selection, output directory selection, response snapshots for Files API
-commands, or deleting uploaded files.
+selection, output directory selection, or response snapshots for Files API
+commands.
 
 ## Module Layout
 
@@ -40,9 +43,9 @@ The code is split into six source files:
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction, generated response decoding, generated file
   metadata, and output naming.
-- `src/files.zig` owns Files API behavior: upload/list request construction,
-  upload MIME detection, upload/list response decoding, and Files API endpoint
-  handling.
+- `src/files.zig` owns Files API behavior: upload/list/get/delete request
+  construction, upload MIME detection, upload/list/get response decoding, and
+  Files API endpoint handling.
 
 The public API namespace is intentionally split by command domain:
 
@@ -67,13 +70,14 @@ for `countTokens`, decodes generated image/text parts, and formats response-ID
 based output names.
 
 `src/files.zig` owns Gemini Files API semantics. It maps upload path extensions
-to MIME types, performs resumable upload start/finalize calls, builds paginated
-list URLs, and decodes uploaded/listed `files/...` names.
+to MIME types, performs resumable upload start/finalize calls, builds
+paginated list URLs and file-resource get/delete URLs, and decodes
+uploaded/listed/fetched File metadata.
 
 `src/api.zig` owns shared transport and logging. `api.gen` and `api.files`
-reuse its JSON GET/POST helpers, lower-level request-with-body helper for
-resumable uploads, common `HttpResponse` ownership type, `Model` constants, and
-global traffic logging switch. Headers are not exposed through the logging
+reuse its JSON GET/POST/DELETE helpers, lower-level request-with-body helper
+for resumable uploads, common `HttpResponse` ownership type, `Model` constants,
+and global traffic logging switch. Headers are not exposed through the logging
 path, so API keys stay out of diagnostic output.
 
 `build.zig` defines one module named `nbimg`, one executable named `nbimg`, a
@@ -106,14 +110,17 @@ The parser accepts:
 
 ```sh
 nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-nbimg files upload [--print-request] [--print-response] --path PATH
+nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
+nbimg files get [--print-request] [--print-response] --name files/ID
+nbimg files delete [--print-request] [--print-response] --name files/ID
 ```
 
 Argument rules are intentionally narrow:
 
 - The command name must be `gen` or `files`.
-- The `files` command requires an `upload` or `list` subcommand.
+- The `files` command requires an `upload`, `list`, `get`, or `delete`
+  subcommand.
 - For `gen`, the `--prompt` flag is required exactly once.
 - The prompt value must be one argument, so shell users need quotes for prompts
   with spaces. Quote presence is not visible to the process, so single-token
@@ -121,7 +128,15 @@ Argument rules are intentionally narrow:
 - Empty prompts are rejected.
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
+- For `files upload`, `--display-name NAME` is optional and accepted at most
+  once.
+- Display names are validated locally: the value must be present, non-empty,
+  valid UTF-8, and at most 512 Unicode code points.
 - `files upload` currently accepts `.jpg`, `.jpeg`, `.png`, and `.webp` paths.
+- For `files get` and `files delete`, the `--name` flag is required exactly
+  once.
+- File names for `files get` and `files delete` must use canonical `files/...`
+  resource names; bare IDs are rejected.
 - `--print-request` and `--print-response` are optional boolean flags on all
   commands. Their default value is `false`.
 - `--write-response` is supported only by `gen`; file commands reject it.
@@ -143,8 +158,10 @@ specific error followed by:
 
 ```text
 usage: nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-       nbimg files upload [--print-request] [--print-response] --path PATH
+       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
        nbimg files list [--print-request] [--print-response]
+       nbimg files get [--print-request] [--print-response] --name files/ID
+       nbimg files delete [--print-request] [--print-response] --name files/ID
 ```
 
 ## Authentication
@@ -271,10 +288,18 @@ POST https://generativelanguage.googleapis.com/upload/v1beta/files
 POST {x-goog-upload-url returned by the first response}
 ```
 
-The first request starts the upload with JSON metadata:
+The first request starts the upload with JSON metadata. Without a display name,
+the body is:
 
 ```json
 {"file":{}}
+```
+
+With `--display-name NAME`, the body is built through `std.json.Stringify` and
+uses Gemini's `displayName` metadata field:
+
+```json
+{"file":{"displayName":"NAME"}}
 ```
 
 The second request uploads the file bytes and finalizes the upload. The CLI
@@ -288,11 +313,15 @@ reads the file into memory with a `64 MiB` limit represented by
 On successful upload, `nbimg files upload` parses the upload response:
 
 ```json
-{"file":{"name":"files/..."}}
+{"file":{"name":"files/...","displayName":"..."}}
 ```
 
-and prints the `files/...` name to stdout. That value is the uploaded file ID
-used for later API references.
+and prints only the `files/...` name to stdout. That value is the uploaded file
+ID used for later API references. Response decoding requires a non-empty
+`name`. The upload File decoder also copies currently observed optional Gemini
+metadata fields when present: `displayName`, `mimeType`, `sizeBytes`,
+`createTime`, `updateTime`, `expirationTime`, `sha256Hash`, `uri`, `state`, and
+`source`.
 
 Listing sends:
 
@@ -300,17 +329,61 @@ Listing sends:
 GET https://generativelanguage.googleapis.com/v1beta/files?pageSize=100
 ```
 
-and follows `nextPageToken` until exhausted. `nbimg files list` prints one
-`files/...` name per stdout line and prints nothing when the account has no
-files.
+and follows `nextPageToken` until exhausted. `nbimg files list` prints
+pretty-printed JSON metadata to stdout with this shape:
+
+```json
+{
+  "files": [
+    {
+      "name": "files/...",
+      "displayName": "...",
+      "mimeType": "image/jpeg"
+    }
+  ]
+}
+```
+
+All pages are collected before stdout is written so the command emits one valid
+JSON document. Optional metadata that Google omits is omitted from the output.
+If the account has no files, the command prints the same object shape with an
+empty `files` array.
+
+Fetching one file sends:
+
+```text
+GET https://generativelanguage.googleapis.com/v1beta/files/{id}
+```
+
+`nbimg files get --name files/ID` requires the canonical `files/...` resource
+name and strips the prefix internally when building the endpoint path. The file
+ID path segment is percent-encoded. A successful response is decoded as one
+File metadata object and printed to stdout as a pretty-printed JSON object with
+the same camelCase field names returned by Gemini.
+
+Deleting one file sends:
+
+```text
+DELETE https://generativelanguage.googleapis.com/v1beta/files/{id}
+```
+
+`nbimg files delete --name files/ID` uses the same canonical resource-name and
+percent-encoded path behavior as `files get`. On HTTP 200 OK, the CLI prints
+`OK` to stdout and exits 0. The success response body is not user-useful; the
+live delete test asserts that Gemini currently returns an empty JSON object,
+observed as `{}` plus trailing whitespace. Missing or already-deleted files are
+surfaced as normal non-OK API failures, preserving the response body in
+diagnostics; live validation currently observes HTTP 403 `PERMISSION_DENIED`
+for those cases.
 
 Files API traffic logging uses the same global logging switch as `gen`.
 Headers are not logged. JSON request and response bodies are logged to stderr
 with the same response sanitization path. Binary upload bodies are never
 printed; the request log uses an omission marker containing the byte count and
-MIME type. When print flags are enabled for `files upload` or `files list`,
-traffic logs are separated from the printed `files/...` result IDs by using
-stderr for diagnostics and stdout for command results.
+MIME type. When print flags are enabled for `files upload`, `files list`,
+`files get`, or `files delete`,
+traffic logs are separated from command results by using stderr for diagnostics
+and stdout for uploaded IDs, metadata JSON, or delete `OK`.
 
 ## CountTokens Validation Helper
 
@@ -448,10 +521,11 @@ Allocator ownership is explicit:
   response buffering, and the returned response body.
 - `api.files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
-- `api.files.decodeUploadedFileName` returns an owned copy of the uploaded
-  `files/...` name.
-- `api.files.decodeFileListPage` returns owned file names and an optional
-  owned next page token.
+- `api.files.decodeUploadedFile` returns owned File metadata for upload
+  responses. `api.files.decodeUploadedFileName` returns only an owned copy of
+  the uploaded `files/...` name for the CLI.
+- `api.files.decodeFile` and `api.files.decodeFileListPage` return owned File
+  metadata. `decodeFileListPage` also returns an optional owned next page token.
 - `api.gen.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
   buffers plus one owned response ID on the returned collection.
 - `HttpResponse.deinit`, `FileListPage.deinit`, `GeneratedFile.deinit`, and
@@ -468,7 +542,12 @@ Current tests cover:
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
 - Files API upload MIME detection.
-- Decoding Files API upload and list responses.
+- Files API upload display-name validation and upload-start metadata JSON,
+  including JSON escaping.
+- Decoding Files API upload, list, and get responses.
+- Files API metadata JSON output shape, omitted optional fields, and string
+  escaping.
+- Files API file-resource URL construction and canonical file-name validation.
 - Files API list URL page-token encoding.
 - Redaction of known inline base64 fields in logged response JSON.
 - Decoding mixed image and text response parts.
@@ -506,6 +585,8 @@ stdio so request and response diagnostics written to stderr remain visible:
 ```sh
 zig build test-live-api-generate-content-request-validity
 zig build test-live-api-files-upload-list
+zig build test-live-api-files-get
+zig build test-live-api-files-delete
 ```
 
 `GEMINI_API_KEY` is read from the inherited process environment through the
@@ -526,12 +607,21 @@ Today there is one implemented generation shape: a text prompt requesting image
 response modality.
 
 Live Files API checks live in `src/files.zig`. They upload
-`sample_images/good_night.jpeg`, assert the returned file ID starts with
-`files/`, list Files API entries, and assert the uploaded ID appears. Live tests
-enable `api.traffic_log_options` for request and response logging, require a
-non-empty `GEMINI_API_KEY`, perform network IO, may leave the uploaded file in
-the Gemini Files API until Google expires it, and can fail due to quota or
-remote API errors.
+`sample_images/good_night.jpeg` with the fixed display name
+`nbimg live api sample`, assert the returned file ID starts with `files/`,
+check the returned `displayName` when Google includes it, list Files API
+entries, assert the uploaded ID appears, and fetch that uploaded File through
+`files.get`. The live delete target deletes an uploaded file, asserts the
+success body parses as an empty JSON object, checks that `files.get` returns
+403 afterward, checks a second delete returns 403, and probes a fixed missing
+test name before asserting deleting that missing name also returns 403. Request
+logging confirms the upload-start body uses `displayName` and file-resource
+endpoints use `/v1beta/files/{id}`; response logging shows the actual File
+fields and delete response bodies returned by Gemini for the current API
+behavior. Live tests enable `api.traffic_log_options` for request and response
+logging, require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an
+uploaded file in the Gemini Files API until Google expires it if a delete test
+fails before cleanup, and can fail due to quota or remote API errors.
 
 ## Known Gaps
 
@@ -541,7 +631,7 @@ The following areas are intentionally not implemented yet:
 - Image editing and multimodal input parts.
 - Output directory, file prefix, and overwrite controls.
 - Multiple prompt sources such as files or stdin.
-- Files API deletion and response snapshots for file commands.
+- Response snapshots for file commands.
 - Timeout and retry policy.
 - Structured verbose output.
 - Response fixture tests for full API payloads.
