@@ -1,0 +1,11 @@
+.zig-cache/
+zig-out/
+
+out/
+
+.codex/config.toml
+.DS_Store
+*~
+*.swp
+*.swo
+*.tmp
