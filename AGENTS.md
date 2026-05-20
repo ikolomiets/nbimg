@@ -10,7 +10,10 @@ This is a minimal Zig 0.16.0 CLI for `nbimg`. Root build/configuration files liv
 - `zig build run -- <args>`: run the executable through the build graph.
 - `zig build test`: compile and run package and executable tests.
 - `zig fmt --check build.zig src`: verify Zig formatting.
-- `rg "term" docs src`: search docs and source quickly.
+- `zig build test-live-api-generate-content-request-validity`: validate the `gen` request shape through Gemini `countTokens`.
+- `zig build test-live-api-edit-request-validity`: validate the `edit` request shape through Gemini `countTokens`.
+- `zig build test-live-api-files-upload-list`, `zig build test-live-api-files-get`, `zig build test-live-api-files-delete`: run targeted Gemini Files API live checks.
+- `rg "term" README.md AGENTS.md build.zig docs src`: search project text quickly.
 
 ## Coding Style & Zig Practices
 
@@ -26,12 +29,12 @@ Use TigerStyle assertions consistently for programmer errors: preconditions, pos
 
 Add tests with each functional change, close to the module they exercise. Favor golden CLI-to-JSON tests, response fixtures, and snapshots for verbose output. Cover invalid states when assertions encode invariants. For randomized or stateful tests, record replay data such as seed and size. Always run `zig build test`.
 
-Use live API tests as targeted agentic feedback for request JSON shape changes: run only the relevant live API target or filtered test for the API request being changed, and use the result to confirm whether the actual Gemini API accepts the request. Treat live API calls as intentional external side effects. `generateContent` is billable and costs money to execute, so validate `GenerateContentRequest` shape through `countTokens` instead of content generation. Where possible, prefer similar lower-cost or non-billable substitute endpoints for development and testing before using billable APIs.
+Use live API tests as targeted agentic feedback for request JSON shape changes: run only the relevant live API target or filtered test for the API request being changed, and use the result to confirm whether the actual Gemini API accepts the request. Treat live API calls as intentional external side effects. `generateContent` is billable and costs money to execute, so validate generation and edit request shapes through the dedicated `countTokens` live targets instead of content generation unless the user intentionally requests generated output. Where possible, prefer similar lower-cost or non-billable substitute endpoints for development and testing before using billable APIs.
 
 ## Commit & Pull Request Guidelines
 
-No commit history exists yet. Use short imperative subjects such as `Add Zig notes index`. Pull requests should describe the reason, affected files, and manual verification.
+Follow the existing history with short imperative subjects such as `Add image edit command`. Pull requests should describe the reason, affected files, and manual verification.
 
 ## Agent-Specific Instructions
 
-Keep changes scoped. Preserve the flat module layout unless the task requires a split. Update `docs/IMPLEMENTATION_DESIGN.md` with CLI behavior, API handling, output naming, or module-boundary changes. Avoid hidden effects, premature utility modules, unrelated prose rewrites, and undocumented tooling.
+Keep changes scoped. Preserve the flat module layout unless the task requires a split. Update `docs/IMPLEMENTATION_DESIGN.md` with CLI behavior, API handling, output naming, or module-boundary changes. Update `README.md` when user-facing commands, flags, workflows, or testing instructions change. Avoid hidden effects, premature utility modules, unrelated prose rewrites, and undocumented tooling.
