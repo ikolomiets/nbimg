@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     addTestRoot(b, test_step, target, optimize, live_api_tests, test_filters, "api", "src/api.zig");
     addTestRoot(b, test_step, target, optimize, live_api_tests, test_filters, "gen", "src/gen.zig");
+    addTestRoot(b, test_step, target, optimize, live_api_tests, test_filters, "edit", "src/edit.zig");
     addTestRoot(b, test_step, target, optimize, live_api_tests, test_filters, "files", "src/files.zig");
     addTestRoot(b, test_step, target, optimize, live_api_tests, test_filters, "cli", "src/cli.zig");
 
@@ -69,6 +70,15 @@ pub fn build(b: *std.Build) void {
         "Validate the generateContent request shape via Gemini countTokens",
         "src/gen.zig",
         "live API generateContent request shape is valid",
+    );
+    addLiveApiTestStep(
+        b,
+        target,
+        optimize,
+        "test-live-api-edit-request-validity",
+        "Validate the edit generateContent request shape via Gemini countTokens",
+        "src/edit.zig",
+        "live API edit request shape is valid",
     );
     addLiveApiTestStep(
         b,

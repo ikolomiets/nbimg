@@ -4,6 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const gen = @import("gen.zig");
+pub const edit = @import("edit.zig");
 pub const files = @import("files.zig");
 
 pub const max_response_bytes = 64 * 1024 * 1024;

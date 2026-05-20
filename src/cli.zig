@@ -14,6 +14,33 @@ pub const GenCommand = struct {
     write_response: bool = false,
 };
 
+pub const max_edit_constraints = 16;
+
+pub const EditCommand = struct {
+    prompt: []const u8,
+    write_response: bool = false,
+    base: api.edit.UploadedImage,
+    base_role: api.edit.BaseRole = .scene,
+    references: [api.edit.max_references]api.edit.Reference = undefined,
+    reference_count: usize = 0,
+    preserves: [max_edit_constraints][]const u8 = undefined,
+    preserve_count: usize = 0,
+    do_nots: [max_edit_constraints][]const u8 = undefined,
+    do_not_count: usize = 0,
+
+    pub fn referenceSlice(command: *const EditCommand) []const api.edit.Reference {
+        return command.references[0..command.reference_count];
+    }
+
+    pub fn preserveSlice(command: *const EditCommand) []const []const u8 {
+        return command.preserves[0..command.preserve_count];
+    }
+
+    pub fn doNotSlice(command: *const EditCommand) []const []const u8 {
+        return command.do_nots[0..command.do_not_count];
+    }
+};
+
 pub const FilesUploadCommand = struct {
     path: []const u8,
     display_name: ?[]const u8 = null,
@@ -31,6 +58,7 @@ pub const FilesDeleteCommand = struct {
 
 pub const Command = union(enum) {
     gen: GenCommand,
+    edit: EditCommand,
     files_upload: FilesUploadCommand,
     files_list: FilesListCommand,
     files_get: FilesGetCommand,
@@ -51,6 +79,28 @@ pub const ParseError = error{
     EmptyPrompt,
     SplitPrompt,
     DuplicatePrompt,
+    MissingBase,
+    EmptyBase,
+    DuplicateBase,
+    MissingBaseRole,
+    DuplicateBaseRole,
+    InvalidBaseRole,
+    MissingReference,
+    EmptyReference,
+    InvalidReference,
+    TooManyReferences,
+    TooManyCharacterReferences,
+    TooManyObjectReferences,
+    DuplicateLabel,
+    InvalidLabel,
+    MissingMime,
+    InvalidMime,
+    MalformedImageInput,
+    MissingPreserve,
+    EmptyPreserve,
+    MissingDoNot,
+    EmptyDoNot,
+    TooManyConstraints,
     MissingPath,
     EmptyPath,
     DuplicatePath,
@@ -130,6 +180,7 @@ pub fn run(init: std.process.Init) u8 {
 
     return switch (parsed_command.command) {
         .gen => |gen| runGen(init, gpa, api_key, gen),
+        .edit => |edit| runEdit(init, gpa, api_key, edit),
         .files_upload => |files_upload| runFilesUpload(init, gpa, api_key, files_upload),
         .files_list => runFilesList(init, gpa, api_key),
         .files_get => |files_get| runFilesGet(init, gpa, api_key, files_get),
@@ -139,6 +190,57 @@ pub fn run(init: std.process.Init) u8 {
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
     var response = api.gen.generateContent(gpa, init.io, api_key, command.prompt) catch |err| {
+        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer response.deinit(gpa);
+
+    if (response.status != .ok) {
+        std.debug.print(
+            "error: API request failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(response.status), response.body },
+        );
+        return exit_failure;
+    }
+
+    if (command.write_response) {
+        const response_id = api.gen.decodeResponseId(gpa, response.body) catch |err| {
+            std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
+            return exit_response_parse;
+        };
+        defer gpa.free(response_id);
+
+        writeResponseFile(init.io, response_id, response.body) catch |err| {
+            std.debug.print("error: failed to write API response: {s}\n", .{@errorName(err)});
+            return exit_failure;
+        };
+    }
+
+    var files = api.gen.decodeGeneratedFiles(gpa, response.body) catch |err| {
+        std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
+        return exit_response_parse;
+    };
+    defer files.deinit(gpa);
+
+    writeGeneratedFiles(init.io, files) catch |err| {
+        std.debug.print("error: failed to write generated files: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+
+    return exit_success;
+}
+
+fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: EditCommand) u8 {
+    const edit_request = api.edit.EditRequest{
+        .prompt = command.prompt,
+        .base = command.base,
+        .base_role = command.base_role,
+        .references = command.referenceSlice(),
+        .preserves = command.preserveSlice(),
+        .do_nots = command.doNotSlice(),
+    };
+
+    var response = api.edit.generateContent(gpa, init.io, api_key, edit_request) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -369,6 +471,15 @@ pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
         };
     }
 
+    if (std.mem.eql(u8, args[1], "edit")) {
+        var command_args: CommandArgs = .{ .args = args[2..] };
+        const edit = try parseEditCommand(&command_args);
+        return .{
+            .traffic_log_options = command_args.traffic_log_options,
+            .command = .{ .edit = edit },
+        };
+    }
+
     if (std.mem.eql(u8, args[1], "files")) {
         if (args.len < 3) return error.MissingFilesCommand;
 
@@ -440,6 +551,353 @@ fn parseGenCommand(command_args: *CommandArgs) ParseError!GenCommand {
         .write_response = write_response,
     };
 }
+
+fn parseEditCommand(command_args: *CommandArgs) ParseError!EditCommand {
+    var prompt: ?[]const u8 = null;
+    var write_response = false;
+    var base: ?api.edit.UploadedImage = null;
+    var base_role: api.edit.BaseRole = .scene;
+    var base_role_seen = false;
+    var references: [api.edit.max_references]api.edit.Reference = undefined;
+    var reference_count: usize = 0;
+    var preserves: [max_edit_constraints][]const u8 = undefined;
+    var preserve_count: usize = 0;
+    var do_nots: [max_edit_constraints][]const u8 = undefined;
+    var do_not_count: usize = 0;
+
+    while (command_args.nextOption()) |arg| {
+        if (!std.mem.startsWith(u8, arg, "--")) {
+            if (prompt != null) return error.SplitPrompt;
+            return error.UnexpectedArgument;
+        }
+
+        if (std.mem.eql(u8, arg, "--write-response")) {
+            write_response = true;
+        } else if (std.mem.eql(u8, arg, "--prompt")) {
+            if (prompt != null) return error.DuplicatePrompt;
+
+            const value = try command_args.nextValue(error.MissingPrompt);
+            if (value.len == 0) return error.EmptyPrompt;
+            prompt = value;
+        } else if (std.mem.eql(u8, arg, "--base")) {
+            if (base != null) return error.DuplicateBase;
+
+            const value = try command_args.nextValue(error.MissingBase);
+            base = try parseImageInput(value, error.EmptyBase);
+        } else if (std.mem.eql(u8, arg, "--base-role")) {
+            if (base_role_seen) return error.DuplicateBaseRole;
+
+            const value = try command_args.nextValue(error.MissingBaseRole);
+            base_role = api.edit.BaseRole.fromName(value) orelse return error.InvalidBaseRole;
+            base_role_seen = true;
+        } else if (std.mem.eql(u8, arg, "--character")) {
+            const value = try command_args.nextValue(error.MissingReference);
+            try addConvenienceReference(&references, &reference_count, .character, value);
+        } else if (std.mem.eql(u8, arg, "--object")) {
+            const value = try command_args.nextValue(error.MissingReference);
+            try addConvenienceReference(&references, &reference_count, .object, value);
+        } else if (std.mem.eql(u8, arg, "--style")) {
+            const value = try command_args.nextValue(error.MissingReference);
+            try addConvenienceReference(&references, &reference_count, .style, value);
+        } else if (std.mem.eql(u8, arg, "--ref")) {
+            const value = try command_args.nextValue(error.MissingReference);
+            try addGenericReference(&references, &reference_count, value);
+        } else if (std.mem.eql(u8, arg, "--preserve")) {
+            const value = try command_args.nextValue(error.MissingPreserve);
+            if (value.len == 0) return error.EmptyPreserve;
+            try addConstraint(&preserves, &preserve_count, value);
+        } else if (std.mem.eql(u8, arg, "--do-not")) {
+            const value = try command_args.nextValue(error.MissingDoNot);
+            if (value.len == 0) return error.EmptyDoNot;
+            try addConstraint(&do_nots, &do_not_count, value);
+        } else {
+            return error.UnknownFlag;
+        }
+    }
+
+    try validateEditReferenceLimits(base_role, references[0..reference_count]);
+
+    return .{
+        .prompt = prompt orelse return error.MissingPrompt,
+        .write_response = write_response,
+        .base = base orelse return error.MissingBase,
+        .base_role = base_role,
+        .references = references,
+        .reference_count = reference_count,
+        .preserves = preserves,
+        .preserve_count = preserve_count,
+        .do_nots = do_nots,
+        .do_not_count = do_not_count,
+    };
+}
+
+fn parseImageInput(value: []const u8, empty_error: ParseError) ParseError!api.edit.UploadedImage {
+    if (value.len == 0) return empty_error;
+
+    const comma = std.mem.indexOfScalar(u8, value, ',') orelse return error.MissingMime;
+    if (std.mem.indexOfScalar(u8, value[comma + 1 ..], ',') != null) return error.MalformedImageInput;
+
+    const name = value[0..comma];
+    const mime_name = value[comma + 1 ..];
+    if (!api.files.isCanonicalFileName(name)) return error.InvalidName;
+    if (mime_name.len == 0) return error.MissingMime;
+
+    return .{
+        .name = name,
+        .mime = api.edit.InputMime.fromName(mime_name) orelse return error.InvalidMime,
+    };
+}
+
+fn addConvenienceReference(
+    references: *[api.edit.max_references]api.edit.Reference,
+    reference_count: *usize,
+    role: api.edit.ReferenceRole,
+    value: []const u8,
+) ParseError!void {
+    if (value.len == 0) return error.EmptyReference;
+
+    const equal = std.mem.indexOfScalar(u8, value, '=');
+    const label: ?[]const u8 = if (equal) |index| value[0..index] else null;
+    const image_value = if (equal) |index| value[index + 1 ..] else value;
+
+    try addReference(references, reference_count, role, label, image_value);
+}
+
+fn addGenericReference(
+    references: *[api.edit.max_references]api.edit.Reference,
+    reference_count: *usize,
+    value: []const u8,
+) ParseError!void {
+    if (value.len == 0) return error.EmptyReference;
+
+    const equal = std.mem.indexOfScalar(u8, value, '=') orelse return error.InvalidReference;
+    const role_and_label = value[0..equal];
+    const image_value = value[equal + 1 ..];
+    if (role_and_label.len == 0) return error.InvalidReference;
+
+    const colon = std.mem.indexOfScalar(u8, role_and_label, ':');
+    const role_name = if (colon) |index| role_and_label[0..index] else role_and_label;
+    const label: ?[]const u8 = if (colon) |index| role_and_label[index + 1 ..] else null;
+
+    const role = api.edit.ReferenceRole.fromName(role_name) orelse return error.InvalidReference;
+    try addReference(references, reference_count, role, label, image_value);
+}
+
+fn addReference(
+    references: *[api.edit.max_references]api.edit.Reference,
+    reference_count: *usize,
+    role: api.edit.ReferenceRole,
+    maybe_label: ?[]const u8,
+    image_value: []const u8,
+) ParseError!void {
+    if (reference_count.* >= references.len) return error.TooManyReferences;
+    if (image_value.len == 0) return error.EmptyReference;
+
+    const image = try parseImageInput(image_value, error.EmptyReference);
+    const label = if (maybe_label) |custom_label| label: {
+        if (!api.edit.isValidLabel(custom_label)) return error.InvalidLabel;
+        break :label custom_label;
+    } else try autoLabelForRole(role, countReferencesWithRole(references[0..reference_count.*], role));
+
+    if (hasLabel(references[0..reference_count.*], label)) return error.DuplicateLabel;
+
+    references[reference_count.*] = .{
+        .role = role,
+        .label = label,
+        .image = image,
+    };
+    reference_count.* += 1;
+}
+
+fn addConstraint(
+    constraints: *[max_edit_constraints][]const u8,
+    constraint_count: *usize,
+    value: []const u8,
+) ParseError!void {
+    if (constraint_count.* >= constraints.len) return error.TooManyConstraints;
+
+    constraints[constraint_count.*] = value;
+    constraint_count.* += 1;
+}
+
+fn validateEditReferenceLimits(
+    base_role: api.edit.BaseRole,
+    references: []const api.edit.Reference,
+) ParseError!void {
+    var character_count: usize = if (base_role == .character) 1 else 0;
+    var object_count: usize = if (base_role == .object) 1 else 0;
+
+    for (references) |reference| {
+        if (reference.role == .character) character_count += 1;
+        if (reference.role == .object) object_count += 1;
+    }
+
+    if (character_count > api.edit.max_character_references) return error.TooManyCharacterReferences;
+    if (object_count > api.edit.max_object_references) return error.TooManyObjectReferences;
+}
+
+fn countReferencesWithRole(
+    references: []const api.edit.Reference,
+    role: api.edit.ReferenceRole,
+) usize {
+    var count: usize = 0;
+    for (references) |reference| {
+        if (reference.role == role) count += 1;
+    }
+    return count;
+}
+
+fn hasLabel(references: []const api.edit.Reference, label: []const u8) bool {
+    if (std.mem.eql(u8, label, "BASE_IMAGE")) return true;
+    for (references) |reference| {
+        if (std.mem.eql(u8, reference.label, label)) return true;
+    }
+    return false;
+}
+
+fn autoLabelForRole(role: api.edit.ReferenceRole, index: usize) ParseError![]const u8 {
+    const labels = switch (role) {
+        .character => &character_labels,
+        .object => &object_labels,
+        .style => &style_labels,
+        .pose => &pose_labels,
+        .composition => &composition_labels,
+        .background => &background_labels,
+        .texture => &texture_labels,
+        .image => &image_labels,
+    };
+
+    if (index >= labels.len) return error.TooManyReferences;
+    return labels[index];
+}
+
+const character_labels = [_][]const u8{
+    "CHARACTER_A",
+    "CHARACTER_B",
+    "CHARACTER_C",
+    "CHARACTER_D",
+    "CHARACTER_E",
+    "CHARACTER_F",
+    "CHARACTER_G",
+    "CHARACTER_H",
+    "CHARACTER_I",
+    "CHARACTER_J",
+    "CHARACTER_K",
+    "CHARACTER_L",
+    "CHARACTER_M",
+};
+
+const object_labels = [_][]const u8{
+    "OBJECT_A",
+    "OBJECT_B",
+    "OBJECT_C",
+    "OBJECT_D",
+    "OBJECT_E",
+    "OBJECT_F",
+    "OBJECT_G",
+    "OBJECT_H",
+    "OBJECT_I",
+    "OBJECT_J",
+    "OBJECT_K",
+    "OBJECT_L",
+    "OBJECT_M",
+};
+
+const style_labels = [_][]const u8{
+    "STYLE_REFERENCE_A",
+    "STYLE_REFERENCE_B",
+    "STYLE_REFERENCE_C",
+    "STYLE_REFERENCE_D",
+    "STYLE_REFERENCE_E",
+    "STYLE_REFERENCE_F",
+    "STYLE_REFERENCE_G",
+    "STYLE_REFERENCE_H",
+    "STYLE_REFERENCE_I",
+    "STYLE_REFERENCE_J",
+    "STYLE_REFERENCE_K",
+    "STYLE_REFERENCE_L",
+    "STYLE_REFERENCE_M",
+};
+
+const pose_labels = [_][]const u8{
+    "POSE_REFERENCE_A",
+    "POSE_REFERENCE_B",
+    "POSE_REFERENCE_C",
+    "POSE_REFERENCE_D",
+    "POSE_REFERENCE_E",
+    "POSE_REFERENCE_F",
+    "POSE_REFERENCE_G",
+    "POSE_REFERENCE_H",
+    "POSE_REFERENCE_I",
+    "POSE_REFERENCE_J",
+    "POSE_REFERENCE_K",
+    "POSE_REFERENCE_L",
+    "POSE_REFERENCE_M",
+};
+
+const composition_labels = [_][]const u8{
+    "COMPOSITION_REFERENCE_A",
+    "COMPOSITION_REFERENCE_B",
+    "COMPOSITION_REFERENCE_C",
+    "COMPOSITION_REFERENCE_D",
+    "COMPOSITION_REFERENCE_E",
+    "COMPOSITION_REFERENCE_F",
+    "COMPOSITION_REFERENCE_G",
+    "COMPOSITION_REFERENCE_H",
+    "COMPOSITION_REFERENCE_I",
+    "COMPOSITION_REFERENCE_J",
+    "COMPOSITION_REFERENCE_K",
+    "COMPOSITION_REFERENCE_L",
+    "COMPOSITION_REFERENCE_M",
+};
+
+const background_labels = [_][]const u8{
+    "BACKGROUND_REFERENCE_A",
+    "BACKGROUND_REFERENCE_B",
+    "BACKGROUND_REFERENCE_C",
+    "BACKGROUND_REFERENCE_D",
+    "BACKGROUND_REFERENCE_E",
+    "BACKGROUND_REFERENCE_F",
+    "BACKGROUND_REFERENCE_G",
+    "BACKGROUND_REFERENCE_H",
+    "BACKGROUND_REFERENCE_I",
+    "BACKGROUND_REFERENCE_J",
+    "BACKGROUND_REFERENCE_K",
+    "BACKGROUND_REFERENCE_L",
+    "BACKGROUND_REFERENCE_M",
+};
+
+const texture_labels = [_][]const u8{
+    "TEXTURE_REFERENCE_A",
+    "TEXTURE_REFERENCE_B",
+    "TEXTURE_REFERENCE_C",
+    "TEXTURE_REFERENCE_D",
+    "TEXTURE_REFERENCE_E",
+    "TEXTURE_REFERENCE_F",
+    "TEXTURE_REFERENCE_G",
+    "TEXTURE_REFERENCE_H",
+    "TEXTURE_REFERENCE_I",
+    "TEXTURE_REFERENCE_J",
+    "TEXTURE_REFERENCE_K",
+    "TEXTURE_REFERENCE_L",
+    "TEXTURE_REFERENCE_M",
+};
+
+const image_labels = [_][]const u8{
+    "IMAGE_REFERENCE_A",
+    "IMAGE_REFERENCE_B",
+    "IMAGE_REFERENCE_C",
+    "IMAGE_REFERENCE_D",
+    "IMAGE_REFERENCE_E",
+    "IMAGE_REFERENCE_F",
+    "IMAGE_REFERENCE_G",
+    "IMAGE_REFERENCE_H",
+    "IMAGE_REFERENCE_I",
+    "IMAGE_REFERENCE_J",
+    "IMAGE_REFERENCE_K",
+    "IMAGE_REFERENCE_L",
+    "IMAGE_REFERENCE_M",
+};
 
 fn parseFilesUploadCommand(command_args: *CommandArgs) ParseError!FilesUploadCommand {
     var path: ?[]const u8 = null;
@@ -664,6 +1122,28 @@ fn printUsageError(err: ParseError) void {
         error.EmptyPrompt => std.debug.print("error: prompt must not be empty\n", .{}),
         error.SplitPrompt => std.debug.print("error: prompt must be one quoted argument\n", .{}),
         error.DuplicatePrompt => std.debug.print("error: prompt specified more than once\n", .{}),
+        error.MissingBase => std.debug.print("error: missing base image\n", .{}),
+        error.EmptyBase => std.debug.print("error: base image must not be empty\n", .{}),
+        error.DuplicateBase => std.debug.print("error: base image specified more than once\n", .{}),
+        error.MissingBaseRole => std.debug.print("error: missing base role\n", .{}),
+        error.DuplicateBaseRole => std.debug.print("error: base role specified more than once\n", .{}),
+        error.InvalidBaseRole => std.debug.print("error: base role must be scene, character, or object\n", .{}),
+        error.MissingReference => std.debug.print("error: missing reference image\n", .{}),
+        error.EmptyReference => std.debug.print("error: reference image must not be empty\n", .{}),
+        error.InvalidReference => std.debug.print("error: invalid reference image\n", .{}),
+        error.TooManyReferences => std.debug.print("error: edit accepts at most 13 reference images plus one base image\n", .{}),
+        error.TooManyCharacterReferences => std.debug.print("error: edit accepts at most 4 character references including a character base\n", .{}),
+        error.TooManyObjectReferences => std.debug.print("error: edit accepts at most 10 object references including an object base\n", .{}),
+        error.DuplicateLabel => std.debug.print("error: reference labels must be unique\n", .{}),
+        error.InvalidLabel => std.debug.print("error: reference label must be ASCII SCREAMING_SNAKE_CASE and start with a letter\n", .{}),
+        error.MissingMime => std.debug.print("error: image input must include MIME type as files/ID,MIME\n", .{}),
+        error.InvalidMime => std.debug.print("error: image MIME must be image/jpeg, image/png, or image/webp\n", .{}),
+        error.MalformedImageInput => std.debug.print("error: image input must have exactly one comma: files/ID,MIME\n", .{}),
+        error.MissingPreserve => std.debug.print("error: missing preserve text\n", .{}),
+        error.EmptyPreserve => std.debug.print("error: preserve text must not be empty\n", .{}),
+        error.MissingDoNot => std.debug.print("error: missing do-not text\n", .{}),
+        error.EmptyDoNot => std.debug.print("error: do-not text must not be empty\n", .{}),
+        error.TooManyConstraints => std.debug.print("error: too many edit constraints\n", .{}),
         error.MissingPath => std.debug.print("error: missing upload path\n", .{}),
         error.EmptyPath => std.debug.print("error: upload path must not be empty\n", .{}),
         error.DuplicatePath => std.debug.print("error: upload path specified more than once\n", .{}),
@@ -678,10 +1158,11 @@ fn printUsageError(err: ParseError) void {
         error.DisplayNameTooLong => std.debug.print("error: display name must be at most 512 Unicode code points\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
-        error.WriteResponseUnsupported => std.debug.print("error: --write-response is only supported for gen\n", .{}),
+        error.WriteResponseUnsupported => std.debug.print("error: --write-response is only supported for gen and edit\n", .{}),
     }
     std.debug.print(
         "usage: nbimg gen [--print-request] [--print-response] [--write-response] --prompt \"PROMPT\"\n" ++
+            "       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt \"PROMPT\"\n" ++
             "       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH\n" ++
             "       nbimg files list [--print-request] [--print-response]\n" ++
             "       nbimg files get [--print-request] [--print-response] --name files/ID\n" ++
@@ -741,6 +1222,110 @@ test "parseArgs accepts print flags in any order" {
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expect(gen.write_response);
+}
+
+test "parseArgs accepts minimal edit command" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("change visual style to Broadway musical", edit.prompt);
+    try std.testing.expectEqualStrings("files/tjtj5me9i96c", edit.base.name);
+    try std.testing.expectEqual(api.edit.InputMime.jpeg, edit.base.mime);
+    try std.testing.expectEqual(api.edit.BaseRole.scene, edit.base_role);
+    try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
+    try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
+    try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
+    try std.testing.expect(!edit.write_response);
+}
+
+test "parseArgs accepts edit base role constraints and traffic flags" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--print-request",
+        "--write-response",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--base-role",
+        "character",
+        "--preserve",
+        "preserve her facial identity",
+        "--do-not",
+        "do not change the crop",
+        "--prompt",
+        "change visual style to Broadway musical",
+        "--print-response",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(edit.write_response);
+    try std.testing.expectEqual(api.edit.BaseRole.character, edit.base_role);
+    try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
+    try std.testing.expectEqualStrings("preserve her facial identity", edit.preserves[0]);
+    try std.testing.expectEqual(@as(usize, 1), edit.do_not_count);
+    try std.testing.expectEqualStrings("do not change the crop", edit.do_nots[0]);
+}
+
+test "parseArgs accepts edit convenience and generic references" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--character",
+        "files/person,image/jpeg",
+        "--object",
+        "OBJECT_PRODUCT=files/product,image/png",
+        "--style",
+        "files/style,image/webp",
+        "--ref",
+        "pose:POSE_MAIN=files/pose,image/jpeg",
+        "--prompt",
+        "edit BASE_IMAGE using references",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(@as(usize, 4), edit.reference_count);
+    try std.testing.expectEqual(api.edit.ReferenceRole.character, edit.references[0].role);
+    try std.testing.expectEqualStrings("CHARACTER_A", edit.references[0].label);
+    try std.testing.expectEqualStrings("files/person", edit.references[0].image.name);
+    try std.testing.expectEqual(api.edit.InputMime.jpeg, edit.references[0].image.mime);
+    try std.testing.expectEqual(api.edit.ReferenceRole.object, edit.references[1].role);
+    try std.testing.expectEqualStrings("OBJECT_PRODUCT", edit.references[1].label);
+    try std.testing.expectEqual(api.edit.InputMime.png, edit.references[1].image.mime);
+    try std.testing.expectEqual(api.edit.ReferenceRole.style, edit.references[2].role);
+    try std.testing.expectEqualStrings("STYLE_REFERENCE_A", edit.references[2].label);
+    try std.testing.expectEqual(api.edit.InputMime.webp, edit.references[2].image.mime);
+    try std.testing.expectEqual(api.edit.ReferenceRole.pose, edit.references[3].role);
+    try std.testing.expectEqualStrings("POSE_MAIN", edit.references[3].label);
+}
+
+test "parseArgs accepts generic edit reference without custom label" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--ref",
+        "texture=files/fabric,image/png",
+        "--prompt",
+        "use the fabric texture",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(@as(usize, 1), edit.reference_count);
+    try std.testing.expectEqual(api.edit.ReferenceRole.texture, edit.references[0].role);
+    try std.testing.expectEqualStrings("TEXTURE_REFERENCE_A", edit.references[0].label);
+    try std.testing.expectEqualStrings("files/fabric", edit.references[0].image.name);
 }
 
 test "parseArgs accepts files upload path flag" {
@@ -1110,7 +1695,222 @@ test "parseArgs rejects split prompt" {
 }
 
 test "parseArgs rejects unknown command" {
-    try std.testing.expectError(error.UnknownCommand, parseArgs(&.{ "nbimg", "edit", "prompt" }));
+    try std.testing.expectError(error.UnknownCommand, parseArgs(&.{ "nbimg", "draw", "prompt" }));
+}
+
+test "parseArgs rejects edit missing base" {
+    try std.testing.expectError(error.MissingBase, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit duplicate base" {
+    try std.testing.expectError(error.DuplicateBase, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/one,image/jpeg",
+        "--base",
+        "files/two,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit missing MIME" {
+    try std.testing.expectError(error.MissingMime, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit invalid MIME" {
+    try std.testing.expectError(error.InvalidMime, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/gif",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit malformed image input" {
+    try std.testing.expectError(error.MalformedImageInput, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg,extra",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit invalid base role" {
+    try std.testing.expectError(error.InvalidBaseRole, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--base-role",
+        "portrait",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects edit invalid label" {
+    try std.testing.expectError(error.InvalidLabel, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--character",
+        "character_a=files/person,image/jpeg",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit duplicate label" {
+    try std.testing.expectError(error.DuplicateLabel, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--character",
+        "CHARACTER_A=files/person,image/jpeg",
+        "--object",
+        "CHARACTER_A=files/object,image/png",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit reserved base image label" {
+    try std.testing.expectError(error.DuplicateLabel, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--character",
+        "BASE_IMAGE=files/person,image/jpeg",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit too many character references including character base" {
+    try std.testing.expectError(error.TooManyCharacterReferences, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--base-role",
+        "character",
+        "--character",
+        "files/one,image/jpeg",
+        "--character",
+        "files/two,image/jpeg",
+        "--character",
+        "files/three,image/jpeg",
+        "--character",
+        "files/four,image/jpeg",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit too many object references including object base" {
+    try std.testing.expectError(error.TooManyObjectReferences, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--base-role",
+        "object",
+        "--object",
+        "files/one,image/png",
+        "--object",
+        "files/two,image/png",
+        "--object",
+        "files/three,image/png",
+        "--object",
+        "files/four,image/png",
+        "--object",
+        "files/five,image/png",
+        "--object",
+        "files/six,image/png",
+        "--object",
+        "files/seven,image/png",
+        "--object",
+        "files/eight,image/png",
+        "--object",
+        "files/nine,image/png",
+        "--object",
+        "files/ten,image/png",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit too many references" {
+    try std.testing.expectError(error.TooManyReferences, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--style",
+        "files/one,image/jpeg",
+        "--style",
+        "files/two,image/jpeg",
+        "--style",
+        "files/three,image/jpeg",
+        "--style",
+        "files/four,image/jpeg",
+        "--style",
+        "files/five,image/jpeg",
+        "--style",
+        "files/six,image/jpeg",
+        "--style",
+        "files/seven,image/jpeg",
+        "--style",
+        "files/eight,image/jpeg",
+        "--style",
+        "files/nine,image/jpeg",
+        "--style",
+        "files/ten,image/jpeg",
+        "--style",
+        "files/eleven,image/jpeg",
+        "--style",
+        "files/twelve,image/jpeg",
+        "--style",
+        "files/thirteen,image/jpeg",
+        "--style",
+        "files/fourteen,image/jpeg",
+        "--prompt",
+        "edit",
+    }));
+}
+
+test "parseArgs rejects edit empty constraints" {
+    try std.testing.expectError(error.EmptyPreserve, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/base,image/jpeg",
+        "--preserve",
+        "",
+        "--prompt",
+        "edit",
+    }));
 }
 
 test "parseArgs rejects missing files subcommand" {
@@ -1442,6 +2242,13 @@ test "parseArgs rejects duplicate prompt" {
 fn expectGenCommand(parsed_command: ParsedCommand) GenCommand {
     return switch (parsed_command.command) {
         .gen => |gen| gen,
+        else => unreachable,
+    };
+}
+
+fn expectEditCommand(parsed_command: ParsedCommand) EditCommand {
+    return switch (parsed_command.command) {
+        .edit => |edit| edit,
         else => unreachable,
     };
 }

@@ -11,6 +11,7 @@ generation. The implemented command surface is:
 
 ```sh
 nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
+nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -18,19 +19,19 @@ nbimg files delete [--print-request] [--print-response] --name files/ID
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
-binary accepts one prompt through `--prompt`, sends a fixed image-generation
-request to the Gemini API, decodes image or text parts from the response, and
-writes each generated part to the current working directory. It can also
-upload image files to Gemini's Files API, list or get uploaded file metadata,
-and delete uploaded files.
+binary accepts one prompt through `--prompt`, sends fixed generation or edit
+requests to the Gemini API, decodes image or text parts from the response, and
+writes each generated part to the current working directory. It can also upload
+image files to Gemini's Files API, list or get uploaded file metadata, and
+delete uploaded files.
 
-The current implementation does not yet support image editing, chat, model
-selection, output directory selection, or response snapshots for Files API
-commands.
+The current implementation does not yet support chat, model selection, output
+directory selection, local image inputs for `edit`, or response snapshots for
+Files API commands.
 
 ## Module Layout
 
-The code is split into six source files:
+The code is split into seven source files:
 
 - `src/main.zig` is the executable entrypoint. It calls `nbimg.cli.run(init)`
   and exits with the returned process status.
@@ -43,6 +44,9 @@ The code is split into six source files:
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction, generated response decoding, generated file
   metadata, and output naming.
+- `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
+  request construction, edit manifest text, File API URI derivation, and
+  countTokens wrapping.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
   construction, upload MIME detection, upload/list/get response decoding, and
   Files API endpoint handling.
@@ -51,6 +55,7 @@ The public API namespace is intentionally split by command domain:
 
 ```zig
 nbimg.api.gen.*
+nbimg.api.edit.*
 nbimg.api.files.*
 ```
 
@@ -69,24 +74,31 @@ own only request/response wire shapes and HTTP transport.
 for `countTokens`, decodes generated image/text parts, and formats response-ID
 based output names.
 
+`src/edit.zig` owns Gemini native image editing semantics for the fixed `nano2`
+model. It accepts uploaded File API resource names plus MIME types, derives
+their model-facing `file_uri` values from the common Gemini File API prefix,
+interleaves role anchor text and `file_data` parts, and wraps the same request
+shape for `countTokens`.
+
 `src/files.zig` owns Gemini Files API semantics. It maps upload path extensions
 to MIME types, performs resumable upload start/finalize calls, builds
 paginated list URLs and file-resource get/delete URLs, and decodes
 uploaded/listed/fetched File metadata.
 
-`src/api.zig` owns shared transport and logging. `api.gen` and `api.files`
-reuse its JSON GET/POST/DELETE helpers, lower-level request-with-body helper
-for resumable uploads, common `HttpResponse` ownership type, `Model` constants,
-and global traffic logging switch. Headers are not exposed through the logging
-path, so API keys stay out of diagnostic output.
+`src/api.zig` owns shared transport and logging. `api.gen`, `api.edit`, and
+`api.files` reuse its JSON GET/POST/DELETE helpers, lower-level
+request-with-body helper for resumable uploads, common `HttpResponse`
+ownership type, `Model` constants, and global traffic logging switch. Headers
+are not exposed through the logging path, so API keys stay out of diagnostic
+output.
 
 `build.zig` defines one module named `nbimg`, one executable named `nbimg`, a
 `run` step, a normal offline `test` step, and dedicated live API test steps.
 The `test` step builds test roots from `src/api.zig`, `src/gen.zig`,
-`src/files.zig`, and `src/cli.zig` so tests stay close to their owning modules.
-Tests receive a generated `build_options` module with `live_api_tests = false`
-by default. Passing `-Dlive-api-tests` enables live tests for a filtered test
-run.
+`src/edit.zig`, `src/files.zig`, and `src/cli.zig` so tests stay close to
+their owning modules. Tests receive a generated `build_options` module with
+`live_api_tests = false` by default. Passing `-Dlive-api-tests` enables live
+tests for a filtered test run.
 
 Default builds use ReleaseSafe:
 
@@ -110,6 +122,7 @@ The parser accepts:
 
 ```sh
 nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
+nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -118,14 +131,40 @@ nbimg files delete [--print-request] [--print-response] --name files/ID
 
 Argument rules are intentionally narrow:
 
-- The command name must be `gen` or `files`.
+- The command name must be `gen`, `edit`, or `files`.
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
 - For `gen`, the `--prompt` flag is required exactly once.
+- For `edit`, the `--prompt` flag is required exactly once.
 - The prompt value must be one argument, so shell users need quotes for prompts
   with spaces. Quote presence is not visible to the process, so single-token
   prompts are accepted.
 - Empty prompts are rejected.
+- For `edit`, `--base files/ID,MIME` is required exactly once. The `files/...`
+  resource name must be canonical and the MIME value must be `image/jpeg`,
+  `image/png`, or `image/webp`.
+- `edit` does not call `files get` before generation. The CLI derives
+  `file_uri` by appending the canonical resource name to
+  `https://generativelanguage.googleapis.com/v1beta/`.
+- `edit --base-role scene|character|object` is optional and defaults to
+  `scene`. A `character` base preserves portrait identity; an `object` base
+  preserves product/object fidelity.
+- `edit` accepts repeatable `--character`, `--object`, and `--style`
+  convenience references in `[LABEL=]files/ID,MIME` form.
+- `edit` accepts repeatable generic references with
+  `--ref ROLE[:LABEL]=files/ID,MIME`, where `ROLE` is `character`, `object`,
+  `style`, `pose`, `composition`, `background`, `texture`, or `image`.
+- If an edit reference label is omitted, deterministic labels such as
+  `CHARACTER_A`, `OBJECT_A`, and `STYLE_REFERENCE_A` are assigned. Custom
+  labels must be unique ASCII `SCREAMING_SNAKE_CASE`, start with a letter, and
+  be at most 64 bytes. `BASE_IMAGE` is reserved.
+- `edit` enforces the Nano Banana 2 input image limits used by the current
+  model: at most 14 total images including the base, at most 4 character
+  references including a character base, and at most 10 object references
+  including an object base.
+- `edit` accepts repeatable `--preserve TEXT` and `--do-not TEXT` task-level
+  constraints. Each constraint must be non-empty; the implementation currently
+  caps each list at 16 entries.
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
 - For `files upload`, `--display-name NAME` is optional and accepted at most
@@ -139,7 +178,7 @@ Argument rules are intentionally narrow:
   resource names; bare IDs are rejected.
 - `--print-request` and `--print-response` are optional boolean flags on all
   commands. Their default value is `false`.
-- `--write-response` is supported only by `gen`; file commands reject it.
+- `--write-response` is supported by `gen` and `edit`; file commands reject it.
 - Flags may appear in any order.
 - Unknown flags and positional prompt arguments are rejected.
 
@@ -158,6 +197,7 @@ specific error followed by:
 
 ```text
 usage: nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
+       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
        nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
        nbimg files list [--print-request] [--print-response]
        nbimg files get [--print-request] [--print-response] --name files/ID
@@ -185,9 +225,9 @@ yet.
 
 ## Request Construction
 
-`api.gen.buildGenerateRequest` builds the request as Zig structs and
-serializes it with `std.json.Stringify.value`. The request body currently has
-this shape:
+`api.gen.buildGenerateRequest` builds the text-to-image request as Zig structs
+and serializes it with `std.json.Stringify.value`. The request body currently
+has this shape:
 
 ```json
 {
@@ -210,6 +250,49 @@ The prompt is asserted to be non-empty before request construction. This is a
 programmer boundary check; user-facing validation happens earlier in
 `cli.parseArgs`.
 
+`api.edit.buildGenerateRequest` builds image-editing requests with the same
+`generateContent` endpoint and output config, but the user content contains an
+ordered multimodal reference manifest. Every image is represented as nearby
+role text followed by a `file_data` part. For example:
+
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "REFERENCE MANIFEST\n\nBASE_IMAGE:\nThe next image is the image to edit..."
+        },
+        {
+          "file_data": {
+            "mime_type": "image/jpeg",
+            "file_uri": "https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c"
+          }
+        },
+        {
+          "text": "EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\nchange visual style to Broadway musical\n\nPRESERVE FROM BASE_IMAGE:\n- ..."
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "responseModalities": ["IMAGE"]
+  }
+}
+```
+
+For a parsed image input such as `files/tjtj5me9i96c,image/jpeg`, the edit
+request builder derives:
+
+```text
+file_uri = "https://generativelanguage.googleapis.com/v1beta/" ++ "files/tjtj5me9i96c"
+mime_type = "image/jpeg"
+```
+
+The builder does not validate file existence, state, expiration, or server-side
+MIME metadata. Those remain Gemini API errors if the supplied `files/...` name
+or MIME type is stale or wrong.
+
 ## Model And Endpoint
 
 Only one model is currently wired:
@@ -218,8 +301,8 @@ Only one model is currently wired:
 gemini-3.1-flash-image-preview
 ```
 
-The internal model enum names it `nano2`. `api.gen.generateContent` sends a
-`POST` request to:
+The internal model enum names it `nano2`. `api.gen.generateContent` and
+`api.edit.generateContent` send `POST` requests to:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent
