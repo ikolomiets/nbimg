@@ -27,8 +27,8 @@ The project currently uses only the Zig standard library.
 zig build
 ```
 
-The default build mode is `ReleaseSafe`, which keeps Zig safety checks and
-`std.debug.assert` active.
+The installed executable is always built with `ReleaseSafe`, which keeps Zig
+safety checks and `std.debug.assert` active.
 
 The executable is written to:
 
@@ -36,9 +36,18 @@ The executable is written to:
 zig-out/bin/nbimg
 ```
 
+Development executions through `zig build run -- <args>` compile and run a
+separate Debug artifact from the build cache.
+
 ## Usage
 
 Generate an image from a prompt:
+
+```sh
+printf '%s\n' "Create a photo of my fair lady" | zig-out/bin/nbimg gen
+```
+
+You can also pass the prompt explicitly:
 
 ```sh
 zig-out/bin/nbimg gen --prompt "Create a photo of my fair lady"
@@ -50,7 +59,8 @@ Upload an image:
 zig-out/bin/nbimg files upload --path sample_images/good_night.jpeg
 ```
 
-Upload an image with a Gemini display name:
+By default, uploads use the local file name as the Gemini display name. Override
+it with `--display-name`:
 
 ```sh
 zig-out/bin/nbimg files upload \
@@ -61,11 +71,13 @@ zig-out/bin/nbimg files upload \
 Edit an uploaded image:
 
 ```sh
-zig-out/bin/nbimg edit \
+printf '%s\n' "change visual style to Broadway musical" | zig-out/bin/nbimg edit \
   --base files/tjtj5me9i96c,image/jpeg \
-  --base-role character \
-  --prompt "change visual style to Broadway musical"
+  --base-role character
 ```
+
+If `gen` or `edit` omits `--prompt`, `nbimg` reads the prompt from stdin.
+Stdin prompts are limited to `16 KiB`.
 
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
 Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`. The

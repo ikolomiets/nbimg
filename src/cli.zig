@@ -8,6 +8,7 @@ const exit_success = 0;
 const exit_failure = 1;
 const exit_usage = 2;
 const exit_response_parse = 3;
+const max_prompt_bytes = 16 * 1024;
 
 pub const GenCommand = struct {
     prompt: []const u8,
@@ -77,6 +78,7 @@ pub const ParseError = error{
     UnknownFilesCommand,
     MissingPrompt,
     EmptyPrompt,
+    PromptTooLong,
     SplitPrompt,
     DuplicatePrompt,
     MissingBase,
@@ -159,9 +161,34 @@ pub fn run(init: std.process.Init) u8 {
         return exit_failure;
     };
 
-    const parsed_command = parseArgs(args) catch |err| {
-        printUsageError(err);
-        return exit_usage;
+    var stdin_prompt: ?[]u8 = null;
+    defer if (stdin_prompt) |prompt| gpa.free(prompt);
+
+    const parsed_command = parseArgs(args) catch |err| parsed: {
+        if (!shouldReadPromptFromStdin(args, err)) {
+            printUsageError(err);
+            return exit_usage;
+        }
+
+        stdin_prompt = readPromptFromStdin(gpa, init.io) catch |read_err| switch (read_err) {
+            error.MissingPrompt => {
+                printUsageError(error.MissingPrompt);
+                return exit_usage;
+            },
+            error.PromptTooLong => {
+                printUsageError(error.PromptTooLong);
+                return exit_usage;
+            },
+            else => {
+                std.debug.print("error: failed to read prompt from stdin: {s}\n", .{@errorName(read_err)});
+                return exit_failure;
+            },
+        };
+
+        break :parsed parseArgsWithPrompt(args, stdin_prompt.?) catch |parse_err| {
+            printUsageError(parse_err);
+            return exit_usage;
+        };
     };
 
     api.traffic_log_options = parsed_command.traffic_log_options;
@@ -279,6 +306,39 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     };
 
     return exit_success;
+}
+
+fn shouldReadPromptFromStdin(args: []const [:0]const u8, parse_error: ParseError) bool {
+    if (parse_error != error.MissingPrompt) return false;
+    if (args.len < 2) return false;
+
+    const command: []const u8 = args[1];
+    if (!std.mem.eql(u8, command, "gen") and !std.mem.eql(u8, command, "edit")) return false;
+
+    for (args[2..]) |arg_z| {
+        const arg: []const u8 = arg_z;
+        if (std.mem.eql(u8, arg, "--prompt")) return false;
+    }
+
+    return true;
+}
+
+fn readPromptFromStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
+    var stdin_buffer: [1024]u8 = undefined;
+    var stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer);
+    return readPromptFromReader(gpa, &stdin_reader.interface);
+}
+
+fn readPromptFromReader(gpa: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    const prompt = reader.allocRemaining(gpa, .limited(max_prompt_bytes + 1)) catch |err| switch (err) {
+        error.StreamTooLong => return error.PromptTooLong,
+        else => return err,
+    };
+    errdefer gpa.free(prompt);
+
+    if (prompt.len == 0) return error.MissingPrompt;
+    if (prompt.len > max_prompt_bytes) return error.PromptTooLong;
+    return prompt;
 }
 
 fn runFilesUpload(
@@ -460,11 +520,15 @@ fn runFilesDelete(init: std.process.Init, gpa: std.mem.Allocator, api_key: []con
 }
 
 pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
+    return parseArgsWithPrompt(args, null);
+}
+
+fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) ParseError!ParsedCommand {
     if (args.len < 2) return error.MissingCommand;
 
     if (std.mem.eql(u8, args[1], "gen")) {
         var command_args: CommandArgs = .{ .args = args[2..] };
-        const gen = try parseGenCommand(&command_args);
+        const gen = try parseGenCommand(&command_args, stdin_prompt);
         return .{
             .traffic_log_options = command_args.traffic_log_options,
             .command = .{ .gen = gen },
@@ -473,7 +537,7 @@ pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
 
     if (std.mem.eql(u8, args[1], "edit")) {
         var command_args: CommandArgs = .{ .args = args[2..] };
-        const edit = try parseEditCommand(&command_args);
+        const edit = try parseEditCommand(&command_args, stdin_prompt);
         return .{
             .traffic_log_options = command_args.traffic_log_options,
             .command = .{ .edit = edit },
@@ -523,7 +587,7 @@ pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
     return error.UnknownCommand;
 }
 
-fn parseGenCommand(command_args: *CommandArgs) ParseError!GenCommand {
+fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!GenCommand {
     var prompt: ?[]const u8 = null;
     var write_response = false;
 
@@ -547,12 +611,12 @@ fn parseGenCommand(command_args: *CommandArgs) ParseError!GenCommand {
     }
 
     return .{
-        .prompt = prompt orelse return error.MissingPrompt,
+        .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .write_response = write_response,
     };
 }
 
-fn parseEditCommand(command_args: *CommandArgs) ParseError!EditCommand {
+fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!EditCommand {
     var prompt: ?[]const u8 = null;
     var write_response = false;
     var base: ?api.edit.UploadedImage = null;
@@ -618,7 +682,7 @@ fn parseEditCommand(command_args: *CommandArgs) ParseError!EditCommand {
     try validateEditReferenceLimits(base_role, references[0..reference_count]);
 
     return .{
-        .prompt = prompt orelse return error.MissingPrompt,
+        .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .write_response = write_response,
         .base = base orelse return error.MissingBase,
         .base_role = base_role,
@@ -629,6 +693,12 @@ fn parseEditCommand(command_args: *CommandArgs) ParseError!EditCommand {
         .do_nots = do_nots,
         .do_not_count = do_not_count,
     };
+}
+
+fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
+    const prompt = stdin_prompt orelse return error.MissingPrompt;
+    if (prompt.len == 0) return error.MissingPrompt;
+    return prompt;
 }
 
 fn parseImageInput(value: []const u8, empty_error: ParseError) ParseError!api.edit.UploadedImage {
@@ -925,9 +995,13 @@ fn parseFilesUploadCommand(command_args: *CommandArgs) ParseError!FilesUploadCom
         }
     }
 
+    const upload_path = path orelse return error.MissingPath;
+    const effective_display_name = display_name orelse std.fs.path.basename(upload_path);
+    try validateDisplayName(effective_display_name);
+
     return .{
-        .path = path orelse return error.MissingPath,
-        .display_name = display_name,
+        .path = upload_path,
+        .display_name = effective_display_name,
     };
 }
 
@@ -1120,6 +1194,7 @@ fn printUsageError(err: ParseError) void {
         error.UnknownFilesCommand => std.debug.print("error: unknown files subcommand\n", .{}),
         error.MissingPrompt => std.debug.print("error: missing prompt\n", .{}),
         error.EmptyPrompt => std.debug.print("error: prompt must not be empty\n", .{}),
+        error.PromptTooLong => std.debug.print("error: prompt must be at most 16 KiB\n", .{}),
         error.SplitPrompt => std.debug.print("error: prompt must be one quoted argument\n", .{}),
         error.DuplicatePrompt => std.debug.print("error: prompt specified more than once\n", .{}),
         error.MissingBase => std.debug.print("error: missing base image\n", .{}),
@@ -1161,8 +1236,8 @@ fn printUsageError(err: ParseError) void {
         error.WriteResponseUnsupported => std.debug.print("error: --write-response is only supported for gen and edit\n", .{}),
     }
     std.debug.print(
-        "usage: nbimg gen [--print-request] [--print-response] [--write-response] --prompt \"PROMPT\"\n" ++
-            "       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt \"PROMPT\"\n" ++
+        "usage: nbimg gen [--print-request] [--print-response] [--write-response] [--prompt \"PROMPT\"]\n" ++
+            "       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
             "       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH\n" ++
             "       nbimg files list [--print-request] [--print-response]\n" ++
             "       nbimg files get [--print-request] [--print-response] --name files/ID\n" ++
@@ -1178,6 +1253,22 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
     try std.testing.expect(!gen.write_response);
+}
+
+test "parseArgs accepts stdin fallback prompt for gen" {
+    const parsed_command = try parseArgsWithPrompt(&.{ "nbimg", "gen" }, "My fair lady");
+    const gen = expectGenCommand(parsed_command);
+    try std.testing.expectEqualStrings("My fair lady", gen.prompt);
+    try std.testing.expect(!gen.write_response);
+}
+
+test "parseArgs explicit prompt takes precedence over stdin fallback" {
+    const parsed_command = try parseArgsWithPrompt(
+        &.{ "nbimg", "gen", "--prompt", "argument prompt" },
+        "stdin prompt",
+    );
+    const gen = expectGenCommand(parsed_command);
+    try std.testing.expectEqualStrings("argument prompt", gen.prompt);
 }
 
 test "parseArgs accepts print request flag" {
@@ -1243,6 +1334,20 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
     try std.testing.expect(!edit.write_response);
+}
+
+test "parseArgs accepts stdin fallback prompt for edit" {
+    const parsed_command = try parseArgsWithPrompt(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+    }, "change visual style to Broadway musical");
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("change visual style to Broadway musical", edit.prompt);
+    try std.testing.expectEqualStrings("files/tjtj5me9i96c", edit.base.name);
+    try std.testing.expectEqual(api.edit.InputMime.jpeg, edit.base.mime);
 }
 
 test "parseArgs accepts edit base role constraints and traffic flags" {
@@ -1338,9 +1443,22 @@ test "parseArgs accepts files upload path flag" {
     });
     const files_upload = expectFilesUploadCommand(parsed_command);
     try std.testing.expectEqualStrings("sample_images/good_night.jpeg", files_upload.path);
-    try std.testing.expectEqual(@as(?[]const u8, null), files_upload.display_name);
+    try std.testing.expectEqualStrings("good_night.jpeg", files_upload.display_name.?);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+}
+
+test "parseArgs defaults files upload display name to local file name" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "references/nested/photo.webp",
+    });
+    const files_upload = expectFilesUploadCommand(parsed_command);
+    try std.testing.expectEqualStrings("references/nested/photo.webp", files_upload.path);
+    try std.testing.expectEqualStrings("photo.webp", files_upload.display_name.?);
 }
 
 test "parseArgs accepts files upload display name" {
@@ -1386,7 +1504,7 @@ test "parseArgs accepts files upload traffic log flags" {
     });
     const files_upload = expectFilesUploadCommand(parsed_command);
     try std.testing.expectEqualStrings("sample_images/good_night.jpeg", files_upload.path);
-    try std.testing.expectEqual(@as(?[]const u8, null), files_upload.display_name);
+    try std.testing.expectEqualStrings("good_night.jpeg", files_upload.display_name.?);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
@@ -1684,6 +1802,19 @@ test "parseArgs rejects missing prompt" {
 
 test "parseArgs rejects traffic flag as prompt value" {
     try std.testing.expectError(error.MissingPrompt, parseArgs(&.{ "nbimg", "gen", "--prompt", "--print-request" }));
+}
+
+test "parseArgs rejects missing prompt value even with stdin fallback" {
+    try std.testing.expectError(
+        error.MissingPrompt,
+        parseArgsWithPrompt(&.{ "nbimg", "gen", "--prompt" }, "stdin prompt"),
+    );
+}
+
+test "shouldReadPromptFromStdin requires omitted prompt flag" {
+    try std.testing.expect(shouldReadPromptFromStdin(&.{ "nbimg", "gen" }, error.MissingPrompt));
+    try std.testing.expect(!shouldReadPromptFromStdin(&.{ "nbimg", "gen", "--prompt" }, error.MissingPrompt));
+    try std.testing.expect(!shouldReadPromptFromStdin(&.{ "nbimg", "gen" }, error.UnknownFlag));
 }
 
 test "parseArgs rejects empty prompt" {
@@ -2237,6 +2368,45 @@ test "parseArgs rejects duplicate prompt" {
         "--prompt",
         "My fair lady",
     }));
+}
+
+test "readPromptFromReader reads stdin fallback prompt" {
+    const gpa = std.testing.allocator;
+    var reader = std.Io.Reader.fixed("My fair lady");
+    const prompt = try readPromptFromReader(gpa, &reader);
+    defer gpa.free(prompt);
+
+    try std.testing.expectEqualStrings("My fair lady", prompt);
+}
+
+test "readPromptFromReader preserves multiline prompt" {
+    const gpa = std.testing.allocator;
+    var reader = std.Io.Reader.fixed("line one\nline two\n");
+    const prompt = try readPromptFromReader(gpa, &reader);
+    defer gpa.free(prompt);
+
+    try std.testing.expectEqualStrings("line one\nline two\n", prompt);
+}
+
+test "readPromptFromReader rejects empty stdin" {
+    var reader = std.Io.Reader.fixed("");
+    try std.testing.expectError(error.MissingPrompt, readPromptFromReader(std.testing.allocator, &reader));
+}
+
+test "readPromptFromReader accepts max prompt bytes" {
+    const gpa = std.testing.allocator;
+    const max_prompt = "a" ** max_prompt_bytes;
+    var reader = std.Io.Reader.fixed(max_prompt);
+    const prompt = try readPromptFromReader(gpa, &reader);
+    defer gpa.free(prompt);
+
+    try std.testing.expectEqual(@as(usize, max_prompt_bytes), prompt.len);
+}
+
+test "readPromptFromReader rejects stdin over max prompt bytes" {
+    const too_long_prompt = "a" ** (max_prompt_bytes + 1);
+    var reader = std.Io.Reader.fixed(too_long_prompt);
+    try std.testing.expectError(error.PromptTooLong, readPromptFromReader(std.testing.allocator, &reader));
 }
 
 fn expectGenCommand(parsed_command: ParsedCommand) GenCommand {

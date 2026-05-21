@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
+nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -19,11 +19,11 @@ nbimg files delete [--print-request] [--print-response] --name files/ID
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
-binary accepts one prompt through `--prompt`, sends fixed generation or edit
-requests to the Gemini API, decodes image or text parts from the response, and
-writes each generated part to the current working directory. It can also upload
-image files to Gemini's Files API, list or get uploaded file metadata, and
-delete uploaded files.
+binary accepts one prompt through `--prompt` or stdin fallback, sends fixed
+generation or edit requests to the Gemini API, decodes image or text parts from
+the response, and writes each generated part to the current working directory.
+It can also upload image files to Gemini's Files API, list or get uploaded file
+metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
 directory selection, local image inputs for `edit`, or response snapshots for
@@ -92,37 +92,41 @@ ownership type, `Model` constants, and global traffic logging switch. Headers
 are not exposed through the logging path, so API keys stay out of diagnostic
 output.
 
-`build.zig` defines one module named `nbimg`, one executable named `nbimg`, a
-`run` step, a normal offline `test` step, and dedicated live API test steps.
+`build.zig` defines separate `nbimg` modules and executables for installed and
+development artifacts. The installed `zig-out/bin/nbimg` executable is built in
+ReleaseSafe. The `run` step builds and executes a separate Debug executable from
+the build cache. The normal offline `test` step and dedicated live API test
+steps also compile Debug artifacts for faster feedback.
+
 The `test` step builds test roots from `src/api.zig`, `src/gen.zig`,
 `src/edit.zig`, `src/files.zig`, and `src/cli.zig` so tests stay close to
 their owning modules. Tests receive a generated `build_options` module with
 `live_api_tests = false` by default. Passing `-Dlive-api-tests` enables live
 tests for a filtered test run.
 
-Default builds use ReleaseSafe:
+Default builds produce the final ReleaseSafe executable:
 
 ```sh
 zig build
 ```
 
-ReleaseSafe keeps `std.debug.assert` checks active while producing a much
-smaller executable than Debug. Debug builds are still available explicitly:
+Development runs compile Debug:
 
 ```sh
-zig build -Doptimize=Debug
+zig build run -- <args>
 ```
 
-ReleaseFast and ReleaseSmall are not the recommended build modes when
-preserving `std.debug.assert` matters because they optimize those checks away.
+ReleaseSafe and Debug both keep `std.debug.assert` checks active. ReleaseFast
+and ReleaseSmall are not used by this build graph because they optimize those
+checks away.
 
 ## CLI Behavior
 
-The parser accepts:
+The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
+nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -134,12 +138,16 @@ Argument rules are intentionally narrow:
 - The command name must be `gen`, `edit`, or `files`.
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
-- For `gen`, the `--prompt` flag is required exactly once.
-- For `edit`, the `--prompt` flag is required exactly once.
-- The prompt value must be one argument, so shell users need quotes for prompts
-  with spaces. Quote presence is not visible to the process, so single-token
-  prompts are accepted.
-- Empty prompts are rejected.
+- For `gen` and `edit`, `--prompt` is optional. If omitted, `cli.run` reads the
+  prompt from stdin until EOF.
+- Stdin prompts are preserved exactly, including trailing newlines, and are
+  limited to `16 KiB`.
+- Zero-byte stdin prompts report the same missing-prompt usage error as the old
+  missing `--prompt` path.
+- Explicit `--prompt` values must be one argument, so shell users need quotes
+  for prompts with spaces. Quote presence is not visible to the process, so
+  single-token prompts are accepted.
+- Empty explicit prompt values are rejected.
 - For `edit`, `--base files/ID,MIME` is required exactly once. The `files/...`
   resource name must be canonical and the MIME value must be `image/jpeg`,
   `image/png`, or `image/webp`.
@@ -168,9 +176,10 @@ Argument rules are intentionally narrow:
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
 - For `files upload`, `--display-name NAME` is optional and accepted at most
-  once.
-- Display names are validated locally: the value must be present, non-empty,
-  valid UTF-8, and at most 512 Unicode code points.
+  once. If omitted, the display name defaults to the local file name from
+  `--path`.
+- Display names are validated locally: explicit values and path-derived
+  defaults must be non-empty, valid UTF-8, and at most 512 Unicode code points.
 - `files upload` currently accepts `.jpg`, `.jpeg`, `.png`, and `.webp` paths.
 - For `files get` and `files delete`, the `--name` flag is required exactly
   once.
@@ -196,8 +205,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--print-response] [--write-response] --prompt "PROMPT"
-       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] --prompt "PROMPT"
+usage: nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
        nbimg files list [--print-request] [--print-response]
        nbimg files get [--print-request] [--print-response] --name files/ID
@@ -247,8 +256,8 @@ has this shape:
 ```
 
 The prompt is asserted to be non-empty before request construction. This is a
-programmer boundary check; user-facing validation happens earlier in
-`cli.parseArgs`.
+programmer boundary check; user-facing validation happens earlier in `cli.run`
+and `cli.parseArgs`.
 
 `api.edit.buildGenerateRequest` builds image-editing requests with the same
 `generateContent` endpoint and output config, but the user content contains an
@@ -371,15 +380,10 @@ POST https://generativelanguage.googleapis.com/upload/v1beta/files
 POST {x-goog-upload-url returned by the first response}
 ```
 
-The first request starts the upload with JSON metadata. Without a display name,
-the body is:
-
-```json
-{"file":{}}
-```
-
-With `--display-name NAME`, the body is built through `std.json.Stringify` and
-uses Gemini's `displayName` metadata field:
+The first request starts the upload with JSON metadata. By default, the CLI uses
+the local file name from `--path` as Gemini's `displayName` metadata field.
+`--display-name NAME` overrides that value. The body is built through
+`std.json.Stringify`:
 
 ```json
 {"file":{"displayName":"NAME"}}
@@ -715,7 +719,7 @@ The following areas are intentionally not implemented yet:
 - Model selection and capability validation.
 - Image editing and multimodal input parts.
 - Output directory, file prefix, and overwrite controls.
-- Multiple prompt sources such as files or stdin.
+- Prompt files and additional prompt sources.
 - Response snapshots for file commands.
 - Timeout and retry policy.
 - Structured verbose output.
