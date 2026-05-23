@@ -35,12 +35,13 @@ The code is split into seven source files:
 
 - `src/main.zig` is the executable entrypoint. It calls `nbimg.cli.run(init)`
   and exits with the returned process status.
-- `src/root.zig` exposes the package modules as `api` and `cli`.
+- `src/root.zig` exposes the package modules as `api`, `cli`, `gen`, `edit`,
+  and `files`.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, and file writing.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
-  HTTP response ownership, traffic logging options, transport helpers, response
-  log sanitization, and API submodule exports.
+  HTTP response ownership, canonical `files/...` name validation, traffic
+  logging options, transport helpers, and response log sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction, generated response decoding, generated file
   metadata, and output naming.
@@ -54,9 +55,9 @@ The code is split into seven source files:
 The public API namespace is intentionally split by command domain:
 
 ```zig
-nbimg.api.gen.*
-nbimg.api.edit.*
-nbimg.api.files.*
+nbimg.gen.*
+nbimg.edit.*
+nbimg.files.*
 ```
 
 Shared controls such as `nbimg.api.traffic_log_options` remain directly under
@@ -68,6 +69,12 @@ The CLI module owns user interaction and filesystem effects: reading upload
 files, writing generated files and response snapshots, printing uploaded file
 IDs, and translating parse or API errors into process exit codes. API modules
 own only request/response wire shapes and HTTP transport.
+
+Command-domain modules must not depend on each other. `src/gen.zig`,
+`src/edit.zig`, and `src/files.zig` may import only `api.zig`, `std`, and
+`build_options` for project-local/shared functionality. Cross-command workflows
+such as uploading a file and then validating an edit request belong in
+`src/cli.zig`.
 
 `src/gen.zig` owns Gemini native image generation semantics for the fixed
 `nano2` model. It builds the `GenerateContentRequest` JSON, wraps that shape
@@ -85,12 +92,13 @@ to MIME types, performs resumable upload start/finalize calls, builds
 paginated list URLs and file-resource get/delete URLs, and decodes
 uploaded/listed/fetched File metadata.
 
-`src/api.zig` owns shared transport and logging. `api.gen`, `api.edit`, and
-`api.files` reuse its JSON GET/POST/DELETE helpers, lower-level
-request-with-body helper for resumable uploads, common `HttpResponse`
-ownership type, `Model` constants, and global traffic logging switch. Headers
-are not exposed through the logging path, so API keys stay out of diagnostic
-output.
+`src/api.zig` owns shared transport, canonical File API resource-name
+validation, shared response modality values, and logging. `gen`, `edit`, and
+`files` reuse its JSON
+GET/POST/DELETE helpers, lower-level request-with-body helper for resumable
+uploads, common `HttpResponse` ownership type, `Model` constants, and global
+traffic logging switch. Headers are not exposed through the logging path, so
+API keys stay out of diagnostic output.
 
 `build.zig` defines separate `nbimg` modules and executables for installed and
 development artifacts. The installed `zig-out/bin/nbimg` executable is built in
@@ -171,8 +179,9 @@ Argument rules are intentionally narrow:
   references including a character base, and at most 10 object references
   including an object base.
 - `edit` accepts repeatable `--preserve TEXT` and `--do-not TEXT` task-level
-  constraints. Each constraint must be non-empty; the implementation currently
-  caps each list at 16 entries.
+  constraints. Empty string values are accepted as no-ops. Omitted flags render
+  no corresponding `PRESERVE FROM BASE_IMAGE` or `DO NOT` section, and the
+  implementation currently caps each list at 16 non-empty entries.
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
 - For `files upload`, `--display-name NAME` is optional and accepted at most
@@ -211,6 +220,13 @@ usage: nbimg gen [--print-request] [--print-response] [--write-response] [--prom
        nbimg files list [--print-request] [--print-response]
        nbimg files get [--print-request] [--print-response] --name files/ID
        nbimg files delete [--print-request] [--print-response] --name files/ID
+
+edit reference details:
+       --base-role defaults to scene
+       --ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role
+       valid ROLE values: character|object|style|pose|composition|background|texture|image
+       omitted LABEL auto-assigns by role: CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A
+       MIME must be image/jpeg, image/png, or image/webp
 ```
 
 ## Authentication
@@ -234,7 +250,7 @@ yet.
 
 ## Request Construction
 
-`api.gen.buildGenerateRequest` builds the text-to-image request as Zig structs
+`gen.buildGenerateRequest` builds the text-to-image request as Zig structs
 and serializes it with `std.json.Stringify.value`. The request body currently
 has this shape:
 
@@ -259,7 +275,7 @@ The prompt is asserted to be non-empty before request construction. This is a
 programmer boundary check; user-facing validation happens earlier in `cli.run`
 and `cli.parseArgs`.
 
-`api.edit.buildGenerateRequest` builds image-editing requests with the same
+`edit.buildGenerateRequest` builds image-editing requests with the same
 `generateContent` endpoint and output config, but the user content contains an
 ordered multimodal reference manifest. Every image is represented as nearby
 role text followed by a `file_data` part. For example:
@@ -279,7 +295,7 @@ role text followed by a `file_data` part. For example:
           }
         },
         {
-          "text": "EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\nchange visual style to Broadway musical\n\nPRESERVE FROM BASE_IMAGE:\n- ..."
+          "text": "EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\nchange visual style to Broadway musical"
         }
       ]
     }
@@ -310,8 +326,8 @@ Only one model is currently wired:
 gemini-3.1-flash-image-preview
 ```
 
-The internal model enum names it `nano2`. `api.gen.generateContent` and
-`api.edit.generateContent` send `POST` requests to:
+The internal model enum names it `nano2`. `gen.generateContent` and
+`edit.generateContent` send `POST` requests to:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent
@@ -391,7 +407,7 @@ the local file name from `--path` as Gemini's `displayName` metadata field.
 
 The second request uploads the file bytes and finalizes the upload. The CLI
 reads the file into memory with a `64 MiB` limit represented by
-`api.files.max_upload_bytes`. The accepted upload MIME types are:
+`files.max_upload_bytes`. The accepted upload MIME types are:
 
 - `.jpg` / `.jpeg` -> `image/jpeg`
 - `.png` -> `image/png`
@@ -475,15 +491,15 @@ and stdout for metadata JSON or delete `OK`.
 
 ## CountTokens Validation Helper
 
-`api.gen.countGenerateContentRequestTokens` sends the current generated request
+`gen.countGenerateContentRequestTokens` sends the current generated request
 shape to Gemini's `countTokens` endpoint:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens
 ```
 
-The request body is built by `api.gen.buildCountTokensRequest`, which wraps the
-same JSON produced by `api.gen.buildGenerateRequest` and adds the model field
+The request body is built by `gen.buildCountTokensRequest`, which wraps the
+same JSON produced by `gen.buildGenerateRequest` and adds the model field
 that Google requires inside nested `generateContentRequest` payloads:
 
 ```json
@@ -506,7 +522,7 @@ that Google requires inside nested `generateContentRequest` payloads:
 }
 ```
 
-`api.gen.decodeCountTokensResponse` extracts `totalTokens` and optional
+`gen.decodeCountTokensResponse` extracts `totalTokens` and optional
 `cachedContentTokenCount` from successful responses.
 
 This helper is API-only. There is no user-facing CLI command for it yet. A
@@ -516,7 +532,7 @@ avoid safety, quota, billing, or output-shape failures.
 
 ## Response Decoding
 
-`api.gen.decodeGeneratedFiles` parses the response JSON with unknown fields
+`gen.decodeGeneratedFiles` parses the response JSON with unknown fields
 ignored. It looks for:
 
 ```text
@@ -554,7 +570,7 @@ are found, decoding fails with `error.NoGeneratedParts`. Unsupported part
 shapes, missing MIME types, unsupported MIME types, missing inline data,
 invalid JSON, or invalid base64 are surfaced as parse failures by the CLI.
 
-`api.gen.decodeResponseId` parses and returns an owned copy of only the root
+`gen.decodeResponseId` parses and returns an owned copy of only the root
 `responseId`. The CLI uses it for response snapshot naming when
 `--write-response` is enabled, before generated-file decoding runs.
 
@@ -594,7 +610,7 @@ This file contains the original JSON response, including base64 payloads. It is
 not sanitized like `--print-response`. The write is also exclusive.
 
 `cli.writeGeneratedFiles` asserts that at least one decoded file is present.
-This assertion is paired with `api.gen.decodeGeneratedFiles`, which rejects
+This assertion is paired with `gen.decodeGeneratedFiles`, which rejects
 responses that produce zero generated files.
 
 ## Memory And Ownership
@@ -605,17 +621,17 @@ IO handles through the call chain.
 Allocator ownership is explicit:
 
 - `cli.run` uses `init.arena.allocator()` to materialize process arguments.
-- `api.gen.generateContent` receives `gpa` for request JSON, HTTP client state,
+- `gen.generateContent` receives `gpa` for request JSON, HTTP client state,
   response buffering, and the returned response body.
-- `api.files.uploadFile` receives already-read file bytes; CLI filesystem IO
+- `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
-- `api.files.decodeUploadedFile` returns owned File metadata for upload
+- `files.decodeUploadedFile` returns owned File metadata for upload
   responses. The CLI uses this for upload stdout.
-  `api.files.decodeUploadedFileName` remains as a helper that returns only an
+  `files.decodeUploadedFileName` remains as a helper that returns only an
   owned copy of the uploaded `files/...` name.
-- `api.files.decodeFile` and `api.files.decodeFileListPage` return owned File
+- `files.decodeFile` and `files.decodeFileListPage` return owned File
   metadata. `decodeFileListPage` also returns an optional owned next page token.
-- `api.gen.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
+- `gen.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
   buffers plus one owned response ID on the returned collection.
 - `HttpResponse.deinit`, `FileListPage.deinit`, `GeneratedFile.deinit`, and
   `GeneratedFiles.deinit` release owned allocations.
@@ -673,6 +689,7 @@ stdio so request and response diagnostics written to stderr remain visible:
 
 ```sh
 zig build test-live-api-generate-content-request-validity
+zig build test-live-api-edit-request-validity
 zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
@@ -694,6 +711,13 @@ lower-cost validation endpoint to confirm that Gemini accepts the current
 `GenerateContentRequest` JSON shape without calling paid content generation.
 Today there is one implemented generation shape: a text prompt requesting image
 response modality.
+
+The live edit request validity check lives in `src/cli.zig` because it
+orchestrates both Files API upload/delete and edit `countTokens` validation. It
+uploads `sample_images/good_night.jpeg` with the fixed display name
+`nbimg live edit request validity`, uses the returned `files/...` name as the
+edit base image with MIME `image/jpeg`, sends the edit request to `countTokens`,
+and then deletes the uploaded file. It does not call `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name

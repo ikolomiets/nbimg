@@ -3,12 +3,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const gen = @import("gen.zig");
-pub const edit = @import("edit.zig");
-pub const files = @import("files.zig");
-
 pub const max_response_bytes = 64 * 1024 * 1024;
 pub const api_key_env_name = "GEMINI_API_KEY";
+pub const canonical_file_name_prefix = "files/";
 
 pub const ApiKeyError = error{
     MissingApiKey,
@@ -28,6 +25,20 @@ pub const Model = enum {
         return switch (model) {
             .nano2 => "models/gemini-3.1-flash-image-preview",
         };
+    }
+};
+
+pub const ResponseModality = enum {
+    image,
+
+    pub fn apiName(modality: ResponseModality) []const u8 {
+        return switch (modality) {
+            .image => "IMAGE",
+        };
+    }
+
+    pub fn jsonStringify(modality: ResponseModality, writer: anytype) !void {
+        try writer.write(modality.apiName());
     }
 };
 
@@ -57,6 +68,52 @@ pub fn apiKeyFromMap(environ_map: *const std.process.Environ.Map) ApiKeyError![]
     const api_key = environ_map.get(api_key_env_name) orelse return error.MissingApiKey;
     if (api_key.len == 0) return error.EmptyApiKey;
     return api_key;
+}
+
+pub fn isCanonicalFileName(name: []const u8) bool {
+    if (!std.mem.startsWith(u8, name, canonical_file_name_prefix)) return false;
+    return name.len > canonical_file_name_prefix.len;
+}
+
+test "isCanonicalFileName requires files prefix and id" {
+    try std.testing.expect(isCanonicalFileName("files/abc123"));
+    try std.testing.expect(!isCanonicalFileName("abc123"));
+    try std.testing.expect(!isCanonicalFileName("files/"));
+    try std.testing.expect(!isCanonicalFileName(""));
+}
+
+test "command modules import only shared api module" {
+    try expectAllowedCommandModuleImports("src/gen.zig");
+    try expectAllowedCommandModuleImports("src/edit.zig");
+    try expectAllowedCommandModuleImports("src/files.zig");
+}
+
+fn expectAllowedCommandModuleImports(path: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(64 * 1024));
+    defer gpa.free(source);
+
+    const import_prefix = "@import(\"";
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, source, index, import_prefix)) |import_start| {
+        const name_start = import_start + import_prefix.len;
+        const name_end_relative = std.mem.indexOfScalar(u8, source[name_start..], '"') orelse {
+            std.debug.print("error: malformed import in {s}\n", .{path});
+            return error.MalformedImport;
+        };
+        const name_end = name_start + name_end_relative;
+        const name = source[name_start..name_end];
+
+        if (std.mem.endsWith(u8, name, ".zig") and !std.mem.eql(u8, name, "api.zig")) {
+            std.debug.print(
+                "error: command module {s} imports forbidden local module {s}\n",
+                .{ path, name },
+            );
+            return error.ForbiddenCommandModuleImport;
+        }
+
+        index = name_end + 1;
+    }
 }
 
 pub const RequestBodyLog = union(enum) {
@@ -443,11 +500,6 @@ fn base64OmissionLabel(arena: std.mem.Allocator, encoded: []const u8) ![]const u
         "<base64 omitted: {d} decoded bytes>",
         .{decoded_size},
     );
-}
-
-test "imports API module tests" {
-    _ = gen;
-    _ = files;
 }
 
 test "apiKeyFromMap returns borrowed API key" {

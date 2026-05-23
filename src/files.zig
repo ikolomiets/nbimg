@@ -6,7 +6,6 @@ const api = @import("api.zig");
 const build_options = @import("build_options");
 
 pub const max_upload_bytes = 64 * 1024 * 1024;
-const file_name_prefix = "files/";
 const max_display_name_codepoints = 512;
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
@@ -147,7 +146,7 @@ pub fn getFile(
     name: []const u8,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
-    assert(isCanonicalFileName(name));
+    assert(api.isCanonicalFileName(name));
 
     const url = try buildGetFileUrl(gpa, name);
     defer gpa.free(url);
@@ -162,7 +161,7 @@ pub fn deleteFile(
     name: []const u8,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
-    assert(isCanonicalFileName(name));
+    assert(api.isCanonicalFileName(name));
 
     const url = try buildFileResourceUrl(gpa, name);
     defer gpa.free(url);
@@ -397,14 +396,14 @@ fn buildGetFileUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
 }
 
 fn buildFileResourceUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
-    assert(isCanonicalFileName(name));
+    assert(api.isCanonicalFileName(name));
 
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
 
     try output.writer.writeAll(filesListBaseUrl());
     try output.writer.writeByte('/');
-    try formatFileIdPathSegment(&output.writer, name[file_name_prefix.len..]);
+    try formatFileIdPathSegment(&output.writer, name[api.canonical_file_name_prefix.len..]);
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
@@ -459,11 +458,6 @@ fn isValidDisplayName(display_name: []const u8) bool {
     if (display_name.len == 0) return false;
     const codepoints = std.unicode.utf8CountCodepoints(display_name) catch return false;
     return codepoints <= max_display_name_codepoints;
-}
-
-pub fn isCanonicalFileName(name: []const u8) bool {
-    if (!std.mem.startsWith(u8, name, file_name_prefix)) return false;
-    return name.len > file_name_prefix.len;
 }
 
 fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
@@ -685,13 +679,6 @@ test "buildFileResourceUrl percent-encodes file id path segment" {
         "https://generativelanguage.googleapis.com/v1beta/files/abc%20123%2Fone",
         url,
     );
-}
-
-test "isCanonicalFileName requires files prefix and id" {
-    try std.testing.expect(isCanonicalFileName("files/abc123"));
-    try std.testing.expect(!isCanonicalFileName("abc123"));
-    try std.testing.expect(!isCanonicalFileName("files/"));
-    try std.testing.expect(!isCanonicalFileName(""));
 }
 
 test "live API files upload is visible in file list" {

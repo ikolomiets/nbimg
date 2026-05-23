@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
         execution_optimize,
         "test-live-api-edit-request-validity",
         "Validate the edit generateContent request shape via Gemini countTokens",
-        "src/edit.zig",
+        "src/cli.zig",
         "live API edit request shape is valid",
     );
     addLiveApiTestStep(

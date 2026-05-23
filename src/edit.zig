@@ -3,7 +3,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const api = @import("api.zig");
-const build_options = @import("build_options");
 
 pub const max_total_images = 14;
 pub const max_references = max_total_images - 1;
@@ -107,7 +106,7 @@ const GenerateContent = struct {
 };
 
 const GenerateConfig = struct {
-    responseModalities: []const api.gen.ResponseModality,
+    responseModalities: []const api.ResponseModality,
 };
 
 const GenerateContentRequest = struct {
@@ -173,7 +172,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     assert(part_index == parts.len);
 
     const contents = [_]GenerateContent{.{ .parts = parts }};
-    const modalities = [_]api.gen.ResponseModality{.image};
+    const modalities = [_]api.ResponseModality{.image};
     const generate_request = GenerateContentRequest{
         .contents = &contents,
         .generationConfig = .{
@@ -231,7 +230,7 @@ pub fn isValidLabel(label: []const u8) bool {
 }
 
 pub fn buildFileUri(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
-    assert(api.files.isCanonicalFileName(name));
+    assert(api.isCanonicalFileName(name));
     return std.fmt.allocPrint(gpa, "{s}{s}", .{ file_uri_prefix, name });
 }
 
@@ -266,7 +265,7 @@ fn buildReferenceAnchor(gpa: std.mem.Allocator, reference: Reference) ![]u8 {
 }
 
 fn buildFileData(gpa: std.mem.Allocator, image: UploadedImage) !GenerateFileData {
-    assert(api.files.isCanonicalFileName(image.name));
+    assert(api.isCanonicalFileName(image.name));
 
     return GenerateFileData{
         .mime_type = image.mime.apiName(),
@@ -280,26 +279,25 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
 
     try output.writer.writeAll("EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\n");
     try output.writer.writeAll(request.prompt);
-    try output.writer.writeAll("\n\nPRESERVE FROM BASE_IMAGE:\n- ");
-    try output.writer.writeAll(basePreserveLine(request.base_role));
 
-    for (request.preserves) |preserve| {
-        assert(preserve.len > 0);
-        try output.writer.writeAll("\n- ");
-        try output.writer.writeAll(preserve);
+    if (request.preserves.len > 0) {
+        try output.writer.writeAll("\n\nPRESERVE FROM BASE_IMAGE:");
+
+        for (request.preserves) |preserve| {
+            assert(preserve.len > 0);
+            try output.writer.writeAll("\n- ");
+            try output.writer.writeAll(preserve);
+        }
     }
 
-    try output.writer.writeAll("\n\nDO NOT:\n- ");
-    try output.writer.writeAll(baseDoNotLine(request.base_role));
+    if (request.do_nots.len > 0) {
+        try output.writer.writeAll("\n\nDO NOT:");
 
-    if (request.references.len > 0) {
-        try output.writer.writeAll("\n- Do not copy unrelated backgrounds, lighting, pose, clothing, subjects, or layout from reference images unless explicitly requested.");
-    }
-
-    for (request.do_nots) |do_not| {
-        assert(do_not.len > 0);
-        try output.writer.writeAll("\n- ");
-        try output.writer.writeAll(do_not);
+        for (request.do_nots) |do_not| {
+            assert(do_not.len > 0);
+            try output.writer.writeAll("\n- ");
+            try output.writer.writeAll(do_not);
+        }
     }
 
     var list = output.toArrayList();
@@ -309,14 +307,14 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
 
 fn assertValidEditRequest(request: EditRequest) void {
     assert(request.prompt.len > 0);
-    assert(api.files.isCanonicalFileName(request.base.name));
+    assert(api.isCanonicalFileName(request.base.name));
     assert(request.references.len <= max_references);
 
     var character_count: usize = if (request.base_role == .character) 1 else 0;
     var object_count: usize = if (request.base_role == .object) 1 else 0;
 
     for (request.references) |reference| {
-        assert(api.files.isCanonicalFileName(reference.image.name));
+        assert(api.isCanonicalFileName(reference.image.name));
         assert(isValidLabel(reference.label));
         if (reference.role == .character) character_count += 1;
         if (reference.role == .object) object_count += 1;
@@ -351,22 +349,6 @@ fn referenceRoleAnchor(role: ReferenceRole) []const u8 {
         .background => "The next image is a background reference. Use it only for environment, setting, and background details requested by the edit task. Do not copy people, foreground subjects, or unrelated objects.",
         .texture => "The next image is a texture reference. Use it only for material feel, surface texture, pattern, and finish. Do not copy object shape, layout, lighting, or background.",
         .image => "The next image is a general visual reference. Use only the details explicitly requested by the edit task. Do not copy unrelated subjects, background, lighting, composition, or style.",
-    };
-}
-
-fn basePreserveLine(base_role: BaseRole) []const u8 {
-    return switch (base_role) {
-        .scene => "Preserve BASE_IMAGE composition, camera angle, framing, subject placement, lighting direction, and scene geometry unless explicitly changed.",
-        .character => "Preserve the visible person's identity, apparent age, face, hair, skin tone, body proportions, and recognizable presence unless explicitly changed.",
-        .object => "Preserve the visible object's/product's geometry, proportions, material, color, texture, markings, logo placement, and text placement unless explicitly changed.",
-    };
-}
-
-fn baseDoNotLine(base_role: BaseRole) []const u8 {
-    return switch (base_role) {
-        .scene => "Do not change BASE_IMAGE composition, camera angle, framing, or scene layout unless required by the edit.",
-        .character => "Do not change the BASE_IMAGE character identity unless the edit task explicitly requests it.",
-        .object => "Do not change the BASE_IMAGE object/product identity or distinctive details unless the edit task explicitly requests it.",
     };
 }
 
@@ -406,9 +388,42 @@ test "buildGenerateRequest builds edit request with base file data" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"mime_type\":\"image/jpeg\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_uri\":\"https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
+}
+
+test "buildGenerateRequest renders only explicit edit constraints" {
+    const gpa = std.testing.allocator;
+    const preserves = [_][]const u8{
+        "keep the character identity",
+        "keep the current crop",
+    };
+    const do_nots = [_][]const u8{
+        "do not change the lighting",
+    };
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+        .base_role = .character,
+        .preserves = &preserves,
+        .do_nots = &do_nots,
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "keep the character identity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "keep the current crop") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "do not change the lighting") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "Preserve the visible person's identity") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "Do not change the BASE_IMAGE character identity") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "Do not copy unrelated backgrounds") == null);
 }
 
 test "buildGenerateRequest interleaves labeled reference anchors and file parts" {
@@ -444,6 +459,9 @@ test "buildGenerateRequest interleaves labeled reference anchors and file parts"
     try std.testing.expect(object_anchor < object_file);
     try std.testing.expect(object_file < edit_task);
     try std.testing.expect(std.mem.indexOf(u8, request, "object/product reference") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "Do not copy unrelated backgrounds") == null);
 }
 
 test "buildGenerateRequest uses base character role language" {
@@ -459,7 +477,8 @@ test "buildGenerateRequest uses base character role language" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "primary character identity reference") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "Preserve the visible person's identity") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
 }
 
 test "buildCountTokensRequest wraps edit generate content request" {
@@ -508,55 +527,4 @@ test "buildFileUri derives Gemini File API URI" {
         "https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c",
         uri,
     );
-}
-
-test "live API edit request shape is valid" {
-    if (!build_options.live_api_tests) return error.SkipZigTest;
-
-    const gpa = std.testing.allocator;
-    var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
-    defer environ_map.deinit();
-    const api_key = try api.apiKeyFromMap(&environ_map);
-
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
-    };
-    defer api.traffic_log_options = .{};
-
-    var response = countGenerateContentRequestTokens(
-        gpa,
-        std.testing.io,
-        api_key,
-        .{
-            .prompt = live_prompt,
-            .base = .{
-                .name = live_base_name,
-                .mime = .jpeg,
-            },
-            .base_role = .character,
-        },
-    ) catch |err| {
-        std.debug.print("error: countTokens edit request failed: {s}\n", .{@errorName(err)});
-        return err;
-    };
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: countTokens edit request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return error.CountTokensRequestFailed;
-    }
-
-    const result = api.gen.decodeCountTokensResponse(gpa, response.body) catch |err| {
-        std.debug.print(
-            "error: failed to parse countTokens response: {s}\n{s}\n",
-            .{ @errorName(err), response.body },
-        );
-        return err;
-    };
-
-    try std.testing.expect(result.total_tokens > 0);
 }

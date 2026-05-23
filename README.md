@@ -96,6 +96,9 @@ Useful edit flags:
 --do-not TEXT
 ```
 
+Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops.
+Omitting these flags renders no extra preserve or do-not section.
+
 List uploaded file metadata:
 
 ```sh
@@ -153,4 +156,7 @@ zig build test-live-api-files-delete
 
 `generateContent` is billable, so the request-shape live tests for `gen` and
 `edit` use `countTokens` as a lower-cost validation endpoint instead of
-generating content.
+generating content. The edit request-shape live test uploads
+`sample_images/good_night.jpeg` through the Files API, validates the edit
+request with the uploaded `files/...` name, and deletes the uploaded file after
+validation.

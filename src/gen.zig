@@ -7,20 +7,6 @@ const build_options = @import("build_options");
 
 const live_prompt = "My fair lady";
 
-pub const ResponseModality = enum {
-    image,
-
-    pub fn apiName(modality: ResponseModality) []const u8 {
-        return switch (modality) {
-            .image => "IMAGE",
-        };
-    }
-
-    pub fn jsonStringify(modality: ResponseModality, writer: anytype) !void {
-        try writer.write(modality.apiName());
-    }
-};
-
 pub const OutputMime = enum {
     png,
     jpeg,
@@ -114,7 +100,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
         parts: []const TextPart,
     };
     const GenerationConfig = struct {
-        responseModalities: []const ResponseModality,
+        responseModalities: []const api.ResponseModality,
     };
     const GenerateContentRequest = struct {
         contents: []const Content,
@@ -123,7 +109,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
 
     const parts = [_]TextPart{.{ .text = prompt }};
     const contents = [_]Content{.{ .parts = &parts }};
-    const modalities = [_]ResponseModality{.image};
+    const modalities = [_]api.ResponseModality{.image};
     const request = GenerateContentRequest{
         .contents = &contents,
         .generationConfig = .{
