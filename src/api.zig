@@ -42,6 +42,74 @@ pub const ResponseModality = enum {
     }
 };
 
+pub const HarmCategory = enum {
+    harassment,
+    hate_speech,
+    sexually_explicit,
+    dangerous_content,
+
+    pub fn apiName(category: HarmCategory) []const u8 {
+        return switch (category) {
+            .harassment => "HARM_CATEGORY_HARASSMENT",
+            .hate_speech => "HARM_CATEGORY_HATE_SPEECH",
+            .sexually_explicit => "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            .dangerous_content => "HARM_CATEGORY_DANGEROUS_CONTENT",
+        };
+    }
+
+    pub fn jsonStringify(category: HarmCategory, writer: anytype) !void {
+        try writer.write(category.apiName());
+    }
+};
+
+pub const HarmBlockThreshold = enum {
+    block_low_and_above,
+    block_medium_and_above,
+    block_only_high,
+    block_none,
+    off,
+    harm_block_threshold_unspecified,
+
+    pub fn apiName(threshold: HarmBlockThreshold) []const u8 {
+        return switch (threshold) {
+            .block_low_and_above => "BLOCK_LOW_AND_ABOVE",
+            .block_medium_and_above => "BLOCK_MEDIUM_AND_ABOVE",
+            .block_only_high => "BLOCK_ONLY_HIGH",
+            .block_none => "BLOCK_NONE",
+            .off => "OFF",
+            .harm_block_threshold_unspecified => "HARM_BLOCK_THRESHOLD_UNSPECIFIED",
+        };
+    }
+
+    pub fn jsonStringify(threshold: HarmBlockThreshold, writer: anytype) !void {
+        try writer.write(threshold.apiName());
+    }
+};
+
+pub const SafetySetting = struct {
+    category: HarmCategory,
+    threshold: HarmBlockThreshold,
+};
+
+pub const default_safety_settings = [_]SafetySetting{
+    .{
+        .category = .harassment,
+        .threshold = .block_none,
+    },
+    .{
+        .category = .hate_speech,
+        .threshold = .block_none,
+    },
+    .{
+        .category = .sexually_explicit,
+        .threshold = .block_none,
+    },
+    .{
+        .category = .dangerous_content,
+        .threshold = .block_none,
+    },
+};
+
 pub const CountTokensResult = struct {
     total_tokens: u64,
     cached_content_token_count: ?u64 = null,
@@ -157,6 +225,30 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
     defer parsed.deinit();
 }
 
+test "default safety settings serialize all supported harm categories as block none" {
+    const gpa = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(default_safety_settings, .{}, &output.writer);
+    const json = output.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_HARASSMENT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_HATE_SPEECH\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_SEXUALLY_EXPLICIT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_DANGEROUS_CONTENT\"") != null);
+    try std.testing.expectEqual(@as(usize, 4), countOccurrences(json, "\"threshold\":\"BLOCK_NONE\""));
+}
+
+test "HarmBlockThreshold serializes all API threshold names" {
+    try expectHarmBlockThresholdJson(.block_low_and_above, "\"BLOCK_LOW_AND_ABOVE\"");
+    try expectHarmBlockThresholdJson(.block_medium_and_above, "\"BLOCK_MEDIUM_AND_ABOVE\"");
+    try expectHarmBlockThresholdJson(.block_only_high, "\"BLOCK_ONLY_HIGH\"");
+    try expectHarmBlockThresholdJson(.block_none, "\"BLOCK_NONE\"");
+    try expectHarmBlockThresholdJson(.off, "\"OFF\"");
+    try expectHarmBlockThresholdJson(.harm_block_threshold_unspecified, "\"HARM_BLOCK_THRESHOLD_UNSPECIFIED\"");
+}
+
 test "decodeCountTokensResponse decodes total tokens" {
     const result = try decodeCountTokensResponse(
         std.testing.allocator,
@@ -182,6 +274,25 @@ test "decodeCountTokensResponse rejects missing total token count" {
         error.MissingTotalTokens,
         decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
     );
+}
+
+fn expectHarmBlockThresholdJson(threshold: HarmBlockThreshold, expected_json: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(threshold, .{}, &output.writer);
+    try std.testing.expectEqualStrings(expected_json, output.written());
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, index, needle)) |match_index| {
+        count += 1;
+        index = match_index + needle.len;
+    }
+    return count;
 }
 
 test "command modules import only shared api module" {

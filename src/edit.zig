@@ -112,6 +112,7 @@ const GenerateConfig = struct {
 const GenerateContentRequest = struct {
     contents: []const GenerateContent,
     generationConfig: GenerateConfig,
+    safetySettings: []const api.SafetySetting,
 };
 
 pub fn generateContent(
@@ -178,6 +179,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         .generationConfig = .{
             .responseModalities = &modalities,
         },
+        .safetySettings = &api.default_safety_settings,
     };
 
     var output: std.Io.Writer.Allocating = .init(gpa);
@@ -361,11 +363,20 @@ test "buildGenerateRequest builds edit request with base file data" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"mime_type\":\"image/jpeg\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_uri\":\"https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try expectDefaultSafetySettings(request);
     try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
+}
+
+fn expectDefaultSafetySettings(request_json: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"safetySettings\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
 }
 
 test "buildGenerateRequest renders only explicit edit constraints" {

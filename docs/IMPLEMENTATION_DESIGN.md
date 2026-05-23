@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -21,12 +21,12 @@ nbimg files delete [--print-request] [--print-response] --name files/ID
 The current build stays stdlib-only and keeps the module layout flat. The
 binary accepts one prompt through `--prompt` or stdin fallback, sends fixed
 generation or edit requests to the Gemini API, decodes image or text parts from
-the response, and writes each generated part to the current working directory.
-It can also upload image files to Gemini's Files API, list or get uploaded file
-metadata, and delete uploaded files.
+the response, and writes each generated part to the selected output directory
+or current working directory. It can also upload image files to Gemini's Files
+API, list or get uploaded file metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
-directory selection, local image inputs for `edit`, or response snapshots for
+file naming controls, local image inputs for `edit`, or response snapshots for
 Files API commands.
 
 ## Module Layout
@@ -95,11 +95,11 @@ uploaded/listed/fetched File metadata.
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
-modality values, and logging. `gen`, `edit`, and `files` reuse its JSON
-GET/POST/DELETE helpers, lower-level request-with-body helper for resumable
-uploads, common `HttpResponse` ownership type, `Model` constants, and global
-traffic logging switch. Headers are not exposed through the logging path, so
-API keys stay out of diagnostic output.
+modality values, static safety settings, and logging. `gen`, `edit`, and
+`files` reuse its JSON GET/POST/DELETE helpers, lower-level request-with-body
+helper for resumable uploads, common `HttpResponse` ownership type, `Model`
+constants, and global traffic logging switch. Headers are not exposed through
+the logging path, so API keys stay out of diagnostic output.
 
 `build.zig` defines separate `nbimg` modules and executables for installed and
 development artifacts. The installed `zig-out/bin/nbimg` executable is built in
@@ -134,8 +134,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -198,6 +198,9 @@ Argument rules are intentionally narrow:
 - `--print-request` and `--print-response` are optional boolean flags on all
   commands. Their default value is `false`.
 - `--write-response` is supported by `gen` and `edit`; file commands reject it.
+- `--out-dir DIR` is supported by `gen` and `edit`; file commands reject it.
+  The directory path may be relative or absolute, must be non-empty, must be
+  specified at most once, and must already exist.
 - Flags may appear in any order.
 - Unknown flags and positional prompt arguments are rejected.
 
@@ -215,8 +218,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--print-response] [--write-response] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
        nbimg files list [--print-request] [--print-response]
        nbimg files get [--print-request] [--print-response] --name files/ID
@@ -268,13 +271,25 @@ has this shape:
   ],
   "generationConfig": {
     "responseModalities": ["IMAGE"]
-  }
+  },
+  "safetySettings": [
+    { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+  ]
 }
 ```
 
 The prompt is asserted to be non-empty before request construction. This is a
 programmer boundary check; user-facing validation happens earlier in `cli.run`
 and `cli.parseArgs`.
+
+`api.default_safety_settings` supplies the static top-level `safetySettings`
+array for all `generateContent` requests. It configures harassment, hate
+speech, sexually explicit, and dangerous content categories with `BLOCK_NONE`.
+There are no CLI flags, environment variables, or command options to change
+these settings.
 
 `edit.buildGenerateRequest` builds image-editing requests with the same
 `generateContent` endpoint and output config, but the user content contains an
@@ -303,7 +318,13 @@ role text followed by a `file_data` part. For example:
   ],
   "generationConfig": {
     "responseModalities": ["IMAGE"]
-  }
+  },
+  "safetySettings": [
+    { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+    { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+  ]
 }
 ```
 
@@ -521,7 +542,13 @@ to add the model field that Google requires inside nested
     ],
     "generationConfig": {
       "responseModalities": ["IMAGE"]
-    }
+    },
+    "safetySettings": [
+      { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+      { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+      { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+      { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+    ]
   }
 }
 ```
@@ -580,8 +607,10 @@ invalid JSON, or invalid base64 are surfaced as parse failures by the CLI.
 
 ## Output Naming And Writes
 
-Generated output is written to the current working directory. File names are
-derived from the root response ID and response position:
+Generated output is written to the current working directory by default, or to
+the directory supplied with `--out-dir DIR`. `--out-dir` accepts relative and
+absolute paths, and the directory must already exist. File names are derived
+from the root response ID and response position:
 
 ```text
 {responseId}-{candidate_index}-{part_index}.{extension}
@@ -598,7 +627,7 @@ Writes are exclusive. If a target file already exists, the write fails instead
 of overwriting it.
 
 When `--write-response` is set, the raw successful API response body is also
-written before generated-file decoding to:
+written before generated-file decoding to the same output directory:
 
 ```text
 {responseId}.json

@@ -20,6 +20,7 @@ const live_edit_prompt = "change visual style to Broadway musical";
 pub const GenCommand = struct {
     prompt: []const u8,
     write_response: bool = false,
+    out_dir: ?[]const u8 = null,
 };
 
 pub const max_edit_constraints = 16;
@@ -27,6 +28,7 @@ pub const max_edit_constraints = 16;
 pub const EditCommand = struct {
     prompt: []const u8,
     write_response: bool = false,
+    out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.BaseRole = .scene,
     references: [api_edit.max_references]api_edit.Reference = undefined,
@@ -123,6 +125,10 @@ pub const ParseError = error{
     UnknownFlag,
     UnexpectedArgument,
     WriteResponseUnsupported,
+    MissingOutDir,
+    EmptyOutDir,
+    DuplicateOutDir,
+    OutDirUnsupported,
 };
 
 const max_display_name_codepoints = 512;
@@ -242,7 +248,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         };
         defer gpa.free(response_id);
 
-        writeResponseFile(init.io, response_id, response.body) catch |err| {
+        writeResponseFile(init.io, command.out_dir, response_id, response.body) catch |err| {
             std.debug.print("error: failed to write API response: {s}\n", .{@errorName(err)});
             return exit_failure;
         };
@@ -254,7 +260,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
     };
     defer files.deinit(gpa);
 
-    writeGeneratedFiles(init.io, files) catch |err| {
+    writeGeneratedFiles(init.io, command.out_dir, files) catch |err| {
         std.debug.print("error: failed to write generated files: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -293,7 +299,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         };
         defer gpa.free(response_id);
 
-        writeResponseFile(init.io, response_id, response.body) catch |err| {
+        writeResponseFile(init.io, command.out_dir, response_id, response.body) catch |err| {
             std.debug.print("error: failed to write API response: {s}\n", .{@errorName(err)});
             return exit_failure;
         };
@@ -305,7 +311,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     };
     defer files.deinit(gpa);
 
-    writeGeneratedFiles(init.io, files) catch |err| {
+    writeGeneratedFiles(init.io, command.out_dir, files) catch |err| {
         std.debug.print("error: failed to write generated files: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -595,6 +601,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
 fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!GenCommand {
     var prompt: ?[]const u8 = null;
     var write_response = false;
+    var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
@@ -604,6 +611,12 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
 
         if (std.mem.eql(u8, arg, "--write-response")) {
             write_response = true;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+            if (out_dir != null) return error.DuplicateOutDir;
+
+            const value = try command_args.nextValue(error.MissingOutDir);
+            if (value.len == 0) return error.EmptyOutDir;
+            out_dir = value;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -618,12 +631,14 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .write_response = write_response,
+        .out_dir = out_dir,
     };
 }
 
 fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!EditCommand {
     var prompt: ?[]const u8 = null;
     var write_response = false;
+    var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.BaseRole = .scene;
     var base_role_seen = false;
@@ -642,6 +657,12 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
 
         if (std.mem.eql(u8, arg, "--write-response")) {
             write_response = true;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+            if (out_dir != null) return error.DuplicateOutDir;
+
+            const value = try command_args.nextValue(error.MissingOutDir);
+            if (value.len == 0) return error.EmptyOutDir;
+            out_dir = value;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -690,6 +711,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     return .{
         .prompt = parsed_prompt,
         .write_response = write_response,
+        .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
         .references = references,
@@ -984,6 +1006,8 @@ fn parseFilesUploadCommand(command_args: *CommandArgs) ParseError!FilesUploadCom
 
         if (std.mem.eql(u8, arg, "--write-response")) {
             return error.WriteResponseUnsupported;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+            return error.OutDirUnsupported;
         } else if (std.mem.eql(u8, arg, "--path")) {
             if (path != null) return error.DuplicatePath;
 
@@ -1027,6 +1051,8 @@ fn parseFilesListCommand(command_args: *CommandArgs) ParseError!FilesListCommand
 
         if (std.mem.eql(u8, arg, "--write-response")) {
             return error.WriteResponseUnsupported;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+            return error.OutDirUnsupported;
         } else {
             return error.UnknownFlag;
         }
@@ -1054,6 +1080,8 @@ fn parseRequiredFileName(command_args: *CommandArgs) ParseError![]const u8 {
 
         if (std.mem.eql(u8, arg, "--write-response")) {
             return error.WriteResponseUnsupported;
+        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+            return error.OutDirUnsupported;
         } else if (std.mem.eql(u8, arg, "--name")) {
             if (name != null) return error.DuplicateName;
 
@@ -1081,31 +1109,117 @@ fn parseTrafficLogFlag(arg: []const u8, traffic_log_options: *api.TrafficLogOpti
     return false;
 }
 
-fn writeResponseFile(io: std.Io, response_id: []const u8, response_body: []const u8) !void {
+const OutputDir = struct {
+    dir: std.Io.Dir,
+    should_close: bool = false,
+
+    fn close(output_dir: OutputDir, io: std.Io) void {
+        if (output_dir.should_close) output_dir.dir.close(io);
+    }
+};
+
+fn openOutputDir(io: std.Io, out_dir: ?[]const u8) !OutputDir {
+    if (out_dir) |path| {
+        assert(path.len > 0);
+        const dir = if (std.fs.path.isAbsolute(path))
+            try std.Io.Dir.openDirAbsolute(io, path, .{})
+        else
+            try std.Io.Dir.cwd().openDir(io, path, .{});
+
+        return .{
+            .dir = dir,
+            .should_close = true,
+        };
+    }
+
+    return .{
+        .dir = std.Io.Dir.cwd(),
+    };
+}
+
+fn writeResponseFile(io: std.Io, out_dir: ?[]const u8, response_id: []const u8, response_body: []const u8) !void {
     var name_buffer: [128]u8 = undefined;
     const name = try api_gen.responseFileName(&name_buffer, response_id);
 
-    const cwd = std.Io.Dir.cwd();
-    try cwd.writeFile(io, .{
+    const output_dir = try openOutputDir(io, out_dir);
+    defer output_dir.close(io);
+
+    try output_dir.dir.writeFile(io, .{
         .sub_path = name,
         .data = response_body,
         .flags = .{ .exclusive = true },
     });
 }
 
-fn writeGeneratedFiles(io: std.Io, files: api_gen.GeneratedFiles) !void {
+fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api_gen.GeneratedFiles) !void {
     assert(files.items.len > 0);
 
-    const cwd = std.Io.Dir.cwd();
+    const output_dir = try openOutputDir(io, out_dir);
+    defer output_dir.close(io);
+
     for (files.items) |file| {
         var name_buffer: [128]u8 = undefined;
         const name = try api_gen.generatedFileName(&name_buffer, files.response_id, file);
-        try cwd.writeFile(io, .{
+        try output_dir.dir.writeFile(io, .{
             .sub_path = name,
             .data = file.bytes,
             .flags = .{ .exclusive = true },
         });
     }
+}
+
+test "writeGeneratedFiles writes generated files under relative output directory" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
+    defer gpa.free(out_dir);
+
+    var items = [_]api_gen.GeneratedFile{
+        .{
+            .candidate_index = 0,
+            .part_index = 0,
+            .mime = .text,
+            .bytes = @constCast("hello"),
+        },
+    };
+    const files = api_gen.GeneratedFiles{
+        .response_id = @constCast("test-response"),
+        .items = &items,
+    };
+
+    try writeGeneratedFiles(std.testing.io, out_dir, files);
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "test-response-0-0.txt",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings("hello", written);
+}
+
+test "writeResponseFile writes response body under absolute output directory" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var absolute_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const absolute_len = try tmp_dir.dir.realPath(std.testing.io, &absolute_buffer);
+    const out_dir = absolute_buffer[0..absolute_len];
+
+    try writeResponseFile(std.testing.io, out_dir, "test-response", "{}");
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "test-response.json",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings("{}", written);
 }
 
 fn writeStdoutLine(io: std.Io, line: []const u8) !void {
@@ -1238,13 +1352,17 @@ fn printUsageError(err: ParseError) void {
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.WriteResponseUnsupported => std.debug.print("error: --write-response is only supported for gen and edit\n", .{}),
+        error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
+        error.EmptyOutDir => std.debug.print("error: output directory must not be empty\n", .{}),
+        error.DuplicateOutDir => std.debug.print("error: output directory specified more than once\n", .{}),
+        error.OutDirUnsupported => std.debug.print("error: --out-dir is only supported for gen and edit\n", .{}),
     }
     std.debug.print("{s}", .{usageText()});
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--print-response] [--write-response] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--print-response] [--write-response] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request] [--print-response]\n" ++
         "       nbimg files get [--print-request] [--print-response] --name files/ID\n" ++
@@ -1261,6 +1379,7 @@ fn usageText() []const u8 {
 test "usageText documents edit reference roles and defaults" {
     const usage = usageText();
     const expected = [_][]const u8{
+        "--out-dir DIR",
         "--base-role defaults to scene",
         "--ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role",
         "character|object|style|pose|composition|background|texture|image",
@@ -1287,6 +1406,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
     try std.testing.expect(!gen.write_response);
+    try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
 test "parseArgs accepts stdin fallback prompt for gen" {
@@ -1330,6 +1450,15 @@ test "parseArgs accepts write response flag" {
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
     try std.testing.expect(gen.write_response);
+    try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
+}
+
+test "parseArgs accepts gen output directory" {
+    const parsed_command = try parseArgs(&.{ "nbimg", "gen", "--out-dir", "outputs", "--prompt", "My fair lady" });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("My fair lady", gen.prompt);
+    try std.testing.expectEqualStrings("outputs", gen.out_dir.?);
 }
 
 test "parseArgs accepts print flags in any order" {
@@ -1347,6 +1476,22 @@ test "parseArgs accepts print flags in any order" {
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expect(gen.write_response);
+}
+
+test "parseArgs rejects invalid gen output directory arguments" {
+    try std.testing.expectError(error.MissingOutDir, parseArgs(&.{ "nbimg", "gen", "--out-dir" }));
+    try std.testing.expectError(error.MissingOutDir, parseArgs(&.{ "nbimg", "gen", "--out-dir", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyOutDir, parseArgs(&.{ "nbimg", "gen", "--out-dir", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateOutDir, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--out-dir",
+        "one",
+        "--out-dir",
+        "two",
+        "--prompt",
+        "My fair lady",
+    }));
 }
 
 test "parseArgs accepts minimal edit command" {
@@ -1368,6 +1513,55 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
     try std.testing.expect(!edit.write_response);
+    try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
+}
+
+test "parseArgs accepts edit output directory" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--out-dir",
+        "outputs",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("outputs", edit.out_dir.?);
+}
+
+test "parseArgs rejects invalid edit output directory arguments" {
+    try std.testing.expectError(error.MissingOutDir, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--out-dir",
+    }));
+    try std.testing.expectError(error.EmptyOutDir, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--out-dir",
+        "",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.DuplicateOutDir, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--out-dir",
+        "one",
+        "--out-dir",
+        "two",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
 }
 
 test "parseArgs accepts stdin fallback prompt for edit" {
@@ -1407,6 +1601,7 @@ test "parseArgs accepts edit base role constraints and traffic flags" {
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expect(edit.write_response);
+    try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
     try std.testing.expectEqual(api_edit.BaseRole.character, edit.base_role);
     try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
     try std.testing.expectEqualStrings("preserve her facial identity", edit.preserves[0]);
@@ -2245,12 +2440,34 @@ test "parseArgs rejects write response for files upload" {
     }));
 }
 
+test "parseArgs rejects output directory for files upload" {
+    try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--out-dir",
+        "outputs",
+    }));
+}
+
 test "parseArgs rejects write response for files list" {
     try std.testing.expectError(error.WriteResponseUnsupported, parseArgs(&.{
         "nbimg",
         "files",
         "list",
         "--write-response",
+    }));
+}
+
+test "parseArgs rejects output directory for files list" {
+    try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--out-dir",
+        "outputs",
     }));
 }
 
@@ -2318,6 +2535,18 @@ test "parseArgs rejects write response for files get" {
         "--name",
         "files/abc123",
         "--write-response",
+    }));
+}
+
+test "parseArgs rejects output directory for files get" {
+    try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--out-dir",
+        "outputs",
     }));
 }
 
@@ -2397,6 +2626,18 @@ test "parseArgs rejects write response for files delete" {
         "--name",
         "files/abc123",
         "--write-response",
+    }));
+}
+
+test "parseArgs rejects output directory for files delete" {
+    try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--out-dir",
+        "outputs",
     }));
 }
 

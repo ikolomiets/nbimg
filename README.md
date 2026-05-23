@@ -79,6 +79,9 @@ printf '%s\n' "change visual style to Broadway musical" | zig-out/bin/nbimg edit
 If `gen` or `edit` omits `--prompt`, `nbimg` reads the prompt from stdin.
 Stdin prompts are limited to `16 KiB`.
 
+Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
+existing relative or absolute directory instead of the current directory.
+
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
 Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`. The
 command derives the Gemini File API URI from the `files/...` name and does not
@@ -94,6 +97,7 @@ Useful edit flags:
 --ref ROLE[:LABEL]=files/ID,MIME
 --preserve TEXT
 --do-not TEXT
+--out-dir DIR
 ```
 
 Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops.
@@ -130,7 +134,8 @@ zig-out/bin/nbimg gen \
 ```
 
 `gen` and `edit` also support `--write-response` to save the raw Gemini
-response JSON next to generated outputs.
+response JSON next to generated outputs, using the same `--out-dir` destination
+when one is provided.
 
 Traffic logs go to stderr. Command results, such as generated filenames, Files
 API metadata JSON, or delete `OK`, go to stdout.

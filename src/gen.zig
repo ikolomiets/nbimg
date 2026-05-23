@@ -103,6 +103,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
     const GenerateContentRequest = struct {
         contents: []const Content,
         generationConfig: GenerationConfig,
+        safetySettings: []const api.SafetySetting,
     };
 
     const parts = [_]TextPart{.{ .text = prompt }};
@@ -113,6 +114,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
         .generationConfig = .{
             .responseModalities = &modalities,
         },
+        .safetySettings = &api.default_safety_settings,
     };
 
     var output: std.Io.Writer.Allocating = .init(gpa);
@@ -272,13 +274,16 @@ pub fn responseFileName(buffer: []u8, response_id: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{s}.json", .{response_id});
 }
 
+const expected_safety_settings_json =
+    "\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}]";
+
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady");
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
         request,
     );
 }
@@ -289,7 +294,7 @@ test "buildCountTokensRequest wraps fixed generate content request" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}}}",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}}",
         request,
     );
 
