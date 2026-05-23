@@ -136,21 +136,6 @@ pub fn buildCountTokensRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8
     return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
-pub fn decodeResponseId(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
-    const Response = struct {
-        responseId: ?[]const u8 = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const response_id = parsed.value.responseId orelse return error.MissingResponseId;
-    if (response_id.len == 0) return error.MissingResponseId;
-    return gpa.dupe(u8, response_id);
-}
-
 pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !GeneratedFiles {
     const Response = struct {
         candidates: []const Candidate = &.{},
@@ -270,10 +255,6 @@ pub fn generatedFileName(buffer: []u8, response_id: []const u8, file: GeneratedF
     );
 }
 
-pub fn responseFileName(buffer: []u8, response_id: []const u8) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "{s}.json", .{response_id});
-}
-
 const expected_safety_settings_json =
     "\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}]";
 
@@ -344,37 +325,6 @@ test "live API generateContent request shape is valid" {
     };
 
     try std.testing.expect(result.total_tokens > 0);
-}
-
-test "decodeResponseId returns owned response id" {
-    const gpa = std.testing.allocator;
-    const response_id = try decodeResponseId(
-        gpa,
-        "{\"responseId\":\"PMMIapvKNtLj_uMPq8a8oQs\",\"unknown\":\"ignored\"}",
-    );
-    defer gpa.free(response_id);
-
-    try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs", response_id);
-}
-
-test "decodeResponseId rejects missing response id" {
-    try std.testing.expectError(
-        error.MissingResponseId,
-        decodeResponseId(std.testing.allocator, "{\"candidates\":[]}"),
-    );
-}
-
-test "decodeResponseId rejects empty response id" {
-    try std.testing.expectError(
-        error.MissingResponseId,
-        decodeResponseId(std.testing.allocator, "{\"responseId\":\"\"}"),
-    );
-}
-
-test "responseFileName uses response id template" {
-    var buffer: [64]u8 = undefined;
-    const name = try responseFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs");
-    try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs.json", name);
 }
 
 test "decodeGeneratedFiles decodes image and text parts" {

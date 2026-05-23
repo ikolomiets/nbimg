@@ -133,10 +133,6 @@ zig-out/bin/nbimg gen \
   --prompt "Create a photo of my fair lady"
 ```
 
-`gen` and `edit` also support `--write-response` to save the raw Gemini
-response JSON next to generated outputs, using the same `--out-dir` destination
-when one is provided.
-
 Traffic logs go to stderr. Command results, such as generated filenames, Files
 API metadata JSON, or delete `OK`, go to stdout.
 

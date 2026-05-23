@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -26,8 +26,7 @@ or current working directory. It can also upload image files to Gemini's Files
 API, list or get uploaded file metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
-file naming controls, local image inputs for `edit`, or response snapshots for
-Files API commands.
+file naming controls, local image inputs for `edit`, or response snapshots.
 
 ## Module Layout
 
@@ -66,7 +65,7 @@ Shared controls such as `nbimg.api.traffic_log_options` remain directly under
 ### API Module Boundaries
 
 The CLI module owns user interaction and filesystem effects: reading upload
-files, writing generated files and response snapshots, printing uploaded file
+files, writing generated files, printing uploaded file
 IDs, and translating parse or API errors into process exit codes. API modules
 own only request/response wire shapes and HTTP transport.
 
@@ -134,8 +133,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
 nbimg files list [--print-request] [--print-response]
 nbimg files get [--print-request] [--print-response] --name files/ID
@@ -197,7 +196,6 @@ Argument rules are intentionally narrow:
   resource names; bare IDs are rejected.
 - `--print-request` and `--print-response` are optional boolean flags on all
   commands. Their default value is `false`.
-- `--write-response` is supported by `gen` and `edit`; file commands reject it.
 - `--out-dir DIR` is supported by `gen` and `edit`; file commands reject it.
   The directory path may be relative or absolute, must be non-empty, must be
   specified at most once, and must already exist.
@@ -210,16 +208,15 @@ Argument rules are intentionally narrow:
 - `1` for operational failure, such as an HTTP failure or file write failure.
 - `2` for usage and configuration errors, such as bad arguments or a missing
   API key.
-- `3` for successful HTTP responses whose JSON body cannot be parsed for the
-  requested response handling, such as response snapshot naming or generated
-  files.
+- `3` for successful HTTP responses whose JSON body cannot be parsed for
+  generated files.
 
 Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
        nbimg files list [--print-request] [--print-response]
        nbimg files get [--print-request] [--print-response] --name files/ID
@@ -601,10 +598,6 @@ are found, decoding fails with `error.NoGeneratedParts`. Unsupported part
 shapes, missing MIME types, unsupported MIME types, missing inline data,
 invalid JSON, or invalid base64 are surfaced as parse failures by the CLI.
 
-`gen.decodeResponseId` parses and returns an owned copy of only the root
-`responseId`. The CLI uses it for response snapshot naming when
-`--write-response` is enabled, before generated-file decoding runs.
-
 ## Output Naming And Writes
 
 Generated output is written to the current working directory by default, or to
@@ -625,22 +618,6 @@ PMMIapvKNtLj_uMPq8a8oQs-0-1.txt
 
 Writes are exclusive. If a target file already exists, the write fails instead
 of overwriting it.
-
-When `--write-response` is set, the raw successful API response body is also
-written before generated-file decoding to the same output directory:
-
-```text
-{responseId}.json
-```
-
-For example:
-
-```text
-PMMIapvKNtLj_uMPq8a8oQs.json
-```
-
-This file contains the original JSON response, including base64 payloads. It is
-not sanitized like `--print-response`. The write is also exclusive.
 
 `cli.writeGeneratedFiles` asserts that at least one decoded file is present.
 This assertion is paired with `gen.decodeGeneratedFiles`, which rejects
@@ -777,7 +754,7 @@ The following areas are intentionally not implemented yet:
 - Image editing and multimodal input parts.
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
-- Response snapshots for file commands.
+- Response snapshots.
 - Timeout and retry policy.
 - Structured verbose output.
 - Response fixture tests for full API payloads.

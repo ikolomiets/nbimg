@@ -19,7 +19,6 @@ const live_edit_prompt = "change visual style to Broadway musical";
 
 pub const GenCommand = struct {
     prompt: []const u8,
-    write_response: bool = false,
     out_dir: ?[]const u8 = null,
 };
 
@@ -27,7 +26,6 @@ pub const max_edit_constraints = 16;
 
 pub const EditCommand = struct {
     prompt: []const u8,
-    write_response: bool = false,
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.BaseRole = .scene,
@@ -124,7 +122,6 @@ pub const ParseError = error{
     DisplayNameTooLong,
     UnknownFlag,
     UnexpectedArgument,
-    WriteResponseUnsupported,
     MissingOutDir,
     EmptyOutDir,
     DuplicateOutDir,
@@ -241,19 +238,6 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         return exit_failure;
     }
 
-    if (command.write_response) {
-        const response_id = api_gen.decodeResponseId(gpa, response.body) catch |err| {
-            std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-            return exit_response_parse;
-        };
-        defer gpa.free(response_id);
-
-        writeResponseFile(init.io, command.out_dir, response_id, response.body) catch |err| {
-            std.debug.print("error: failed to write API response: {s}\n", .{@errorName(err)});
-            return exit_failure;
-        };
-    }
-
     var files = api_gen.decodeGeneratedFiles(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
         return exit_response_parse;
@@ -290,19 +274,6 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
             .{ @intFromEnum(response.status), response.body },
         );
         return exit_failure;
-    }
-
-    if (command.write_response) {
-        const response_id = api_gen.decodeResponseId(gpa, response.body) catch |err| {
-            std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-            return exit_response_parse;
-        };
-        defer gpa.free(response_id);
-
-        writeResponseFile(init.io, command.out_dir, response_id, response.body) catch |err| {
-            std.debug.print("error: failed to write API response: {s}\n", .{@errorName(err)});
-            return exit_failure;
-        };
     }
 
     var files = api_gen.decodeGeneratedFiles(gpa, response.body) catch |err| {
@@ -600,7 +571,6 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
 
 fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!GenCommand {
     var prompt: ?[]const u8 = null;
-    var write_response = false;
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -609,9 +579,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             return error.UnexpectedArgument;
         }
 
-        if (std.mem.eql(u8, arg, "--write-response")) {
-            write_response = true;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--out-dir")) {
             if (out_dir != null) return error.DuplicateOutDir;
 
             const value = try command_args.nextValue(error.MissingOutDir);
@@ -630,14 +598,12 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
 
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
-        .write_response = write_response,
         .out_dir = out_dir,
     };
 }
 
 fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!EditCommand {
     var prompt: ?[]const u8 = null;
-    var write_response = false;
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.BaseRole = .scene;
@@ -655,9 +621,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             return error.UnexpectedArgument;
         }
 
-        if (std.mem.eql(u8, arg, "--write-response")) {
-            write_response = true;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--out-dir")) {
             if (out_dir != null) return error.DuplicateOutDir;
 
             const value = try command_args.nextValue(error.MissingOutDir);
@@ -710,7 +674,6 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
 
     return .{
         .prompt = parsed_prompt,
-        .write_response = write_response,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -1004,9 +967,7 @@ fn parseFilesUploadCommand(command_args: *CommandArgs) ParseError!FilesUploadCom
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
-        if (std.mem.eql(u8, arg, "--write-response")) {
-            return error.WriteResponseUnsupported;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--out-dir")) {
             return error.OutDirUnsupported;
         } else if (std.mem.eql(u8, arg, "--path")) {
             if (path != null) return error.DuplicatePath;
@@ -1049,9 +1010,7 @@ fn parseFilesListCommand(command_args: *CommandArgs) ParseError!FilesListCommand
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
-        if (std.mem.eql(u8, arg, "--write-response")) {
-            return error.WriteResponseUnsupported;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--out-dir")) {
             return error.OutDirUnsupported;
         } else {
             return error.UnknownFlag;
@@ -1078,9 +1037,7 @@ fn parseRequiredFileName(command_args: *CommandArgs) ParseError![]const u8 {
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
-        if (std.mem.eql(u8, arg, "--write-response")) {
-            return error.WriteResponseUnsupported;
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
+        if (std.mem.eql(u8, arg, "--out-dir")) {
             return error.OutDirUnsupported;
         } else if (std.mem.eql(u8, arg, "--name")) {
             if (name != null) return error.DuplicateName;
@@ -1137,20 +1094,6 @@ fn openOutputDir(io: std.Io, out_dir: ?[]const u8) !OutputDir {
     };
 }
 
-fn writeResponseFile(io: std.Io, out_dir: ?[]const u8, response_id: []const u8, response_body: []const u8) !void {
-    var name_buffer: [128]u8 = undefined;
-    const name = try api_gen.responseFileName(&name_buffer, response_id);
-
-    const output_dir = try openOutputDir(io, out_dir);
-    defer output_dir.close(io);
-
-    try output_dir.dir.writeFile(io, .{
-        .sub_path = name,
-        .data = response_body,
-        .flags = .{ .exclusive = true },
-    });
-}
-
 fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api_gen.GeneratedFiles) !void {
     assert(files.items.len > 0);
 
@@ -1199,27 +1142,6 @@ test "writeGeneratedFiles writes generated files under relative output directory
     );
     defer gpa.free(written);
     try std.testing.expectEqualStrings("hello", written);
-}
-
-test "writeResponseFile writes response body under absolute output directory" {
-    const gpa = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    var absolute_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const absolute_len = try tmp_dir.dir.realPath(std.testing.io, &absolute_buffer);
-    const out_dir = absolute_buffer[0..absolute_len];
-
-    try writeResponseFile(std.testing.io, out_dir, "test-response", "{}");
-
-    const written = try tmp_dir.dir.readFileAlloc(
-        std.testing.io,
-        "test-response.json",
-        gpa,
-        .limited(1024),
-    );
-    defer gpa.free(written);
-    try std.testing.expectEqualStrings("{}", written);
 }
 
 fn writeStdoutLine(io: std.Io, line: []const u8) !void {
@@ -1351,7 +1273,6 @@ fn printUsageError(err: ParseError) void {
         error.DisplayNameTooLong => std.debug.print("error: display name must be at most 512 Unicode code points\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
-        error.WriteResponseUnsupported => std.debug.print("error: --write-response is only supported for gen and edit\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
         error.EmptyOutDir => std.debug.print("error: output directory must not be empty\n", .{}),
         error.DuplicateOutDir => std.debug.print("error: output directory specified more than once\n", .{}),
@@ -1361,8 +1282,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--print-response] [--write-response] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--print-response] [--write-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request] [--print-response]\n" ++
         "       nbimg files get [--print-request] [--print-response] --name files/ID\n" ++
@@ -1405,7 +1326,6 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(!gen.write_response);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1413,7 +1333,6 @@ test "parseArgs accepts stdin fallback prompt for gen" {
     const parsed_command = try parseArgsWithPrompt(&.{ "nbimg", "gen" }, "My fair lady");
     const gen = expectGenCommand(parsed_command);
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
-    try std.testing.expect(!gen.write_response);
 }
 
 test "parseArgs explicit prompt takes precedence over stdin fallback" {
@@ -1431,7 +1350,6 @@ test "parseArgs accepts print request flag" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(!parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(!gen.write_response);
 }
 
 test "parseArgs accepts print response flag" {
@@ -1440,17 +1358,6 @@ test "parseArgs accepts print response flag" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(!gen.write_response);
-}
-
-test "parseArgs accepts write response flag" {
-    const parsed_command = try parseArgs(&.{ "nbimg", "gen", "--write-response", "--prompt", "My fair lady" });
-    const gen = expectGenCommand(parsed_command);
-    try std.testing.expectEqualStrings("My fair lady", gen.prompt);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(gen.write_response);
-    try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
 test "parseArgs accepts gen output directory" {
@@ -1466,7 +1373,6 @@ test "parseArgs accepts print flags in any order" {
         "nbimg",
         "gen",
         "--print-response",
-        "--write-response",
         "--prompt",
         "My fair lady",
         "--print-request",
@@ -1475,7 +1381,6 @@ test "parseArgs accepts print flags in any order" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(gen.write_response);
 }
 
 test "parseArgs rejects invalid gen output directory arguments" {
@@ -1512,7 +1417,6 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
-    try std.testing.expect(!edit.write_response);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1583,7 +1487,6 @@ test "parseArgs accepts edit base role constraints and traffic flags" {
         "nbimg",
         "edit",
         "--print-request",
-        "--write-response",
         "--base",
         "files/tjtj5me9i96c,image/jpeg",
         "--base-role",
@@ -1600,7 +1503,6 @@ test "parseArgs accepts edit base role constraints and traffic flags" {
 
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
-    try std.testing.expect(edit.write_response);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
     try std.testing.expectEqual(api_edit.BaseRole.character, edit.base_role);
     try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
@@ -2608,6 +2510,55 @@ test "parseArgs rejects unknown flag for files delete" {
         "files/abc123",
         "--format",
         "json",
+    }));
+}
+
+test "parseArgs rejects write response as unknown flag" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--write-response",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--write-response",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--write-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--write-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--write-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--write-response",
     }));
 }
 
