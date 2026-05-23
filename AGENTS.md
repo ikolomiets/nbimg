@@ -33,7 +33,7 @@ Prefer offline tests first, then use live API tests as targeted agentic feedback
 
 ## Commit & Pull Request Guidelines
 
-Follow the existing history with short imperative subjects such as `Add image edit command`. For non-trivial or cross-cutting changes, include a descriptive commit body that explains why the change exists, important behavior/API/docs changes, and verification run. Pull requests should describe the reason, affected files, and manual verification.
+Follow the existing history with short imperative subjects such as `Add image edit command`. For non-trivial or cross-cutting changes, include a descriptive commit body that explains why the change exists and important behavior/API/docs changes. Pull requests should describe the reason and affected files.
 
 ## Agent-Specific Instructions
 
