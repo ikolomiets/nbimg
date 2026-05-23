@@ -7,6 +7,9 @@ const build_options = @import("build_options");
 
 const live_prompt = "My fair lady";
 
+pub const CountTokensResult = api.CountTokensResult;
+pub const decodeCountTokensResponse = api.decodeCountTokensResponse;
+
 pub const OutputMime = enum {
     png,
     jpeg,
@@ -55,11 +58,6 @@ pub const GeneratedFiles = struct {
     }
 };
 
-pub const CountTokensResult = struct {
-    total_tokens: u64,
-    cached_content_token_count: ?u64 = null,
-};
-
 pub fn generateContent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -72,7 +70,7 @@ pub fn generateContent(
     const request_json = try buildGenerateRequest(gpa, prompt);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, generateContentUrl(.nano2), request_json);
+    return api.postJson(gpa, io, api_key, api.generateContentUrl(.nano2), request_json);
 }
 
 pub fn countGenerateContentRequestTokens(
@@ -87,7 +85,7 @@ pub fn countGenerateContentRequestTokens(
     const request_json = try buildCountTokensRequest(gpa, prompt);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, countTokensUrl(.nano2), request_json);
+    return api.postJson(gpa, io, api_key, api.countTokensUrl(.nano2), request_json);
 }
 
 pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
@@ -133,39 +131,7 @@ pub fn buildCountTokensRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8
     const generate_request_json = try buildGenerateRequest(gpa, prompt);
     defer gpa.free(generate_request_json);
 
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    assert(generate_request_json.len >= 2);
-    assert(generate_request_json[0] == '{');
-    assert(generate_request_json[generate_request_json.len - 1] == '}');
-
-    try output.writer.writeAll("{\"generateContentRequest\":{\"model\":\"");
-    try output.writer.writeAll(api.Model.nano2.resourceName());
-    try output.writer.writeAll("\",");
-    try output.writer.writeAll(generate_request_json[1..]);
-    try output.writer.writeAll("}");
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
-}
-
-pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const u8) !CountTokensResult {
-    const Response = struct {
-        totalTokens: ?u64 = null,
-        cachedContentTokenCount: ?u64 = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    return .{
-        .total_tokens = parsed.value.totalTokens orelse return error.MissingTotalTokens,
-        .cached_content_token_count = parsed.value.cachedContentTokenCount,
-    };
+    return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
 pub fn decodeResponseId(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
@@ -306,18 +272,6 @@ pub fn responseFileName(buffer: []u8, response_id: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buffer, "{s}.json", .{response_id});
 }
 
-fn generateContentUrl(model: api.Model) []const u8 {
-    return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
-    };
-}
-
-fn countTokensUrl(model: api.Model) []const u8 {
-    return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens",
-    };
-}
-
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady");
@@ -341,33 +295,6 @@ test "buildCountTokensRequest wraps fixed generate content request" {
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
-}
-
-test "decodeCountTokensResponse decodes total tokens" {
-    const result = try decodeCountTokensResponse(
-        std.testing.allocator,
-        "{\"totalTokens\":7,\"unknown\":\"ignored\"}",
-    );
-
-    try std.testing.expectEqual(@as(u64, 7), result.total_tokens);
-    try std.testing.expectEqual(@as(?u64, null), result.cached_content_token_count);
-}
-
-test "decodeCountTokensResponse decodes cached content token count" {
-    const result = try decodeCountTokensResponse(
-        std.testing.allocator,
-        "{\"totalTokens\":7,\"cachedContentTokenCount\":3}",
-    );
-
-    try std.testing.expectEqual(@as(u64, 7), result.total_tokens);
-    try std.testing.expectEqual(@as(?u64, 3), result.cached_content_token_count);
-}
-
-test "decodeCountTokensResponse rejects missing total token count" {
-    try std.testing.expectError(
-        error.MissingTotalTokens,
-        decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
-    );
 }
 
 test "live API generateContent request shape is valid" {
@@ -403,7 +330,7 @@ test "live API generateContent request shape is valid" {
         return error.CountTokensRequestFailed;
     }
 
-    const result = decodeCountTokensResponse(gpa, response.body) catch |err| {
+    const result = api.decodeCountTokensResponse(gpa, response.body) catch |err| {
         std.debug.print(
             "error: failed to parse countTokens response: {s}\n{s}\n",
             .{ @errorName(err), response.body },

@@ -126,7 +126,7 @@ pub fn generateContent(
     const request_json = try buildGenerateRequest(gpa, request);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, generateContentUrl(.nano2), request_json);
+    return api.postJson(gpa, io, api_key, api.generateContentUrl(.nano2), request_json);
 }
 
 pub fn countGenerateContentRequestTokens(
@@ -141,7 +141,7 @@ pub fn countGenerateContentRequestTokens(
     const request_json = try buildCountTokensRequest(gpa, request);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, countTokensUrl(.nano2), request_json);
+    return api.postJson(gpa, io, api_key, api.countTokensUrl(.nano2), request_json);
 }
 
 pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
@@ -196,22 +196,7 @@ pub fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]
     const generate_request_json = try buildGenerateRequest(gpa, request);
     defer gpa.free(generate_request_json);
 
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    assert(generate_request_json.len >= 2);
-    assert(generate_request_json[0] == '{');
-    assert(generate_request_json[generate_request_json.len - 1] == '}');
-
-    try output.writer.writeAll("{\"generateContentRequest\":{\"model\":\"");
-    try output.writer.writeAll(api.Model.nano2.resourceName());
-    try output.writer.writeAll("\",");
-    try output.writer.writeAll(generate_request_json[1..]);
-    try output.writer.writeAll("}");
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
 pub fn isValidLabel(label: []const u8) bool {
@@ -354,18 +339,6 @@ fn referenceRoleAnchor(role: ReferenceRole) []const u8 {
 
 fn isAsciiUpper(byte: u8) bool {
     return byte >= 'A' and byte <= 'Z';
-}
-
-fn generateContentUrl(model: api.Model) []const u8 {
-    return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
-    };
-}
-
-fn countTokensUrl(model: api.Model) []const u8 {
-    return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens",
-    };
 }
 
 test "buildGenerateRequest builds edit request with base file data" {

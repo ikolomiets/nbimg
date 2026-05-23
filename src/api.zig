@@ -42,6 +42,11 @@ pub const ResponseModality = enum {
     }
 };
 
+pub const CountTokensResult = struct {
+    total_tokens: u64,
+    cached_content_token_count: ?u64 = null,
+};
+
 pub const HttpResponse = struct {
     status: std.http.Status,
     body: []u8,
@@ -70,9 +75,61 @@ pub fn apiKeyFromMap(environ_map: *const std.process.Environ.Map) ApiKeyError![]
     return api_key;
 }
 
+pub fn generateContentUrl(model: Model) []const u8 {
+    return switch (model) {
+        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
+    };
+}
+
+pub fn countTokensUrl(model: Model) []const u8 {
+    return switch (model) {
+        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens",
+    };
+}
+
 pub fn isCanonicalFileName(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, canonical_file_name_prefix)) return false;
     return name.len > canonical_file_name_prefix.len;
+}
+
+pub fn buildCountTokensRequestFromGenerateContentJson(
+    gpa: std.mem.Allocator,
+    model: Model,
+    generate_request_json: []const u8,
+) ![]u8 {
+    assert(generate_request_json.len >= 2);
+    assert(generate_request_json[0] == '{');
+    assert(generate_request_json[generate_request_json.len - 1] == '}');
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+
+    try output.writer.writeAll("{\"generateContentRequest\":{\"model\":\"");
+    try output.writer.writeAll(model.resourceName());
+    try output.writer.writeAll("\",");
+    try output.writer.writeAll(generate_request_json[1..]);
+    try output.writer.writeAll("}");
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const u8) !CountTokensResult {
+    const Response = struct {
+        totalTokens: ?u64 = null,
+        cachedContentTokenCount: ?u64 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    return .{
+        .total_tokens = parsed.value.totalTokens orelse return error.MissingTotalTokens,
+        .cached_content_token_count = parsed.value.cachedContentTokenCount,
+    };
 }
 
 test "isCanonicalFileName requires files prefix and id" {
@@ -80,6 +137,51 @@ test "isCanonicalFileName requires files prefix and id" {
     try std.testing.expect(!isCanonicalFileName("abc123"));
     try std.testing.expect(!isCanonicalFileName("files/"));
     try std.testing.expect(!isCanonicalFileName(""));
+}
+
+test "buildCountTokensRequestFromGenerateContentJson wraps generate content request" {
+    const gpa = std.testing.allocator;
+    const request = try buildCountTokensRequestFromGenerateContentJson(
+        gpa,
+        .nano2,
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}",
+    );
+    defer gpa.free(request);
+
+    try std.testing.expectEqualStrings(
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
+        request,
+    );
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
+}
+
+test "decodeCountTokensResponse decodes total tokens" {
+    const result = try decodeCountTokensResponse(
+        std.testing.allocator,
+        "{\"totalTokens\":7,\"unknown\":\"ignored\"}",
+    );
+
+    try std.testing.expectEqual(@as(u64, 7), result.total_tokens);
+    try std.testing.expectEqual(@as(?u64, null), result.cached_content_token_count);
+}
+
+test "decodeCountTokensResponse decodes cached content token count" {
+    const result = try decodeCountTokensResponse(
+        std.testing.allocator,
+        "{\"totalTokens\":7,\"cachedContentTokenCount\":3}",
+    );
+
+    try std.testing.expectEqual(@as(u64, 7), result.total_tokens);
+    try std.testing.expectEqual(@as(?u64, 3), result.cached_content_token_count);
+}
+
+test "decodeCountTokensResponse rejects missing total token count" {
+    try std.testing.expectError(
+        error.MissingTotalTokens,
+        decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
+    );
 }
 
 test "command modules import only shared api module" {

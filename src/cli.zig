@@ -2492,7 +2492,7 @@ test "live API edit request shape is valid" {
         return error.CountTokensRequestFailed;
     }
 
-    const result = api_gen.decodeCountTokensResponse(gpa, response.body) catch |err| {
+    const result = api.decodeCountTokensResponse(gpa, response.body) catch |err| {
         std.debug.print(
             "error: failed to parse countTokens response: {s}\n{s}\n",
             .{ @errorName(err), response.body },

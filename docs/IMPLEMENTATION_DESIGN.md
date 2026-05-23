@@ -93,8 +93,9 @@ paginated list URLs and file-resource get/delete URLs, and decodes
 uploaded/listed/fetched File metadata.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
-validation, shared response modality values, and logging. `gen`, `edit`, and
-`files` reuse its JSON
+validation, shared generateContent/countTokens endpoint URLs, countTokens
+request envelope construction, countTokens response decoding, shared response
+modality values, and logging. `gen`, `edit`, and `files` reuse its JSON
 GET/POST/DELETE helpers, lower-level request-with-body helper for resumable
 uploads, common `HttpResponse` ownership type, `Model` constants, and global
 traffic logging switch. Headers are not exposed through the logging path, so
@@ -491,16 +492,19 @@ and stdout for metadata JSON or delete `OK`.
 
 ## CountTokens Validation Helper
 
-`gen.countGenerateContentRequestTokens` sends the current generated request
+`gen.countGenerateContentRequestTokens` and
+`edit.countGenerateContentRequestTokens` send the current generated request
 shape to Gemini's `countTokens` endpoint:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens
 ```
 
-The request body is built by `gen.buildCountTokensRequest`, which wraps the
-same JSON produced by `gen.buildGenerateRequest` and adds the model field
-that Google requires inside nested `generateContentRequest` payloads:
+The command-level request body is built by `gen.buildCountTokensRequest` or
+`edit.buildCountTokensRequest`. Both wrappers build their command-specific
+`generateContent` JSON and then use the shared `api` countTokens envelope helper
+to add the model field that Google requires inside nested
+`generateContentRequest` payloads:
 
 ```json
 {
@@ -522,7 +526,7 @@ that Google requires inside nested `generateContentRequest` payloads:
 }
 ```
 
-`gen.decodeCountTokensResponse` extracts `totalTokens` and optional
+`api.decodeCountTokensResponse` extracts `totalTokens` and optional
 `cachedContentTokenCount` from successful responses.
 
 This helper is API-only. There is no user-facing CLI command for it yet. A
