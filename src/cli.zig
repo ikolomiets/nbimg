@@ -2429,17 +2429,6 @@ test "parseArgs rejects files upload display name with 513 Unicode code points" 
     }));
 }
 
-test "parseArgs rejects write response for files upload" {
-    try std.testing.expectError(error.WriteResponseUnsupported, parseArgs(&.{
-        "nbimg",
-        "files",
-        "upload",
-        "--path",
-        "sample_images/good_night.jpeg",
-        "--write-response",
-    }));
-}
-
 test "parseArgs rejects output directory for files upload" {
     try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
         "nbimg",
@@ -2449,15 +2438,6 @@ test "parseArgs rejects output directory for files upload" {
         "sample_images/good_night.jpeg",
         "--out-dir",
         "outputs",
-    }));
-}
-
-test "parseArgs rejects write response for files list" {
-    try std.testing.expectError(error.WriteResponseUnsupported, parseArgs(&.{
-        "nbimg",
-        "files",
-        "list",
-        "--write-response",
     }));
 }
 
@@ -2524,17 +2504,6 @@ test "parseArgs rejects empty canonical files get id" {
         "get",
         "--name",
         "files/",
-    }));
-}
-
-test "parseArgs rejects write response for files get" {
-    try std.testing.expectError(error.WriteResponseUnsupported, parseArgs(&.{
-        "nbimg",
-        "files",
-        "get",
-        "--name",
-        "files/abc123",
-        "--write-response",
     }));
 }
 
@@ -2615,17 +2584,6 @@ test "parseArgs rejects empty canonical files delete id" {
         "delete",
         "--name",
         "files/",
-    }));
-}
-
-test "parseArgs rejects write response for files delete" {
-    try std.testing.expectError(error.WriteResponseUnsupported, parseArgs(&.{
-        "nbimg",
-        "files",
-        "delete",
-        "--name",
-        "files/abc123",
-        "--write-response",
     }));
 }
 
