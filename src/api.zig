@@ -42,6 +42,114 @@ pub const ResponseModality = enum {
     }
 };
 
+pub const ImageAspectRatio = enum {
+    r1_1,
+    r1_4,
+    r1_8,
+    r2_3,
+    r3_2,
+    r3_4,
+    r4_1,
+    r4_3,
+    r4_5,
+    r5_4,
+    r8_1,
+    r9_16,
+    r16_9,
+    r21_9,
+
+    pub fn fromName(name: []const u8) ?ImageAspectRatio {
+        if (std.mem.eql(u8, name, "1:1")) return .r1_1;
+        if (std.mem.eql(u8, name, "1:4")) return .r1_4;
+        if (std.mem.eql(u8, name, "1:8")) return .r1_8;
+        if (std.mem.eql(u8, name, "2:3")) return .r2_3;
+        if (std.mem.eql(u8, name, "3:2")) return .r3_2;
+        if (std.mem.eql(u8, name, "3:4")) return .r3_4;
+        if (std.mem.eql(u8, name, "4:1")) return .r4_1;
+        if (std.mem.eql(u8, name, "4:3")) return .r4_3;
+        if (std.mem.eql(u8, name, "4:5")) return .r4_5;
+        if (std.mem.eql(u8, name, "5:4")) return .r5_4;
+        if (std.mem.eql(u8, name, "8:1")) return .r8_1;
+        if (std.mem.eql(u8, name, "9:16")) return .r9_16;
+        if (std.mem.eql(u8, name, "16:9")) return .r16_9;
+        if (std.mem.eql(u8, name, "21:9")) return .r21_9;
+        return null;
+    }
+
+    pub fn apiName(aspect_ratio: ImageAspectRatio) []const u8 {
+        return switch (aspect_ratio) {
+            .r1_1 => "1:1",
+            .r1_4 => "1:4",
+            .r1_8 => "1:8",
+            .r2_3 => "2:3",
+            .r3_2 => "3:2",
+            .r3_4 => "3:4",
+            .r4_1 => "4:1",
+            .r4_3 => "4:3",
+            .r4_5 => "4:5",
+            .r5_4 => "5:4",
+            .r8_1 => "8:1",
+            .r9_16 => "9:16",
+            .r16_9 => "16:9",
+            .r21_9 => "21:9",
+        };
+    }
+
+    pub fn jsonStringify(aspect_ratio: ImageAspectRatio, writer: anytype) !void {
+        try writer.write(aspect_ratio.apiName());
+    }
+};
+
+pub const ImageSize = enum {
+    px512,
+    k1,
+    k2,
+    k4,
+
+    pub fn fromName(name: []const u8) ?ImageSize {
+        if (std.mem.eql(u8, name, "512")) return .px512;
+        if (std.mem.eql(u8, name, "1K")) return .k1;
+        if (std.mem.eql(u8, name, "2K")) return .k2;
+        if (std.mem.eql(u8, name, "4K")) return .k4;
+        return null;
+    }
+
+    pub fn apiName(image_size: ImageSize) []const u8 {
+        return switch (image_size) {
+            .px512 => "512",
+            .k1 => "1K",
+            .k2 => "2K",
+            .k4 => "4K",
+        };
+    }
+
+    pub fn jsonStringify(image_size: ImageSize, writer: anytype) !void {
+        try writer.write(image_size.apiName());
+    }
+};
+
+pub const ImageOutputOptions = struct {
+    aspect_ratio: ?ImageAspectRatio = null,
+    image_size: ?ImageSize = null,
+
+    pub fn hasAny(options: ImageOutputOptions) bool {
+        return options.aspect_ratio != null or options.image_size != null;
+    }
+};
+
+pub const ImageConfig = struct {
+    aspectRatio: ?ImageAspectRatio = null,
+    imageSize: ?ImageSize = null,
+};
+
+pub fn imageConfigFromOutputOptions(options: ImageOutputOptions) ?ImageConfig {
+    if (!options.hasAny()) return null;
+    return .{
+        .aspectRatio = options.aspect_ratio,
+        .imageSize = options.image_size,
+    };
+}
+
 pub const HarmCategory = enum {
     harassment,
     hate_speech,

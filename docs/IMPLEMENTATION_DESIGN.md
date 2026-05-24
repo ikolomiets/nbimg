@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -133,8 +133,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -156,6 +156,14 @@ Argument rules are intentionally narrow:
   for prompts with spaces. Quote presence is not visible to the process, so
   single-token prompts are accepted.
 - Empty explicit prompt values are rejected.
+- `gen` and `edit` accept optional `--aspect-ratio RATIO` and
+  `--image-size SIZE` output controls. Aspect ratios must be one of `1:1`,
+  `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`, `5:4`, `8:1`,
+  `9:16`, `16:9`, or `21:9`. Image sizes must be `512`, `1K`, `2K`, or
+  `4K`.
+- The output controls may be provided independently. If both are omitted,
+  `nbimg` omits `generationConfig.imageConfig` and leaves Gemini's output
+  shape defaults unchanged.
 - For `edit`, `--base files/ID,MIME` is required exactly once. The `files/...`
   resource name must be canonical and the MIME value must be `image/jpeg`,
   `image/png`, or `image/webp`.
@@ -216,8 +224,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -282,6 +290,24 @@ has this shape:
 The prompt is asserted to be non-empty before request construction. This is a
 programmer boundary check; user-facing validation happens earlier in `cli.run`
 and `cli.parseArgs`.
+
+When `--aspect-ratio`, `--image-size`, or both are provided, `gen` and `edit`
+add `generationConfig.imageConfig` to the same request shape:
+
+```json
+{
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "imageConfig": {
+      "aspectRatio": "16:9",
+      "imageSize": "2K"
+    }
+  }
+}
+```
+
+If only one output option is provided, only that field is emitted under
+`imageConfig`.
 
 `api.default_safety_settings` supplies the static top-level `safetySettings`
 array for all `generateContent` requests. It configures harassment, hate
@@ -710,8 +736,9 @@ zig build test-live-api-files-delete
 same common borrowed-key validation helper, so an already-exported variable is
 enough.
 
-Live generation checks live in `src/gen.zig`. They send every currently
-implemented `GenerateContentRequest` shape to `countTokens` using the prompt:
+Live generation checks live in `src/gen.zig`. They send a
+`GenerateContentRequest` shape with `imageConfig` to `countTokens`
+using the prompt:
 
 ```text
 My fair lady
@@ -720,15 +747,17 @@ My fair lady
 This does not test the CountTokens API itself. It uses CountTokens as a
 lower-cost validation endpoint to confirm that Gemini accepts the current
 `GenerateContentRequest` JSON shape without calling paid content generation.
-Today there is one implemented generation shape: a text prompt requesting image
-response modality.
+The live request uses `aspectRatio: "16:9"` and `imageSize: "2K"` to confirm
+Gemini accepts the output-option wire shape.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
 uploads `sample_images/good_night.jpeg` with the fixed display name
 `nbimg live edit request validity`, uses the returned `files/...` name as the
 edit base image with MIME `image/jpeg`, sends the edit request to `countTokens`,
-and then deletes the uploaded file. It does not call `generateContent`.
+and then deletes the uploaded file. The live edit request uses
+`aspectRatio: "4:5"` and `imageSize: "1K"` to validate output options on edit
+requests. It does not call `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name

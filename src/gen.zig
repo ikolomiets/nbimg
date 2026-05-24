@@ -63,11 +63,12 @@ pub fn generateContent(
     io: std.Io,
     api_key: []const u8,
     prompt: []const u8,
+    output_options: api.ImageOutputOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
 
-    const request_json = try buildGenerateRequest(gpa, prompt);
+    const request_json = try buildGenerateRequest(gpa, prompt, output_options);
     defer gpa.free(request_json);
 
     return api.postJson(gpa, io, api_key, api.generateContentUrl(.nano2), request_json);
@@ -78,17 +79,22 @@ pub fn countGenerateContentRequestTokens(
     io: std.Io,
     api_key: []const u8,
     prompt: []const u8,
+    output_options: api.ImageOutputOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
 
-    const request_json = try buildCountTokensRequest(gpa, prompt);
+    const request_json = try buildCountTokensRequest(gpa, prompt, output_options);
     defer gpa.free(request_json);
 
     return api.postJson(gpa, io, api_key, api.countTokensUrl(.nano2), request_json);
 }
 
-pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
+pub fn buildGenerateRequest(
+    gpa: std.mem.Allocator,
+    prompt: []const u8,
+    output_options: api.ImageOutputOptions,
+) ![]u8 {
     assert(prompt.len > 0);
 
     const TextPart = struct {
@@ -99,6 +105,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
     };
     const GenerationConfig = struct {
         responseModalities: []const api.ResponseModality,
+        imageConfig: ?api.ImageConfig = null,
     };
     const GenerateContentRequest = struct {
         contents: []const Content,
@@ -113,6 +120,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
         .contents = &contents,
         .generationConfig = .{
             .responseModalities = &modalities,
+            .imageConfig = api.imageConfigFromOutputOptions(output_options),
         },
         .safetySettings = &api.default_safety_settings,
     };
@@ -120,17 +128,21 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
 
-    try std.json.Stringify.value(request, .{}, &output.writer);
+    try std.json.Stringify.value(request, .{ .emit_null_optional_fields = false }, &output.writer);
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
     return list.toOwnedSlice(gpa);
 }
 
-pub fn buildCountTokensRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
+pub fn buildCountTokensRequest(
+    gpa: std.mem.Allocator,
+    prompt: []const u8,
+    output_options: api.ImageOutputOptions,
+) ![]u8 {
     assert(prompt.len > 0);
 
-    const generate_request_json = try buildGenerateRequest(gpa, prompt);
+    const generate_request_json = try buildGenerateRequest(gpa, prompt, output_options);
     defer gpa.free(generate_request_json);
 
     return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
@@ -260,7 +272,7 @@ const expected_safety_settings_json =
 
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady");
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -269,9 +281,42 @@ test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     );
 }
 
+test "buildGenerateRequest includes image output options" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{
+        .aspect_ratio = .r16_9,
+        .image_size = .k2,
+    });
+    defer gpa.free(request);
+
+    try std.testing.expectEqualStrings(
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"16:9\",\"imageSize\":\"2K\"}}," ++ expected_safety_settings_json ++ "}",
+        request,
+    );
+}
+
+test "buildGenerateRequest includes partial image output options" {
+    const gpa = std.testing.allocator;
+    const aspect_request = try buildGenerateRequest(gpa, "My fair lady", .{
+        .aspect_ratio = .r9_16,
+    });
+    defer gpa.free(aspect_request);
+
+    try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"9:16\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"imageSize\"") == null);
+
+    const size_request = try buildGenerateRequest(gpa, "My fair lady", .{
+        .image_size = .px512,
+    });
+    defer gpa.free(size_request);
+
+    try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"512\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, size_request, "\"aspectRatio\"") == null);
+}
+
 test "buildCountTokensRequest wraps fixed generate content request" {
     const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, "My fair lady");
+    const request = try buildCountTokensRequest(gpa, "My fair lady", .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -302,6 +347,10 @@ test "live API generateContent request shape is valid" {
         std.testing.io,
         api_key,
         live_prompt,
+        .{
+            .aspect_ratio = .r16_9,
+            .image_size = .k2,
+        },
     ) catch |err| {
         std.debug.print("error: countTokens request failed: {s}\n", .{@errorName(err)});
         return err;

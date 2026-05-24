@@ -50,7 +50,10 @@ printf '%s\n' "Create a photo of my fair lady" | zig-out/bin/nbimg gen
 You can also pass the prompt explicitly:
 
 ```sh
-zig-out/bin/nbimg gen --prompt "Create a photo of my fair lady"
+zig-out/bin/nbimg gen \
+  --aspect-ratio 16:9 \
+  --image-size 2K \
+  --prompt "Create a photo of my fair lady"
 ```
 
 Upload an image:
@@ -82,6 +85,13 @@ Stdin prompts are limited to `16 KiB`.
 Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
 existing relative or absolute directory instead of the current directory.
 
+Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
+request a specific generated canvas shape or resolution tier. Valid aspect
+ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
+`5:4`, `8:1`, `9:16`, `16:9`, and `21:9`. Valid image sizes are `512`, `1K`,
+`2K`, and `4K`. If both flags are omitted, `nbimg` leaves Gemini's output
+shape defaults unchanged.
+
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
 Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`. The
 command derives the Gemini File API URI from the `files/...` name and does not
@@ -97,6 +107,8 @@ Useful edit flags:
 --ref ROLE[:LABEL]=files/ID,MIME
 --preserve TEXT
 --do-not TEXT
+--aspect-ratio RATIO
+--image-size SIZE
 --out-dir DIR
 ```
 

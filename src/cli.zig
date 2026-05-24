@@ -20,6 +20,7 @@ const default_cli_traffic_log_options = api.TrafficLogOptions{ .print_response =
 
 pub const GenCommand = struct {
     prompt: []const u8,
+    output_options: api.ImageOutputOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -27,6 +28,7 @@ pub const max_edit_constraints = 16;
 
 pub const EditCommand = struct {
     prompt: []const u8,
+    output_options: api.ImageOutputOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.BaseRole = .scene,
@@ -121,6 +123,14 @@ pub const ParseError = error{
     DuplicateDisplayName,
     InvalidDisplayNameUtf8,
     DisplayNameTooLong,
+    MissingAspectRatio,
+    EmptyAspectRatio,
+    DuplicateAspectRatio,
+    InvalidAspectRatio,
+    MissingImageSize,
+    EmptyImageSize,
+    DuplicateImageSize,
+    InvalidImageSize,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -225,7 +235,7 @@ pub fn run(init: std.process.Init) u8 {
 }
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
-    var response = api_gen.generateContent(gpa, init.io, api_key, command.prompt) catch |err| {
+    var response = api_gen.generateContent(gpa, init.io, api_key, command.prompt, command.output_options) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -256,6 +266,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
 fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: EditCommand) u8 {
     const edit_request = api_edit.EditRequest{
         .prompt = command.prompt,
+        .output_options = command.output_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -572,6 +583,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
 
 fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!GenCommand {
     var prompt: ?[]const u8 = null;
+    var output_options: api.ImageOutputOptions = .{};
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -586,6 +598,10 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             const value = try command_args.nextValue(error.MissingOutDir);
             if (value.len == 0) return error.EmptyOutDir;
             out_dir = value;
+        } else if (std.mem.eql(u8, arg, "--aspect-ratio")) {
+            try parseAspectRatioOption(command_args, &output_options);
+        } else if (std.mem.eql(u8, arg, "--image-size")) {
+            try parseImageSizeOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -599,12 +615,14 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
 
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
+        .output_options = output_options,
         .out_dir = out_dir,
     };
 }
 
 fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!EditCommand {
     var prompt: ?[]const u8 = null;
+    var output_options: api.ImageOutputOptions = .{};
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.BaseRole = .scene;
@@ -628,6 +646,10 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             const value = try command_args.nextValue(error.MissingOutDir);
             if (value.len == 0) return error.EmptyOutDir;
             out_dir = value;
+        } else if (std.mem.eql(u8, arg, "--aspect-ratio")) {
+            try parseAspectRatioOption(command_args, &output_options);
+        } else if (std.mem.eql(u8, arg, "--image-size")) {
+            try parseImageSizeOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -675,6 +697,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
 
     return .{
         .prompt = parsed_prompt,
+        .output_options = output_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -685,6 +708,22 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .do_nots = do_nots,
         .do_not_count = do_not_count,
     };
+}
+
+fn parseAspectRatioOption(command_args: *CommandArgs, output_options: *api.ImageOutputOptions) ParseError!void {
+    if (output_options.aspect_ratio != null) return error.DuplicateAspectRatio;
+
+    const value = try command_args.nextValue(error.MissingAspectRatio);
+    if (value.len == 0) return error.EmptyAspectRatio;
+    output_options.aspect_ratio = api.ImageAspectRatio.fromName(value) orelse return error.InvalidAspectRatio;
+}
+
+fn parseImageSizeOption(command_args: *CommandArgs, output_options: *api.ImageOutputOptions) ParseError!void {
+    if (output_options.image_size != null) return error.DuplicateImageSize;
+
+    const value = try command_args.nextValue(error.MissingImageSize);
+    if (value.len == 0) return error.EmptyImageSize;
+    output_options.image_size = api.ImageSize.fromName(value) orelse return error.InvalidImageSize;
 }
 
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
@@ -1268,6 +1307,14 @@ fn printUsageError(err: ParseError) void {
         error.DuplicateDisplayName => std.debug.print("error: display name specified more than once\n", .{}),
         error.InvalidDisplayNameUtf8 => std.debug.print("error: display name must be valid UTF-8\n", .{}),
         error.DisplayNameTooLong => std.debug.print("error: display name must be at most 512 Unicode code points\n", .{}),
+        error.MissingAspectRatio => std.debug.print("error: missing aspect ratio\n", .{}),
+        error.EmptyAspectRatio => std.debug.print("error: aspect ratio must not be empty\n", .{}),
+        error.DuplicateAspectRatio => std.debug.print("error: aspect ratio specified more than once\n", .{}),
+        error.InvalidAspectRatio => std.debug.print("error: aspect ratio must be one of 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9\n", .{}),
+        error.MissingImageSize => std.debug.print("error: missing image size\n", .{}),
+        error.EmptyImageSize => std.debug.print("error: image size must not be empty\n", .{}),
+        error.DuplicateImageSize => std.debug.print("error: image size specified more than once\n", .{}),
+        error.InvalidImageSize => std.debug.print("error: image size must be 512, 1K, 2K, or 4K\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1279,8 +1326,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1291,12 +1338,18 @@ fn usageText() []const u8 {
         "       --ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role\n" ++
         "       valid ROLE values: character|object|style|pose|composition|background|texture|image\n" ++
         "       omitted LABEL auto-assigns by role: CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A\n" ++
-        "       MIME must be image/jpeg, image/png, or image/webp\n";
+        "       MIME must be image/jpeg, image/png, or image/webp\n" ++
+        "\n" ++
+        "output image options:\n" ++
+        "       --aspect-ratio accepts 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9\n" ++
+        "       --image-size accepts 512, 1K, 2K, or 4K\n";
 }
 
 test "usageText documents edit reference roles and defaults" {
     const usage = usageText();
     const expected = [_][]const u8{
+        "--aspect-ratio RATIO",
+        "--image-size SIZE",
         "--out-dir DIR",
         "--base-role defaults to scene",
         "--ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role",
@@ -1310,6 +1363,8 @@ test "usageText documents edit reference roles and defaults" {
         "TEXTURE_REFERENCE_A",
         "IMAGE_REFERENCE_A",
         "image/jpeg, image/png, or image/webp",
+        "1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9",
+        "512, 1K, 2K, or 4K",
     };
 
     for (expected) |needle| {
@@ -1323,6 +1378,8 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
+    try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), gen.output_options.aspect_ratio);
+    try std.testing.expectEqual(@as(?api.ImageSize, null), gen.output_options.image_size);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1357,6 +1414,49 @@ test "parseArgs accepts gen output directory" {
     try std.testing.expectEqualStrings("outputs", gen.out_dir.?);
 }
 
+test "parseArgs accepts gen image output options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--aspect-ratio",
+        "16:9",
+        "--image-size",
+        "2K",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expectEqual(api.ImageAspectRatio.r16_9, gen.output_options.aspect_ratio.?);
+    try std.testing.expectEqual(api.ImageSize.k2, gen.output_options.image_size.?);
+}
+
+test "parseArgs accepts partial gen image output options" {
+    const aspect_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--aspect-ratio",
+        "9:16",
+        "--prompt",
+        "My fair lady",
+    });
+    const aspect_gen = expectGenCommand(aspect_command);
+    try std.testing.expectEqual(api.ImageAspectRatio.r9_16, aspect_gen.output_options.aspect_ratio.?);
+    try std.testing.expectEqual(@as(?api.ImageSize, null), aspect_gen.output_options.image_size);
+
+    const size_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--image-size",
+        "512",
+        "--prompt",
+        "My fair lady",
+    });
+    const size_gen = expectGenCommand(size_command);
+    try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), size_gen.output_options.aspect_ratio);
+    try std.testing.expectEqual(api.ImageSize.px512, size_gen.output_options.image_size.?);
+}
+
 test "parseArgs accepts print request flag in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1387,6 +1487,41 @@ test "parseArgs rejects invalid gen output directory arguments" {
     }));
 }
 
+test "parseArgs rejects invalid gen image output option arguments" {
+    try std.testing.expectError(error.MissingAspectRatio, parseArgs(&.{ "nbimg", "gen", "--aspect-ratio" }));
+    try std.testing.expectError(error.MissingAspectRatio, parseArgs(&.{ "nbimg", "gen", "--aspect-ratio", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyAspectRatio, parseArgs(&.{ "nbimg", "gen", "--aspect-ratio", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateAspectRatio, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--aspect-ratio",
+        "1:1",
+        "--aspect-ratio",
+        "16:9",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.InvalidAspectRatio, parseArgs(&.{ "nbimg", "gen", "--aspect-ratio", "10:10", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidAspectRatio, parseArgs(&.{ "nbimg", "gen", "--aspect-ratio", "1920x1080", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size" }));
+    try std.testing.expectError(error.MissingImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateImageSize, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--image-size",
+        "1K",
+        "--image-size",
+        "2K",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.InvalidImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "1k", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "0.5K", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "1024x1024", "--prompt", "My fair lady" }));
+}
+
 test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1407,6 +1542,8 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
+    try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), edit.output_options.aspect_ratio);
+    try std.testing.expectEqual(@as(?api.ImageSize, null), edit.output_options.image_size);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1424,6 +1561,25 @@ test "parseArgs accepts edit output directory" {
     const edit = expectEditCommand(parsed_command);
 
     try std.testing.expectEqualStrings("outputs", edit.out_dir.?);
+}
+
+test "parseArgs accepts edit image output options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--aspect-ratio",
+        "4:5",
+        "--image-size",
+        "4K",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(api.ImageAspectRatio.r4_5, edit.output_options.aspect_ratio.?);
+    try std.testing.expectEqual(api.ImageSize.k4, edit.output_options.image_size.?);
 }
 
 test "parseArgs rejects invalid edit output directory arguments" {
@@ -2596,6 +2752,43 @@ test "parseArgs rejects print response as unknown flag" {
     }));
 }
 
+test "parseArgs rejects image output options for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--aspect-ratio",
+        "1:1",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--image-size",
+        "1K",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--aspect-ratio",
+        "16:9",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--image-size",
+        "2K",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -2656,6 +2849,10 @@ test "live API edit request shape is valid" {
         api_key,
         .{
             .prompt = live_edit_prompt,
+            .output_options = .{
+                .aspect_ratio = .r4_5,
+                .image_size = .k1,
+            },
             .base = .{
                 .name = uploaded_file.name,
                 .mime = editMimeFromUploadMime(upload_mime),
