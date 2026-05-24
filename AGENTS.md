@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a minimal Zig 0.16.0 CLI for `nbimg`. Root build/configuration files live at the repository root, Zig source modules live under `src/`, and design documentation lives under `docs/`. Use `docs/Nano_Banana_CLI_Tool_Design.md` for broad direction, `docs/IMPLEMENTATION_DESIGN.md` for current behavior, and TigerStyle/Zig notes for style. Keep the project flat while small.
+This is a minimal Zig 0.16.0 CLI for `nbimg`. Root build/configuration files live at the repository root, Zig source modules live under `src/`, and design documentation lives under `docs/`. Use `docs/Nano_Banana_CLI_Tool_Design.md` for broad direction, `docs/IMPLEMENTATION_DESIGN.md` for current behavior, `PLAN.md` for the prioritized implementation roadmap, and TigerStyle/Zig notes for style. Keep the project flat while small.
 
 ## Build, Test, and Development Commands
 
@@ -39,4 +39,4 @@ Follow the existing history with short imperative subjects such as `Add image ed
 
 ## Agent-Specific Instructions
 
-Keep changes scoped. Preserve the flat module layout unless the task requires a split. Before adding or changing command-module code, check sibling command modules for duplicated shared behavior; extract genuine shared Gemini/API mechanics to `src/api.zig`, but keep command-specific parsing, prompt construction, validation, and response handling local. Update `docs/IMPLEMENTATION_DESIGN.md` with CLI behavior, API handling, output naming, or module-boundary changes. Update `README.md` when user-facing commands, flags, workflows, or testing instructions change. Avoid hidden effects, premature utility modules, unrelated prose rewrites, and undocumented tooling.
+Keep changes scoped. Preserve the flat module layout unless the task requires a split. Before adding or changing command-module code, check sibling command modules for duplicated shared behavior; extract genuine shared Gemini/API mechanics to `src/api.zig`, but keep command-specific parsing, prompt construction, validation, and response handling local. Update `docs/IMPLEMENTATION_DESIGN.md` with CLI behavior, API handling, output naming, or module-boundary changes. Update `README.md` when user-facing commands, flags, workflows, or testing instructions change. Keep `PLAN.md` synchronized with the codebase when implementing, reprioritizing, adding, or removing planned work, and do not let it contradict current behavior docs. Avoid hidden effects, premature utility modules, unrelated prose rewrites, and undocumented tooling.
