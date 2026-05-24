@@ -97,6 +97,38 @@ Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`. The
 command derives the Gemini File API URI from the `files/...` name and does not
 call `files get` before generation.
 
+Generic edit references use this syntax:
+
+```text
+--ref ROLE[:LABEL]=files/ID,MIME
+      |    |       |        |
+      |    |       |        MIME type
+      |    |       Gemini Files API resource name
+      |    optional custom label
+      reference role
+```
+
+For example:
+
+```sh
+nbimg edit \
+  --base files/base123,image/jpeg \
+  --ref character:CHARACTER_HERO=files/person456,image/jpeg \
+  --ref object:OBJECT_SHOE=files/shoe123,image/png \
+  --ref style:STYLE_POSTER=files/poster789,image/webp \
+  --prompt "Edit BASE_IMAGE so CHARACTER_HERO wears OBJECT_SHOE, using STYLE_POSTER only for the rendering style"
+```
+
+More single-reference examples:
+
+```sh
+--ref style=files/watercolor789,image/webp
+--ref pose:POSE_MAIN=files/pose123,image/jpeg
+--ref background:BACKGROUND_CITY=files/city123,image/webp
+--ref texture=files/fabric123,image/png
+--ref image=files/general123,image/jpeg
+```
+
 Useful edit flags:
 
 ```sh
