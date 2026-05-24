@@ -39,16 +39,14 @@ shape changes, and add newly discovered gaps in priority order.
 
 ## 4. `responseFormat.image` Output Options
 
-- Current gap: aspect ratio and image size use `imageConfig`; the newer
-  `responseFormat.image` surface is not implemented, and image `mimeType` or
-  `delivery` are not configurable.
-- Likely CLI/API surface: decide whether existing `--aspect-ratio` and
-  `--image-size` should serialize through `responseFormat.image`, then add
-  explicit image output MIME and delivery flags only after live validation.
-- Implementation notes: avoid supporting two conflicting output-shape
-  serializers at the same public boundary.
-- Testing: add golden request JSON tests and live countTokens validation for
-  the selected REST wire shape before treating the migration as complete.
+- Current status: `--aspect-ratio` and `--image-size` serialize through
+  `generationConfig.responseFormat.image` using Gemini enum values such as
+  `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`.
+- Remaining gap: image `mimeType` and `delivery` are not user-configurable.
+  Live `countTokens` accepted `IMAGE_JPEG` with `INLINE` and `URI`, but adding
+  flags needs response-shape and output-writing behavior validation.
+- Testing: keep golden request JSON tests and live countTokens validation
+  covering the selected REST wire shape.
 
 ## 5. Configurable Safety Settings
 

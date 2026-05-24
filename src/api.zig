@@ -137,16 +137,116 @@ pub const ImageOutputOptions = struct {
     }
 };
 
-pub const ImageConfig = struct {
-    aspectRatio: ?ImageAspectRatio = null,
-    imageSize: ?ImageSize = null,
+pub const ResponseFormatConfig = struct {
+    image: ?ImageResponseFormat = null,
 };
 
-pub fn imageConfigFromOutputOptions(options: ImageOutputOptions) ?ImageConfig {
+pub const ImageResponseFormat = struct {
+    aspectRatio: ?ImageResponseAspectRatio = null,
+    imageSize: ?ImageResponseSize = null,
+};
+
+pub const ImageResponseAspectRatio = enum {
+    one_by_one,
+    one_by_four,
+    one_by_eight,
+    two_by_three,
+    three_by_two,
+    three_by_four,
+    four_by_one,
+    four_by_three,
+    four_by_five,
+    five_by_four,
+    eight_by_one,
+    nine_by_sixteen,
+    sixteen_by_nine,
+    twenty_one_by_nine,
+
+    pub fn fromImageAspectRatio(aspect_ratio: ImageAspectRatio) ImageResponseAspectRatio {
+        return switch (aspect_ratio) {
+            .r1_1 => .one_by_one,
+            .r1_4 => .one_by_four,
+            .r1_8 => .one_by_eight,
+            .r2_3 => .two_by_three,
+            .r3_2 => .three_by_two,
+            .r3_4 => .three_by_four,
+            .r4_1 => .four_by_one,
+            .r4_3 => .four_by_three,
+            .r4_5 => .four_by_five,
+            .r5_4 => .five_by_four,
+            .r8_1 => .eight_by_one,
+            .r9_16 => .nine_by_sixteen,
+            .r16_9 => .sixteen_by_nine,
+            .r21_9 => .twenty_one_by_nine,
+        };
+    }
+
+    pub fn apiName(aspect_ratio: ImageResponseAspectRatio) []const u8 {
+        return switch (aspect_ratio) {
+            .one_by_one => "ASPECT_RATIO_ONE_BY_ONE",
+            .one_by_four => "ASPECT_RATIO_ONE_BY_FOUR",
+            .one_by_eight => "ASPECT_RATIO_ONE_BY_EIGHT",
+            .two_by_three => "ASPECT_RATIO_TWO_BY_THREE",
+            .three_by_two => "ASPECT_RATIO_THREE_BY_TWO",
+            .three_by_four => "ASPECT_RATIO_THREE_BY_FOUR",
+            .four_by_one => "ASPECT_RATIO_FOUR_BY_ONE",
+            .four_by_three => "ASPECT_RATIO_FOUR_BY_THREE",
+            .four_by_five => "ASPECT_RATIO_FOUR_BY_FIVE",
+            .five_by_four => "ASPECT_RATIO_FIVE_BY_FOUR",
+            .eight_by_one => "ASPECT_RATIO_EIGHT_BY_ONE",
+            .nine_by_sixteen => "ASPECT_RATIO_NINE_BY_SIXTEEN",
+            .sixteen_by_nine => "ASPECT_RATIO_SIXTEEN_BY_NINE",
+            .twenty_one_by_nine => "ASPECT_RATIO_TWENTY_ONE_BY_NINE",
+        };
+    }
+
+    pub fn jsonStringify(aspect_ratio: ImageResponseAspectRatio, writer: anytype) !void {
+        try writer.write(aspect_ratio.apiName());
+    }
+};
+
+pub const ImageResponseSize = enum {
+    five_twelve,
+    one_k,
+    two_k,
+    four_k,
+
+    pub fn fromImageSize(image_size: ImageSize) ImageResponseSize {
+        return switch (image_size) {
+            .px512 => .five_twelve,
+            .k1 => .one_k,
+            .k2 => .two_k,
+            .k4 => .four_k,
+        };
+    }
+
+    pub fn apiName(image_size: ImageResponseSize) []const u8 {
+        return switch (image_size) {
+            .five_twelve => "IMAGE_SIZE_FIVE_TWELVE",
+            .one_k => "IMAGE_SIZE_ONE_K",
+            .two_k => "IMAGE_SIZE_TWO_K",
+            .four_k => "IMAGE_SIZE_FOUR_K",
+        };
+    }
+
+    pub fn jsonStringify(image_size: ImageResponseSize, writer: anytype) !void {
+        try writer.write(image_size.apiName());
+    }
+};
+
+pub fn responseFormatFromOutputOptions(options: ImageOutputOptions) ?ResponseFormatConfig {
     if (!options.hasAny()) return null;
     return .{
-        .aspectRatio = options.aspect_ratio,
-        .imageSize = options.image_size,
+        .image = .{
+            .aspectRatio = if (options.aspect_ratio) |aspect_ratio|
+                ImageResponseAspectRatio.fromImageAspectRatio(aspect_ratio)
+            else
+                null,
+            .imageSize = if (options.image_size) |image_size|
+                ImageResponseSize.fromImageSize(image_size)
+            else
+                null,
+        },
     };
 }
 
@@ -348,6 +448,48 @@ test "default safety settings serialize all supported harm categories as block n
     try std.testing.expectEqual(@as(usize, 4), countOccurrences(json, "\"threshold\":\"BLOCK_NONE\""));
 }
 
+test "responseFormatFromOutputOptions serializes Gemini image response enum names" {
+    const gpa = std.testing.allocator;
+    const response_format = responseFormatFromOutputOptions(.{
+        .aspect_ratio = .r16_9,
+        .image_size = .k2,
+    }).?;
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(response_format, .{ .emit_null_optional_fields = false }, &output.writer);
+
+    try std.testing.expectEqualStrings(
+        "{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}",
+        output.written(),
+    );
+}
+
+test "ImageResponseAspectRatio maps all accepted CLI aspect ratios to Gemini enum names" {
+    try expectImageResponseAspectRatio(.r1_1, "\"ASPECT_RATIO_ONE_BY_ONE\"");
+    try expectImageResponseAspectRatio(.r1_4, "\"ASPECT_RATIO_ONE_BY_FOUR\"");
+    try expectImageResponseAspectRatio(.r1_8, "\"ASPECT_RATIO_ONE_BY_EIGHT\"");
+    try expectImageResponseAspectRatio(.r2_3, "\"ASPECT_RATIO_TWO_BY_THREE\"");
+    try expectImageResponseAspectRatio(.r3_2, "\"ASPECT_RATIO_THREE_BY_TWO\"");
+    try expectImageResponseAspectRatio(.r3_4, "\"ASPECT_RATIO_THREE_BY_FOUR\"");
+    try expectImageResponseAspectRatio(.r4_1, "\"ASPECT_RATIO_FOUR_BY_ONE\"");
+    try expectImageResponseAspectRatio(.r4_3, "\"ASPECT_RATIO_FOUR_BY_THREE\"");
+    try expectImageResponseAspectRatio(.r4_5, "\"ASPECT_RATIO_FOUR_BY_FIVE\"");
+    try expectImageResponseAspectRatio(.r5_4, "\"ASPECT_RATIO_FIVE_BY_FOUR\"");
+    try expectImageResponseAspectRatio(.r8_1, "\"ASPECT_RATIO_EIGHT_BY_ONE\"");
+    try expectImageResponseAspectRatio(.r9_16, "\"ASPECT_RATIO_NINE_BY_SIXTEEN\"");
+    try expectImageResponseAspectRatio(.r16_9, "\"ASPECT_RATIO_SIXTEEN_BY_NINE\"");
+    try expectImageResponseAspectRatio(.r21_9, "\"ASPECT_RATIO_TWENTY_ONE_BY_NINE\"");
+}
+
+test "ImageResponseSize maps all accepted CLI image sizes to Gemini enum names" {
+    try expectImageResponseSize(.px512, "\"IMAGE_SIZE_FIVE_TWELVE\"");
+    try expectImageResponseSize(.k1, "\"IMAGE_SIZE_ONE_K\"");
+    try expectImageResponseSize(.k2, "\"IMAGE_SIZE_TWO_K\"");
+    try expectImageResponseSize(.k4, "\"IMAGE_SIZE_FOUR_K\"");
+}
+
 test "HarmBlockThreshold serializes all API threshold names" {
     try expectHarmBlockThresholdJson(.block_low_and_above, "\"BLOCK_LOW_AND_ABOVE\"");
     try expectHarmBlockThresholdJson(.block_medium_and_above, "\"BLOCK_MEDIUM_AND_ABOVE\"");
@@ -382,6 +524,28 @@ test "decodeCountTokensResponse rejects missing total token count" {
         error.MissingTotalTokens,
         decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
     );
+}
+
+fn expectImageResponseAspectRatio(aspect_ratio: ImageAspectRatio, expected_json: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(
+        ImageResponseAspectRatio.fromImageAspectRatio(aspect_ratio),
+        .{},
+        &output.writer,
+    );
+    try std.testing.expectEqualStrings(expected_json, output.written());
+}
+
+fn expectImageResponseSize(image_size: ImageSize, expected_json: []const u8) !void {
+    const gpa = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(ImageResponseSize.fromImageSize(image_size), .{}, &output.writer);
+    try std.testing.expectEqualStrings(expected_json, output.written());
 }
 
 fn expectHarmBlockThresholdJson(threshold: HarmBlockThreshold, expected_json: []const u8) !void {

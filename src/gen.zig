@@ -105,7 +105,7 @@ pub fn buildGenerateRequest(
     };
     const GenerationConfig = struct {
         responseModalities: []const api.ResponseModality,
-        imageConfig: ?api.ImageConfig = null,
+        responseFormat: ?api.ResponseFormatConfig = null,
     };
     const GenerateContentRequest = struct {
         contents: []const Content,
@@ -120,7 +120,7 @@ pub fn buildGenerateRequest(
         .contents = &contents,
         .generationConfig = .{
             .responseModalities = &modalities,
-            .imageConfig = api.imageConfigFromOutputOptions(output_options),
+            .responseFormat = api.responseFormatFromOutputOptions(output_options),
         },
         .safetySettings = &api.default_safety_settings,
     };
@@ -290,7 +290,7 @@ test "buildGenerateRequest includes image output options" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"],\"imageConfig\":{\"aspectRatio\":\"16:9\",\"imageSize\":\"2K\"}}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"],\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}}," ++ expected_safety_settings_json ++ "}",
         request,
     );
 }
@@ -302,7 +302,7 @@ test "buildGenerateRequest includes partial image output options" {
     });
     defer gpa.free(aspect_request);
 
-    try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"9:16\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"ASPECT_RATIO_NINE_BY_SIXTEEN\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"imageSize\"") == null);
 
     const size_request = try buildGenerateRequest(gpa, "My fair lady", .{
@@ -310,7 +310,7 @@ test "buildGenerateRequest includes partial image output options" {
     });
     defer gpa.free(size_request);
 
-    try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"512\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"IMAGE_SIZE_FIVE_TWELVE\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, size_request, "\"aspectRatio\"") == null);
 }
 

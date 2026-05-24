@@ -97,7 +97,7 @@ const GenerateContent = struct {
 
 const GenerateConfig = struct {
     responseModalities: []const api.ResponseModality,
-    imageConfig: ?api.ImageConfig = null,
+    responseFormat: ?api.ResponseFormatConfig = null,
 };
 
 const GenerateContentRequest = struct {
@@ -169,7 +169,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         .contents = &contents,
         .generationConfig = .{
             .responseModalities = &modalities,
-            .imageConfig = api.imageConfigFromOutputOptions(request.output_options),
+            .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
         },
         .safetySettings = &api.default_safety_settings,
     };
@@ -410,6 +410,7 @@ test "buildGenerateRequest builds edit request with base file data" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"mime_type\":\"image/jpeg\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_uri\":\"https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseFormat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
     try expectDefaultSafetySettings(request);
     try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
@@ -434,8 +435,9 @@ test "buildGenerateRequest includes edit image output options" {
     });
     defer gpa.free(request);
 
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\":{\"aspectRatio\":\"4:5\",\"imageSize\":\"4K\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_FOUR_BY_FIVE\",\"imageSize\":\"IMAGE_SIZE_FOUR_K\"}}") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
@@ -455,8 +457,9 @@ test "buildGenerateRequest includes partial edit image output options" {
     });
     defer gpa.free(request);
 
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"imageSize\":\"1K\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"imageSize\":\"IMAGE_SIZE_ONE_K\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"aspectRatio\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
 }
 
 fn expectDefaultSafetySettings(request_json: []const u8) !void {

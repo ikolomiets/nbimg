@@ -162,7 +162,7 @@ Argument rules are intentionally narrow:
   `9:16`, `16:9`, or `21:9`. Image sizes must be `512`, `1K`, `2K`, or
   `4K`.
 - The output controls may be provided independently. If both are omitted,
-  `nbimg` omits `generationConfig.imageConfig` and leaves Gemini's output
+  `nbimg` omits `generationConfig.responseFormat` and leaves Gemini's output
   shape defaults unchanged.
 - For `edit`, at least one `--ref ROLE=files/ID,MIME` is required. The first
   `--ref` is the base image to edit and is always labeled `BASE_IMAGE`; it
@@ -290,22 +290,26 @@ programmer boundary check; user-facing validation happens earlier in `cli.run`
 and `cli.parseArgs`.
 
 When `--aspect-ratio`, `--image-size`, or both are provided, `gen` and `edit`
-add `generationConfig.imageConfig` to the same request shape:
+add `generationConfig.responseFormat.image` to the same request shape. CLI
+values remain user-friendly (`16:9`, `2K`), but the REST payload uses Gemini's
+accepted enum names:
 
 ```json
 {
   "generationConfig": {
     "responseModalities": ["IMAGE"],
-    "imageConfig": {
-      "aspectRatio": "16:9",
-      "imageSize": "2K"
+    "responseFormat": {
+      "image": {
+        "aspectRatio": "ASPECT_RATIO_SIXTEEN_BY_NINE",
+        "imageSize": "IMAGE_SIZE_TWO_K"
+      }
     }
   }
 }
 ```
 
 If only one output option is provided, only that field is emitted under
-`imageConfig`.
+`responseFormat.image`.
 
 `api.default_safety_settings` supplies the static top-level `safetySettings`
 array for all `generateContent` requests. It configures harassment, hate
@@ -735,7 +739,7 @@ same common borrowed-key validation helper, so an already-exported variable is
 enough.
 
 Live generation checks live in `src/gen.zig`. They send a
-`GenerateContentRequest` shape with `imageConfig` to `countTokens`
+`GenerateContentRequest` shape with `responseFormat.image` to `countTokens`
 using the prompt:
 
 ```text
@@ -746,7 +750,8 @@ This does not test the CountTokens API itself. It uses CountTokens as a
 lower-cost validation endpoint to confirm that Gemini accepts the current
 `GenerateContentRequest` JSON shape without calling paid content generation.
 The live request uses `aspectRatio: "16:9"` and `imageSize: "2K"` to confirm
-Gemini accepts the output-option wire shape.
+Gemini accepts the output-option wire shape after those CLI values are mapped
+to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
@@ -754,8 +759,9 @@ uploads `sample_images/good_night.jpeg` with the fixed display name
 `nbimg live edit request validity`, uses the returned `files/...` name as the
 edit base image with MIME `image/jpeg`, sends the edit request to `countTokens`,
 and then deletes the uploaded file. The live edit request uses
-`aspectRatio: "4:5"` and `imageSize: "1K"` to validate output options on edit
-requests. It does not call `generateContent`.
+`aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
+serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
+output options on edit requests. It does not call `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name
