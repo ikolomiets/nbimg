@@ -31,7 +31,7 @@ pub const EditCommand = struct {
     output_options: api.ImageOutputOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
-    base_role: api_edit.BaseRole = .scene,
+    base_role: api_edit.ReferenceRole = .scene,
     references: [api_edit.max_references]api_edit.Reference = undefined,
     reference_count: usize = 0,
     preserves: [max_edit_constraints][]const u8 = undefined,
@@ -92,11 +92,7 @@ pub const ParseError = error{
     SplitPrompt,
     DuplicatePrompt,
     MissingBase,
-    EmptyBase,
-    DuplicateBase,
-    MissingBaseRole,
-    DuplicateBaseRole,
-    InvalidBaseRole,
+    LabeledBaseReference,
     MissingReference,
     EmptyReference,
     InvalidReference,
@@ -625,8 +621,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var output_options: api.ImageOutputOptions = .{};
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
-    var base_role: api_edit.BaseRole = .scene;
-    var base_role_seen = false;
+    var base_role: api_edit.ReferenceRole = .scene;
     var references: [api_edit.max_references]api_edit.Reference = undefined;
     var reference_count: usize = 0;
     var preserves: [max_edit_constraints][]const u8 = undefined;
@@ -656,29 +651,17 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             const value = try command_args.nextValue(error.MissingPrompt);
             if (value.len == 0) return error.EmptyPrompt;
             prompt = value;
-        } else if (std.mem.eql(u8, arg, "--base")) {
-            if (base != null) return error.DuplicateBase;
-
-            const value = try command_args.nextValue(error.MissingBase);
-            base = try parseImageInput(value, error.EmptyBase);
-        } else if (std.mem.eql(u8, arg, "--base-role")) {
-            if (base_role_seen) return error.DuplicateBaseRole;
-
-            const value = try command_args.nextValue(error.MissingBaseRole);
-            base_role = api_edit.BaseRole.fromName(value) orelse return error.InvalidBaseRole;
-            base_role_seen = true;
-        } else if (std.mem.eql(u8, arg, "--character")) {
-            const value = try command_args.nextValue(error.MissingReference);
-            try addConvenienceReference(&references, &reference_count, .character, value);
-        } else if (std.mem.eql(u8, arg, "--object")) {
-            const value = try command_args.nextValue(error.MissingReference);
-            try addConvenienceReference(&references, &reference_count, .object, value);
-        } else if (std.mem.eql(u8, arg, "--style")) {
-            const value = try command_args.nextValue(error.MissingReference);
-            try addConvenienceReference(&references, &reference_count, .style, value);
         } else if (std.mem.eql(u8, arg, "--ref")) {
             const value = try command_args.nextValue(error.MissingReference);
-            try addGenericReference(&references, &reference_count, value);
+            if (base != null and reference_count >= references.len) return error.TooManyReferences;
+            const reference = try parseReference(value);
+            if (base == null) {
+                if (reference.label != null) return error.LabeledBaseReference;
+                base = reference.image;
+                base_role = reference.role;
+            } else {
+                try addReference(&references, &reference_count, reference);
+            }
         } else if (std.mem.eql(u8, arg, "--preserve")) {
             const value = try command_args.nextValue(error.MissingPreserve);
             if (value.len > 0) try addConstraint(&preserves, &preserve_count, value);
@@ -749,26 +732,13 @@ fn parseImageInput(value: []const u8, empty_error: ParseError) ParseError!api_ed
     };
 }
 
-fn addConvenienceReference(
-    references: *[api_edit.max_references]api_edit.Reference,
-    reference_count: *usize,
+const ParsedReference = struct {
     role: api_edit.ReferenceRole,
-    value: []const u8,
-) ParseError!void {
-    if (value.len == 0) return error.EmptyReference;
+    label: ?[]const u8,
+    image: api_edit.UploadedImage,
+};
 
-    const equal = std.mem.indexOfScalar(u8, value, '=');
-    const label: ?[]const u8 = if (equal) |index| value[0..index] else null;
-    const image_value = if (equal) |index| value[index + 1 ..] else value;
-
-    try addReference(references, reference_count, role, label, image_value);
-}
-
-fn addGenericReference(
-    references: *[api_edit.max_references]api_edit.Reference,
-    reference_count: *usize,
-    value: []const u8,
-) ParseError!void {
+fn parseReference(value: []const u8) ParseError!ParsedReference {
     if (value.len == 0) return error.EmptyReference;
 
     const equal = std.mem.indexOfScalar(u8, value, '=') orelse return error.InvalidReference;
@@ -781,31 +751,32 @@ fn addGenericReference(
     const label: ?[]const u8 = if (colon) |index| role_and_label[index + 1 ..] else null;
 
     const role = api_edit.ReferenceRole.fromName(role_name) orelse return error.InvalidReference;
-    try addReference(references, reference_count, role, label, image_value);
+
+    return .{
+        .role = role,
+        .label = label,
+        .image = try parseImageInput(image_value, error.EmptyReference),
+    };
 }
 
 fn addReference(
     references: *[api_edit.max_references]api_edit.Reference,
     reference_count: *usize,
-    role: api_edit.ReferenceRole,
-    maybe_label: ?[]const u8,
-    image_value: []const u8,
+    reference: ParsedReference,
 ) ParseError!void {
     if (reference_count.* >= references.len) return error.TooManyReferences;
-    if (image_value.len == 0) return error.EmptyReference;
 
-    const image = try parseImageInput(image_value, error.EmptyReference);
-    const label = if (maybe_label) |custom_label| label: {
+    const label = if (reference.label) |custom_label| label: {
         if (!api_edit.isValidLabel(custom_label)) return error.InvalidLabel;
         break :label custom_label;
-    } else try autoLabelForRole(role, countReferencesWithRole(references[0..reference_count.*], role));
+    } else try autoLabelForRole(reference.role, countReferencesWithRole(references[0..reference_count.*], reference.role));
 
     if (hasLabel(references[0..reference_count.*], label)) return error.DuplicateLabel;
 
     references[reference_count.*] = .{
-        .role = role,
+        .role = reference.role,
         .label = label,
-        .image = image,
+        .image = reference.image,
     };
     reference_count.* += 1;
 }
@@ -822,7 +793,7 @@ fn addConstraint(
 }
 
 fn validateEditReferenceLimits(
-    base_role: api_edit.BaseRole,
+    base_role: api_edit.ReferenceRole,
     references: []const api_edit.Reference,
 ) ParseError!void {
     var character_count: usize = if (base_role == .character) 1 else 0;
@@ -858,6 +829,7 @@ fn hasLabel(references: []const api_edit.Reference, label: []const u8) bool {
 
 fn autoLabelForRole(role: api_edit.ReferenceRole, index: usize) ParseError![]const u8 {
     const labels = switch (role) {
+        .scene => &scene_labels,
         .character => &character_labels,
         .object => &object_labels,
         .style => &style_labels,
@@ -871,6 +843,22 @@ fn autoLabelForRole(role: api_edit.ReferenceRole, index: usize) ParseError![]con
     if (index >= labels.len) return error.TooManyReferences;
     return labels[index];
 }
+
+const scene_labels = [_][]const u8{
+    "SCENE_REFERENCE_A",
+    "SCENE_REFERENCE_B",
+    "SCENE_REFERENCE_C",
+    "SCENE_REFERENCE_D",
+    "SCENE_REFERENCE_E",
+    "SCENE_REFERENCE_F",
+    "SCENE_REFERENCE_G",
+    "SCENE_REFERENCE_H",
+    "SCENE_REFERENCE_I",
+    "SCENE_REFERENCE_J",
+    "SCENE_REFERENCE_K",
+    "SCENE_REFERENCE_L",
+    "SCENE_REFERENCE_M",
+};
 
 const character_labels = [_][]const u8{
     "CHARACTER_A",
@@ -1275,12 +1263,8 @@ fn printUsageError(err: ParseError) void {
         error.PromptTooLong => std.debug.print("error: prompt must be at most 16 KiB\n", .{}),
         error.SplitPrompt => std.debug.print("error: prompt must be one quoted argument\n", .{}),
         error.DuplicatePrompt => std.debug.print("error: prompt specified more than once\n", .{}),
-        error.MissingBase => std.debug.print("error: missing base image\n", .{}),
-        error.EmptyBase => std.debug.print("error: base image must not be empty\n", .{}),
-        error.DuplicateBase => std.debug.print("error: base image specified more than once\n", .{}),
-        error.MissingBaseRole => std.debug.print("error: missing base role\n", .{}),
-        error.DuplicateBaseRole => std.debug.print("error: base role specified more than once\n", .{}),
-        error.InvalidBaseRole => std.debug.print("error: base role must be scene, character, or object\n", .{}),
+        error.MissingBase => std.debug.print("error: missing base reference; the first --ref is the base image\n", .{}),
+        error.LabeledBaseReference => std.debug.print("error: base reference must use BASE_IMAGE; omit LABEL on the first --ref\n", .{}),
         error.MissingReference => std.debug.print("error: missing reference image\n", .{}),
         error.EmptyReference => std.debug.print("error: reference image must not be empty\n", .{}),
         error.InvalidReference => std.debug.print("error: invalid reference image\n", .{}),
@@ -1327,17 +1311,17 @@ fn printUsageError(err: ParseError) void {
 
 fn usageText() []const u8 {
     return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
         "       nbimg files delete [--print-request] --name files/ID\n" ++
         "\n" ++
         "edit reference details:\n" ++
-        "       --base-role defaults to scene\n" ++
-        "       --ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role\n" ++
-        "       valid ROLE values: character|object|style|pose|composition|background|texture|image\n" ++
-        "       omitted LABEL auto-assigns by role: CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A\n" ++
+        "       first --ref is the BASE_IMAGE and must omit LABEL\n" ++
+        "       later --ref ROLE[:LABEL]=files/ID,MIME references may include LABEL\n" ++
+        "       valid ROLE values: scene|character|object|style|pose|composition|background|texture|image\n" ++
+        "       omitted LABEL auto-assigns by role: SCENE_REFERENCE_A, CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A\n" ++
         "       MIME must be image/jpeg, image/png, or image/webp\n" ++
         "\n" ++
         "output image options:\n" ++
@@ -1351,9 +1335,11 @@ test "usageText documents edit reference roles and defaults" {
         "--aspect-ratio RATIO",
         "--image-size SIZE",
         "--out-dir DIR",
-        "--base-role defaults to scene",
-        "--ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role",
-        "character|object|style|pose|composition|background|texture|image",
+        "--ref ROLE=files/ID,MIME",
+        "first --ref is the BASE_IMAGE and must omit LABEL",
+        "later --ref ROLE[:LABEL]=files/ID,MIME references may include LABEL",
+        "scene|character|object|style|pose|composition|background|texture|image",
+        "SCENE_REFERENCE_A",
         "CHARACTER_A",
         "OBJECT_A",
         "STYLE_REFERENCE_A",
@@ -1526,8 +1512,8 @@ test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
         "change visual style to Broadway musical",
     });
@@ -1536,7 +1522,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqualStrings("change visual style to Broadway musical", edit.prompt);
     try std.testing.expectEqualStrings("files/tjtj5me9i96c", edit.base.name);
     try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.base.mime);
-    try std.testing.expectEqual(api_edit.BaseRole.scene, edit.base_role);
+    try std.testing.expectEqual(api_edit.ReferenceRole.scene, edit.base_role);
     try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
@@ -1553,8 +1539,8 @@ test "parseArgs accepts edit output directory" {
         "edit",
         "--out-dir",
         "outputs",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
         "change visual style to Broadway musical",
     });
@@ -1571,8 +1557,8 @@ test "parseArgs accepts edit image output options" {
         "4:5",
         "--image-size",
         "4K",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
         "change visual style to Broadway musical",
     });
@@ -1586,15 +1572,15 @@ test "parseArgs rejects invalid edit output directory arguments" {
     try std.testing.expectError(error.MissingOutDir, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--out-dir",
     }));
     try std.testing.expectError(error.EmptyOutDir, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--out-dir",
         "",
         "--prompt",
@@ -1603,8 +1589,8 @@ test "parseArgs rejects invalid edit output directory arguments" {
     try std.testing.expectError(error.DuplicateOutDir, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--out-dir",
         "one",
         "--out-dir",
@@ -1618,8 +1604,8 @@ test "parseArgs accepts stdin fallback prompt for edit" {
     const parsed_command = try parseArgsWithPrompt(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
     }, "change visual style to Broadway musical");
     const edit = expectEditCommand(parsed_command);
 
@@ -1628,15 +1614,13 @@ test "parseArgs accepts stdin fallback prompt for edit" {
     try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.base.mime);
 }
 
-test "parseArgs accepts edit base role constraints and request log flag" {
+test "parseArgs accepts edit base reference role constraints and request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
         "--print-request",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
-        "--base-role",
-        "character",
+        "--ref",
+        "character=files/tjtj5me9i96c,image/jpeg",
         "--preserve",
         "preserve her facial identity",
         "--do-not",
@@ -1649,25 +1633,25 @@ test "parseArgs accepts edit base role constraints and request log flag" {
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
-    try std.testing.expectEqual(api_edit.BaseRole.character, edit.base_role);
+    try std.testing.expectEqual(api_edit.ReferenceRole.character, edit.base_role);
     try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
     try std.testing.expectEqualStrings("preserve her facial identity", edit.preserves[0]);
     try std.testing.expectEqual(@as(usize, 1), edit.do_not_count);
     try std.testing.expectEqualStrings("do not change the crop", edit.do_nots[0]);
 }
 
-test "parseArgs accepts edit convenience and generic references" {
+test "parseArgs accepts first ref as base and later generic references" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--character",
-        "files/person,image/jpeg",
-        "--object",
-        "OBJECT_PRODUCT=files/product,image/png",
-        "--style",
-        "files/style,image/webp",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--ref",
+        "character=files/person,image/jpeg",
+        "--ref",
+        "object:OBJECT_PRODUCT=files/product,image/png",
+        "--ref",
+        "style=files/style,image/webp",
         "--ref",
         "pose:POSE_MAIN=files/pose,image/jpeg",
         "--prompt",
@@ -1675,6 +1659,8 @@ test "parseArgs accepts edit convenience and generic references" {
     });
     const edit = expectEditCommand(parsed_command);
 
+    try std.testing.expectEqualStrings("files/base", edit.base.name);
+    try std.testing.expectEqual(api_edit.ReferenceRole.scene, edit.base_role);
     try std.testing.expectEqual(@as(usize, 4), edit.reference_count);
     try std.testing.expectEqual(api_edit.ReferenceRole.character, edit.references[0].role);
     try std.testing.expectEqualStrings("CHARACTER_A", edit.references[0].label);
@@ -1694,8 +1680,8 @@ test "parseArgs accepts generic edit reference without custom label" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
         "--ref",
         "texture=files/fabric,image/png",
         "--prompt",
@@ -1707,6 +1693,42 @@ test "parseArgs accepts generic edit reference without custom label" {
     try std.testing.expectEqual(api_edit.ReferenceRole.texture, edit.references[0].role);
     try std.testing.expectEqualStrings("TEXTURE_REFERENCE_A", edit.references[0].label);
     try std.testing.expectEqualStrings("files/fabric", edit.references[0].image.name);
+}
+
+test "parseArgs accepts first edit reference with non-scene role" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "style=files/base-style,image/webp",
+        "--prompt",
+        "keep the current style",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("files/base-style", edit.base.name);
+    try std.testing.expectEqual(api_edit.InputMime.webp, edit.base.mime);
+    try std.testing.expectEqual(api_edit.ReferenceRole.style, edit.base_role);
+    try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
+}
+
+test "parseArgs accepts non-base scene reference without custom label" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "image=files/base,image/jpeg",
+        "--ref",
+        "scene=files/scene,image/png",
+        "--prompt",
+        "use the scene reference",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(@as(usize, 1), edit.reference_count);
+    try std.testing.expectEqual(api_edit.ReferenceRole.scene, edit.references[0].role);
+    try std.testing.expectEqualStrings("SCENE_REFERENCE_A", edit.references[0].label);
+    try std.testing.expectEqualStrings("files/scene", edit.references[0].image.name);
 }
 
 test "parseArgs accepts files upload path flag" {
@@ -2113,25 +2135,56 @@ test "parseArgs rejects edit missing base" {
         "--prompt",
         "change visual style to Broadway musical",
     }));
+}
 
-    try std.testing.expectError(error.MissingBase, parseArgs(&.{
+test "parseArgs rejects removed edit reference flags" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/one,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
         "nbimg",
         "edit",
         "--base-role",
         "character",
     }));
-}
 
-test "parseArgs rejects edit duplicate base" {
-    try std.testing.expectError(error.DuplicateBase, parseArgs(&.{
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/one,image/jpeg",
-        "--base",
-        "files/two,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--character",
+        "files/person,image/jpeg",
         "--prompt",
-        "change visual style to Broadway musical",
+        "edit",
+    }));
+
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--object",
+        "files/object,image/png",
+        "--prompt",
+        "edit",
+    }));
+
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--style",
+        "files/style,image/webp",
+        "--prompt",
+        "edit",
     }));
 }
 
@@ -2139,8 +2192,8 @@ test "parseArgs rejects edit missing MIME" {
     try std.testing.expectError(error.MissingMime, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c",
+        "--ref",
+        "scene=files/tjtj5me9i96c",
         "--prompt",
         "change visual style to Broadway musical",
     }));
@@ -2150,8 +2203,8 @@ test "parseArgs rejects edit invalid MIME" {
     try std.testing.expectError(error.InvalidMime, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/gif",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/gif",
         "--prompt",
         "change visual style to Broadway musical",
     }));
@@ -2161,23 +2214,32 @@ test "parseArgs rejects edit malformed image input" {
     try std.testing.expectError(error.MalformedImageInput, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg,extra",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg,extra",
         "--prompt",
         "change visual style to Broadway musical",
     }));
 }
 
-test "parseArgs rejects edit invalid base role" {
-    try std.testing.expectError(error.InvalidBaseRole, parseArgs(&.{
+test "parseArgs rejects edit invalid reference role" {
+    try std.testing.expectError(error.InvalidReference, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
-        "--base-role",
-        "portrait",
+        "--ref",
+        "portrait=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
         "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects labeled first edit reference" {
+    try std.testing.expectError(error.LabeledBaseReference, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene:BASE_SCENE=files/base,image/jpeg",
+        "--prompt",
+        "edit",
     }));
 }
 
@@ -2185,10 +2247,10 @@ test "parseArgs rejects edit invalid label" {
     try std.testing.expectError(error.InvalidLabel, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--character",
-        "character_a=files/person,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--ref",
+        "character:character_a=files/person,image/jpeg",
         "--prompt",
         "edit",
     }));
@@ -2198,12 +2260,12 @@ test "parseArgs rejects edit duplicate label" {
     try std.testing.expectError(error.DuplicateLabel, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--character",
-        "CHARACTER_A=files/person,image/jpeg",
-        "--object",
-        "CHARACTER_A=files/object,image/png",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--ref",
+        "character:CHARACTER_A=files/person,image/jpeg",
+        "--ref",
+        "object:CHARACTER_A=files/object,image/png",
         "--prompt",
         "edit",
     }));
@@ -2213,10 +2275,10 @@ test "parseArgs rejects edit reserved base image label" {
     try std.testing.expectError(error.DuplicateLabel, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--character",
-        "BASE_IMAGE=files/person,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--ref",
+        "character:BASE_IMAGE=files/person,image/jpeg",
         "--prompt",
         "edit",
     }));
@@ -2226,18 +2288,16 @@ test "parseArgs rejects edit too many character references including character b
     try std.testing.expectError(error.TooManyCharacterReferences, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--base-role",
-        "character",
-        "--character",
-        "files/one,image/jpeg",
-        "--character",
-        "files/two,image/jpeg",
-        "--character",
-        "files/three,image/jpeg",
-        "--character",
-        "files/four,image/jpeg",
+        "--ref",
+        "character=files/base,image/jpeg",
+        "--ref",
+        "character=files/one,image/jpeg",
+        "--ref",
+        "character=files/two,image/jpeg",
+        "--ref",
+        "character=files/three,image/jpeg",
+        "--ref",
+        "character=files/four,image/jpeg",
         "--prompt",
         "edit",
     }));
@@ -2247,30 +2307,28 @@ test "parseArgs rejects edit too many object references including object base" {
     try std.testing.expectError(error.TooManyObjectReferences, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--base-role",
-        "object",
-        "--object",
-        "files/one,image/png",
-        "--object",
-        "files/two,image/png",
-        "--object",
-        "files/three,image/png",
-        "--object",
-        "files/four,image/png",
-        "--object",
-        "files/five,image/png",
-        "--object",
-        "files/six,image/png",
-        "--object",
-        "files/seven,image/png",
-        "--object",
-        "files/eight,image/png",
-        "--object",
-        "files/nine,image/png",
-        "--object",
-        "files/ten,image/png",
+        "--ref",
+        "object=files/base,image/jpeg",
+        "--ref",
+        "object=files/one,image/png",
+        "--ref",
+        "object=files/two,image/png",
+        "--ref",
+        "object=files/three,image/png",
+        "--ref",
+        "object=files/four,image/png",
+        "--ref",
+        "object=files/five,image/png",
+        "--ref",
+        "object=files/six,image/png",
+        "--ref",
+        "object=files/seven,image/png",
+        "--ref",
+        "object=files/eight,image/png",
+        "--ref",
+        "object=files/nine,image/png",
+        "--ref",
+        "object=files/ten,image/png",
         "--prompt",
         "edit",
     }));
@@ -2280,36 +2338,36 @@ test "parseArgs rejects edit too many references" {
     try std.testing.expectError(error.TooManyReferences, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
-        "--style",
-        "files/one,image/jpeg",
-        "--style",
-        "files/two,image/jpeg",
-        "--style",
-        "files/three,image/jpeg",
-        "--style",
-        "files/four,image/jpeg",
-        "--style",
-        "files/five,image/jpeg",
-        "--style",
-        "files/six,image/jpeg",
-        "--style",
-        "files/seven,image/jpeg",
-        "--style",
-        "files/eight,image/jpeg",
-        "--style",
-        "files/nine,image/jpeg",
-        "--style",
-        "files/ten,image/jpeg",
-        "--style",
-        "files/eleven,image/jpeg",
-        "--style",
-        "files/twelve,image/jpeg",
-        "--style",
-        "files/thirteen,image/jpeg",
-        "--style",
-        "files/fourteen,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--ref",
+        "style=files/one,image/jpeg",
+        "--ref",
+        "style=files/two,image/jpeg",
+        "--ref",
+        "style=files/three,image/jpeg",
+        "--ref",
+        "style=files/four,image/jpeg",
+        "--ref",
+        "style=files/five,image/jpeg",
+        "--ref",
+        "style=files/six,image/jpeg",
+        "--ref",
+        "style=files/seven,image/jpeg",
+        "--ref",
+        "style=files/eight,image/jpeg",
+        "--ref",
+        "style=files/nine,image/jpeg",
+        "--ref",
+        "style=files/ten,image/jpeg",
+        "--ref",
+        "style=files/eleven,image/jpeg",
+        "--ref",
+        "style=files/twelve,image/jpeg",
+        "--ref",
+        "style=files/thirteen,image/jpeg",
+        "--ref",
+        "style=files/fourteen,image/jpeg",
         "--prompt",
         "edit",
     }));
@@ -2319,8 +2377,8 @@ test "parseArgs accepts edit empty constraints as no-ops" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
         "--preserve",
         "",
         "--do-not",
@@ -2338,8 +2396,8 @@ test "parseArgs keeps non-empty edit constraints when mixed with empty values" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/base,image/jpeg",
+        "--ref",
+        "scene=files/base,image/jpeg",
         "--preserve",
         "",
         "--preserve",
@@ -2665,8 +2723,8 @@ test "parseArgs rejects write response as unknown flag" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--write-response",
         "--prompt",
         "change visual style to Broadway musical",
@@ -2714,8 +2772,8 @@ test "parseArgs rejects print response as unknown flag" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
         "nbimg",
         "edit",
-        "--base",
-        "files/tjtj5me9i96c,image/jpeg",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
         "--print-response",
         "--prompt",
         "change visual style to Broadway musical",

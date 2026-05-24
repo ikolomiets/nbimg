@@ -35,20 +35,8 @@ pub const InputMime = enum {
     }
 };
 
-pub const BaseRole = enum {
-    scene,
-    character,
-    object,
-
-    pub fn fromName(name: []const u8) ?BaseRole {
-        if (std.mem.eql(u8, name, "scene")) return .scene;
-        if (std.mem.eql(u8, name, "character")) return .character;
-        if (std.mem.eql(u8, name, "object")) return .object;
-        return null;
-    }
-};
-
 pub const ReferenceRole = enum {
+    scene,
     character,
     object,
     style,
@@ -59,6 +47,7 @@ pub const ReferenceRole = enum {
     image,
 
     pub fn fromName(name: []const u8) ?ReferenceRole {
+        if (std.mem.eql(u8, name, "scene")) return .scene;
         if (std.mem.eql(u8, name, "character")) return .character;
         if (std.mem.eql(u8, name, "object")) return .object;
         if (std.mem.eql(u8, name, "style")) return .style;
@@ -86,7 +75,7 @@ pub const EditRequest = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     base: UploadedImage,
-    base_role: BaseRole = .scene,
+    base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
     preserves: []const []const u8 = &.{},
     do_nots: []const []const u8 = &.{},
@@ -224,7 +213,7 @@ pub fn buildFileUri(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
     return std.fmt.allocPrint(gpa, "{s}{s}", .{ file_uri_prefix, name });
 }
 
-fn buildBaseAnchor(gpa: std.mem.Allocator, base_role: BaseRole) ![]u8 {
+fn buildBaseAnchor(gpa: std.mem.Allocator, base_role: ReferenceRole) ![]u8 {
     return switch (base_role) {
         .scene => std.fmt.allocPrint(
             gpa,
@@ -240,6 +229,36 @@ fn buildBaseAnchor(gpa: std.mem.Allocator, base_role: BaseRole) ![]u8 {
             gpa,
             "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
             .{baseObjectAnchor()},
+        ),
+        .style => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{baseStyleAnchor()},
+        ),
+        .pose => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{basePoseAnchor()},
+        ),
+        .composition => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{baseCompositionAnchor()},
+        ),
+        .background => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{baseBackgroundAnchor()},
+        ),
+        .texture => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{baseTextureAnchor()},
+        ),
+        .image => std.fmt.allocPrint(
+            gpa,
+            "REFERENCE MANIFEST\n\nBASE_IMAGE:\n{s}",
+            .{baseImageAnchor()},
         ),
     };
 }
@@ -329,8 +348,33 @@ fn baseObjectAnchor() []const u8 {
     return "The next image is the image to edit and the primary object/product reference. Preserve the visible object's geometry, proportions, material, color, texture, markings, logo placement, text placement, and distinctive details unless the edit task explicitly says otherwise.";
 }
 
+fn baseStyleAnchor() []const u8 {
+    return "The next image is the image to edit and the primary style reference. Preserve its visible content as BASE_IMAGE while keeping its color palette, contrast, lighting mood, line weight, surface texture, grain, and rendering technique unless the edit task explicitly says otherwise.";
+}
+
+fn basePoseAnchor() []const u8 {
+    return "The next image is the image to edit and the primary pose reference. Preserve body position, gesture, posture, camera framing, and subject placement unless the edit task explicitly says otherwise.";
+}
+
+fn baseCompositionAnchor() []const u8 {
+    return "The next image is the image to edit and the primary composition reference. Preserve layout, subject placement, negative space, camera angle, framing, and scene geometry unless the edit task explicitly says otherwise.";
+}
+
+fn baseBackgroundAnchor() []const u8 {
+    return "The next image is the image to edit and the primary background reference. Preserve environment, setting, background structure, and scene context unless the edit task explicitly says otherwise.";
+}
+
+fn baseTextureAnchor() []const u8 {
+    return "The next image is the image to edit and the primary texture reference. Preserve material feel, surface texture, pattern, and finish unless the edit task explicitly says otherwise.";
+}
+
+fn baseImageAnchor() []const u8 {
+    return "The next image is the image to edit and a general visual reference. Preserve only the details needed by the edit task, and keep BASE_IMAGE as the target image unless the edit task explicitly says otherwise.";
+}
+
 fn referenceRoleAnchor(role: ReferenceRole) []const u8 {
     return switch (role) {
+        .scene => "The next image is a scene reference. Use it only for environment, composition, camera angle, framing, subject placement, lighting direction, and scene geometry requested by the edit task. Do not copy unrelated people or objects.",
         .character => "The next image is an identity reference. Use it only for facial identity, apparent age, face shape, hairstyle, hair color, skin tone, body proportions, and recognizable presence. Do not copy its background, lighting, clothing, pose, or camera angle unless explicitly requested.",
         .object => "The next image is an object/product reference. Preserve its geometry, proportions, material, color, texture, visible markings, logo placement, text placement, and distinctive details. Do not copy its background, lighting, or surrounding props.",
         .style => "The next image is a style reference. Use it only for color palette, contrast, lighting mood, line weight, surface texture, grain, and rendering technique. Do not copy its subject, layout, objects, or background.",

@@ -75,8 +75,7 @@ Edit an uploaded image:
 
 ```sh
 printf '%s\n' "change visual style to Broadway musical" | zig-out/bin/nbimg edit \
-  --base files/tjtj5me9i96c,image/jpeg \
-  --base-role character
+  --ref character=files/tjtj5me9i96c,image/jpeg
 ```
 
 If `gen` or `edit` omits `--prompt`, `nbimg` reads the prompt from stdin.
@@ -93,9 +92,11 @@ ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
 shape defaults unchanged.
 
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
-Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`. The
-command derives the Gemini File API URI from the `files/...` name and does not
-call `files get` before generation.
+The first `--ref` is the base image to edit and is always labeled
+`BASE_IMAGE`; omit a custom label on that first reference. Supported MIME values
+are `image/jpeg`, `image/png`, and `image/webp`. The command derives the Gemini
+File API URI from the `files/...` name and does not call `files get` before
+generation.
 
 Generic edit references use this syntax:
 
@@ -108,18 +109,21 @@ Generic edit references use this syntax:
       reference role
 ```
 
+Valid roles are `scene`, `character`, `object`, `style`, `pose`,
+`composition`, `background`, `texture`, and `image`.
+
 For example:
 
 ```sh
 nbimg edit \
-  --base files/base123,image/jpeg \
+  --ref scene=files/base123,image/jpeg \
   --ref character:CHARACTER_HERO=files/person456,image/jpeg \
   --ref object:OBJECT_SHOE=files/shoe123,image/png \
   --ref style:STYLE_POSTER=files/poster789,image/webp \
   --prompt "Edit BASE_IMAGE so CHARACTER_HERO wears OBJECT_SHOE, using STYLE_POSTER only for the rendering style"
 ```
 
-More single-reference examples:
+More later-reference examples:
 
 ```sh
 --ref style=files/watercolor789,image/webp
@@ -132,10 +136,6 @@ More single-reference examples:
 Useful edit flags:
 
 ```sh
---base-role scene|character|object
---character [LABEL=]files/ID,MIME
---object [LABEL=]files/ID,MIME
---style [LABEL=]files/ID,MIME
 --ref ROLE[:LABEL]=files/ID,MIME
 --preserve TEXT
 --do-not TEXT

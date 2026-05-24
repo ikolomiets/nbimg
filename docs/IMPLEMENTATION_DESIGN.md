@@ -11,7 +11,7 @@ generation. The implemented command surface is:
 
 ```sh
 nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -134,7 +134,7 @@ The CLI accepts:
 
 ```sh
 nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -164,28 +164,26 @@ Argument rules are intentionally narrow:
 - The output controls may be provided independently. If both are omitted,
   `nbimg` omits `generationConfig.imageConfig` and leaves Gemini's output
   shape defaults unchanged.
-- For `edit`, `--base files/ID,MIME` is required exactly once. The `files/...`
-  resource name must be canonical and the MIME value must be `image/jpeg`,
-  `image/png`, or `image/webp`.
+- For `edit`, at least one `--ref ROLE=files/ID,MIME` is required. The first
+  `--ref` is the base image to edit and is always labeled `BASE_IMAGE`; it
+  must not include a custom label.
+- Image `files/...` resource names must be canonical and MIME values must be
+  `image/jpeg`, `image/png`, or `image/webp`.
 - `edit` does not call `files get` before generation. The CLI derives
   `file_uri` by appending the canonical resource name to
   `https://generativelanguage.googleapis.com/v1beta/`.
-- `edit --base-role scene|character|object` is optional and defaults to
-  `scene`. A `character` base preserves portrait identity; an `object` base
-  preserves product/object fidelity.
-- `edit` accepts repeatable `--character`, `--object`, and `--style`
-  convenience references in `[LABEL=]files/ID,MIME` form.
 - `edit` accepts repeatable generic references with
-  `--ref ROLE[:LABEL]=files/ID,MIME`, where `ROLE` is `character`, `object`,
-  `style`, `pose`, `composition`, `background`, `texture`, or `image`.
-- If an edit reference label is omitted, deterministic labels such as
-  `CHARACTER_A`, `OBJECT_A`, and `STYLE_REFERENCE_A` are assigned. Custom
-  labels must be unique ASCII `SCREAMING_SNAKE_CASE`, start with a letter, and
-  be at most 64 bytes. `BASE_IMAGE` is reserved.
+  `--ref ROLE[:LABEL]=files/ID,MIME`, where `ROLE` is `scene`, `character`,
+  `object`, `style`, `pose`, `composition`, `background`, `texture`, or
+  `image`. Later references may include custom labels.
+- If a later edit reference label is omitted, deterministic labels such as
+  `SCENE_REFERENCE_A`, `CHARACTER_A`, `OBJECT_A`, and `STYLE_REFERENCE_A` are
+  assigned. Custom labels must be unique ASCII `SCREAMING_SNAKE_CASE`, start
+  with a letter, and be at most 64 bytes. `BASE_IMAGE` is reserved.
 - `edit` enforces the Nano Banana 2 input image limits used by the current
-  model: at most 14 total images including the base, at most 4 character
-  references including a character base, and at most 10 object references
-  including an object base.
+  model: at most 14 total images including the first base reference, at most 4
+  character references including a character base, and at most 10 object
+  references including an object base.
 - `edit` accepts repeatable `--preserve TEXT` and `--do-not TEXT` task-level
   constraints. Empty string values are accepted as no-ops. Omitted flags render
   no corresponding `PRESERVE FROM BASE_IMAGE` or `DO NOT` section, and the
@@ -225,17 +223,17 @@ specific error followed by:
 
 ```text
 usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
        nbimg files delete [--print-request] --name files/ID
 
 edit reference details:
-       --base-role defaults to scene
-       --ref ROLE[:LABEL]=files/ID,MIME requires ROLE; no default role
-       valid ROLE values: character|object|style|pose|composition|background|texture|image
-       omitted LABEL auto-assigns by role: CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A
+       first --ref is the BASE_IMAGE and must omit LABEL
+       later --ref ROLE[:LABEL]=files/ID,MIME references may include LABEL
+       valid ROLE values: scene|character|object|style|pose|composition|background|texture|image
+       omitted LABEL auto-assigns by role: SCENE_REFERENCE_A, CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A
        MIME must be image/jpeg, image/png, or image/webp
 ```
 
