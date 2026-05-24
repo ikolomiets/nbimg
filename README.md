@@ -9,7 +9,7 @@ The current implementation is intentionally narrow:
 - edit an uploaded Gemini File API image with a text prompt
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
-- optionally print sanitized request/response traffic for debugging
+- print sanitized response traffic by default, with optional request traffic
 
 See [docs/IMPLEMENTATION_DESIGN.md](docs/IMPLEMENTATION_DESIGN.md) for the
 current implementation details.
@@ -129,12 +129,12 @@ Debug traffic:
 ```sh
 zig-out/bin/nbimg gen \
   --print-request \
-  --print-response \
   --prompt "Create a photo of my fair lady"
 ```
 
-Traffic logs go to stderr. Command results, such as generated filenames, Files
-API metadata JSON, or delete `OK`, go to stdout.
+Response traffic logs go to stderr by default. Use `--print-request` to also
+log request traffic. Command results, such as generated filenames, Files API
+metadata JSON, or delete `OK`, go to stdout.
 
 ## Testing
 

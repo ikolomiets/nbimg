@@ -10,12 +10,12 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
-nbimg files list [--print-request] [--print-response]
-nbimg files get [--print-request] [--print-response] --name files/ID
-nbimg files delete [--print-request] [--print-response] --name files/ID
+nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--print-request]
+nbimg files get [--print-request] --name files/ID
+nbimg files delete [--print-request] --name files/ID
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
@@ -133,12 +133,12 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
-nbimg files list [--print-request] [--print-response]
-nbimg files get [--print-request] [--print-response] --name files/ID
-nbimg files delete [--print-request] [--print-response] --name files/ID
+nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--print-request]
+nbimg files get [--print-request] --name files/ID
+nbimg files delete [--print-request] --name files/ID
 ```
 
 Argument rules are intentionally narrow:
@@ -194,8 +194,9 @@ Argument rules are intentionally narrow:
   once.
 - File names for `files get` and `files delete` must use canonical `files/...`
   resource names; bare IDs are rejected.
-- `--print-request` and `--print-response` are optional boolean flags on all
-  commands. Their default value is `false`.
+- Response traffic is logged by default for all CLI commands.
+- `--print-request` is an optional boolean flag on all commands. Its default
+  value is `false`.
 - `--out-dir DIR` is supported by `gen` and `edit`; file commands reject it.
   The directory path may be relative or absolute, must be non-empty, must be
   specified at most once, and must already exist.
@@ -215,12 +216,12 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH
-       nbimg files list [--print-request] [--print-response]
-       nbimg files get [--print-request] [--print-response] --name files/ID
-       nbimg files delete [--print-request] [--print-response] --name files/ID
+usage: nbimg gen [--print-request] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+       nbimg files upload [--print-request] [--display-name NAME] --path PATH
+       nbimg files list [--print-request]
+       nbimg files get [--print-request] --name files/ID
+       nbimg files delete [--print-request] --name files/ID
 
 edit reference details:
        --base-role defaults to scene
@@ -367,9 +368,10 @@ The full response body is buffered in memory. The current hard limit is:
 That limit is represented by `api.max_response_bytes`.
 
 `api.traffic_log_options` is a mutable global switch for API traffic logging.
-The CLI enables it from `--print-request` and `--print-response`; both flags
-default to `false`. When enabled, the shared JSON transport logs framed request
-and response data to stderr:
+The CLI enables response logging by default and request logging from
+`--print-request`; API module defaults stay quiet for direct API callers and
+tests. When enabled, the shared JSON transport logs framed request and response
+data to stderr:
 
 ```text
 --- nbimg api request ---
@@ -503,8 +505,7 @@ Files API traffic logging uses the same global logging switch as `gen`.
 Headers are not logged. JSON request and response bodies are logged to stderr
 with the same response sanitization path. Binary upload bodies are never
 printed; the request log uses an omission marker containing the byte count and
-MIME type. When print flags are enabled for `files upload`, `files list`,
-`files get`, or `files delete`,
+MIME type. For `files upload`, `files list`, `files get`, and `files delete`,
 traffic logs are separated from command results by using stderr for diagnostics
 and stdout for metadata JSON or delete `OK`.
 

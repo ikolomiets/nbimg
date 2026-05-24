@@ -16,6 +16,7 @@ const max_prompt_bytes = 16 * 1024;
 const live_edit_sample_image_path = "sample_images/good_night.jpeg";
 const live_edit_upload_display_name = "nbimg live edit request validity";
 const live_edit_prompt = "change visual style to Broadway musical";
+const default_cli_traffic_log_options = api.TrafficLogOptions{ .print_response = true };
 
 pub const GenCommand = struct {
     prompt: []const u8,
@@ -74,7 +75,7 @@ pub const Command = union(enum) {
 };
 
 pub const ParsedCommand = struct {
-    traffic_log_options: api.TrafficLogOptions = .{},
+    traffic_log_options: api.TrafficLogOptions = default_cli_traffic_log_options,
     command: Command,
 };
 
@@ -133,7 +134,7 @@ const max_display_name_codepoints = 512;
 const CommandArgs = struct {
     args: []const [:0]const u8,
     index: usize = 0,
-    traffic_log_options: api.TrafficLogOptions = .{},
+    traffic_log_options: api.TrafficLogOptions = default_cli_traffic_log_options,
 
     fn nextOption(command_args: *CommandArgs) ?[]const u8 {
         while (command_args.index < command_args.args.len) {
@@ -1059,10 +1060,6 @@ fn parseTrafficLogFlag(arg: []const u8, traffic_log_options: *api.TrafficLogOpti
         traffic_log_options.print_request = true;
         return true;
     }
-    if (std.mem.eql(u8, arg, "--print-response")) {
-        traffic_log_options.print_response = true;
-        return true;
-    }
     return false;
 }
 
@@ -1282,12 +1279,12 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--print-response] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--print-response] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg files upload [--print-request] [--print-response] [--display-name NAME] --path PATH\n" ++
-        "       nbimg files list [--print-request] [--print-response]\n" ++
-        "       nbimg files get [--print-request] [--print-response] --name files/ID\n" ++
-        "       nbimg files delete [--print-request] [--print-response] --name files/ID\n" ++
+    return "usage: nbimg gen [--print-request] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--out-dir DIR] --base files/ID,MIME [--base-role scene|character|object] [--character [LABEL=]files/ID,MIME] [--object [LABEL=]files/ID,MIME] [--style [LABEL=]files/ID,MIME] [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
+        "       nbimg files list [--print-request]\n" ++
+        "       nbimg files get [--print-request] --name files/ID\n" ++
+        "       nbimg files delete [--print-request] --name files/ID\n" ++
         "\n" ++
         "edit reference details:\n" ++
         "       --base-role defaults to scene\n" ++
@@ -1325,7 +1322,7 @@ test "parseArgs accepts prompt flag" {
     const gen = expectGenCommand(parsed_command);
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1349,14 +1346,6 @@ test "parseArgs accepts print request flag" {
     const gen = expectGenCommand(parsed_command);
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
-}
-
-test "parseArgs accepts print response flag" {
-    const parsed_command = try parseArgs(&.{ "nbimg", "gen", "--prompt", "My fair lady", "--print-response" });
-    const gen = expectGenCommand(parsed_command);
-    try std.testing.expectEqualStrings("My fair lady", gen.prompt);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
@@ -1368,11 +1357,10 @@ test "parseArgs accepts gen output directory" {
     try std.testing.expectEqualStrings("outputs", gen.out_dir.?);
 }
 
-test "parseArgs accepts print flags in any order" {
+test "parseArgs accepts print request flag in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "gen",
-        "--print-response",
         "--prompt",
         "My fair lady",
         "--print-request",
@@ -1417,6 +1405,8 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
+    try std.testing.expect(!parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1482,7 +1472,7 @@ test "parseArgs accepts stdin fallback prompt for edit" {
     try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.base.mime);
 }
 
-test "parseArgs accepts edit base role constraints and traffic flags" {
+test "parseArgs accepts edit base role constraints and request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "edit",
@@ -1497,7 +1487,6 @@ test "parseArgs accepts edit base role constraints and traffic flags" {
         "do not change the crop",
         "--prompt",
         "change visual style to Broadway musical",
-        "--print-response",
     });
     const edit = expectEditCommand(parsed_command);
 
@@ -1576,7 +1565,7 @@ test "parseArgs accepts files upload path flag" {
     try std.testing.expectEqualStrings("sample_images/good_night.jpeg", files_upload.path);
     try std.testing.expectEqualStrings("good_night.jpeg", files_upload.display_name.?);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
 test "parseArgs defaults files upload display name to local file name" {
@@ -1623,12 +1612,11 @@ test "parseArgs accepts files upload display name with exactly 512 Unicode code 
     try std.testing.expectEqualStrings(max_name, files_upload.display_name.?);
 }
 
-test "parseArgs accepts files upload traffic log flags" {
+test "parseArgs accepts files upload request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "files",
         "upload",
-        "--print-response",
         "--path",
         "sample_images/good_night.jpeg",
         "--print-request",
@@ -1644,15 +1632,14 @@ test "parseArgs accepts files list" {
     const parsed_command = try parseArgs(&.{ "nbimg", "files", "list" });
     _ = expectFilesListCommand(parsed_command);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
-test "parseArgs accepts files list traffic log flags" {
+test "parseArgs accepts files list request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "files",
         "list",
-        "--print-response",
         "--print-request",
     });
     _ = expectFilesListCommand(parsed_command);
@@ -1671,15 +1658,14 @@ test "parseArgs accepts files get canonical name flag" {
     const files_get = expectFilesGetCommand(parsed_command);
     try std.testing.expectEqualStrings("files/abc123", files_get.name);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
-test "parseArgs accepts files get traffic log flags" {
+test "parseArgs accepts files get request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "files",
         "get",
-        "--print-response",
         "--name",
         "files/abc123",
         "--print-request",
@@ -1701,15 +1687,14 @@ test "parseArgs accepts files delete canonical name flag" {
     const files_delete = expectFilesDeleteCommand(parsed_command);
     try std.testing.expectEqualStrings("files/abc123", files_delete.name);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
-    try std.testing.expect(!parsed_command.traffic_log_options.print_response);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
-test "parseArgs accepts files delete traffic log flags" {
+test "parseArgs accepts files delete request log flag" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
         "files",
         "delete",
-        "--print-response",
         "--name",
         "files/abc123",
         "--print-request",
@@ -2559,6 +2544,55 @@ test "parseArgs rejects write response as unknown flag" {
         "--name",
         "files/abc123",
         "--write-response",
+    }));
+}
+
+test "parseArgs rejects print response as unknown flag" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--print-response",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--base",
+        "files/tjtj5me9i96c,image/jpeg",
+        "--print-response",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--print-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--print-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--print-response",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--print-response",
     }));
 }
 
