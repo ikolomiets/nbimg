@@ -4,18 +4,7 @@ This file tracks prioritized TODO items for `nbimg`. Keep it synchronized with
 the current codebase: remove items when implemented, revise items when the API
 shape changes, and add newly discovered gaps in priority order.
 
-## 1. Response Modality Selection
-
-- Current gap: `gen` and `edit` always request image-only output.
-- Likely CLI/API surface: add a response modality flag for `image` and
-  `text,image`, with image-only remaining the default unless product behavior
-  intentionally changes.
-- Implementation notes: keep generated text output naming and decoding stable,
-  because response decoding already supports text parts.
-- Testing: add request-shape tests for each accepted modality combination and
-  response fixture tests for interleaved text and image parts.
-
-## 2. `responseFormat.image` Output Options
+## 1. `responseFormat.image` Output Options
 
 - Current status: `--aspect-ratio` and `--image-size` serialize through
   `generationConfig.responseFormat.image` using Gemini enum values such as
@@ -33,7 +22,7 @@ shape changes, and add newly discovered gaps in priority order.
   or a non-billable endpoint proven to match it, because `countTokens` accepted
   explicit `delivery` values that `generateContent` rejected.
 
-## 3. Configurable Safety Settings
+## 2. Configurable Safety Settings
 
 - Current gap: requests always send fixed `BLOCK_NONE` safety settings.
 - Likely CLI/API surface: add explicit safety threshold controls per supported
@@ -44,7 +33,7 @@ shape changes, and add newly discovered gaps in priority order.
 - Testing: cover parsing, duplicate category handling, request serialization,
   and at least one live validation for changed safety settings.
 
-## 4. Generic Generation Controls
+## 3. Generic Generation Controls
 
 - Current gap: generic `GenerationConfig` fields such as `candidateCount`,
   `maxOutputTokens`, `temperature`, `topP`, `topK`, `seed`, penalties,
@@ -56,7 +45,7 @@ shape changes, and add newly discovered gaps in priority order.
 - Testing: add parser tests, request JSON tests, and live validation for each
   image-compatible field group.
 
-## 5. Request-Level Controls
+## 4. Request-Level Controls
 
 - Current gap: request-level fields such as `systemInstruction`,
   `cachedContent`, `serviceTier`, and `store` are not exposed.

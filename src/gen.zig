@@ -124,7 +124,6 @@ pub fn buildGenerateRequest(
 
     const parts = [_]TextPart{.{ .text = prompt }};
     const contents = [_]Content{.{ .parts = &parts }};
-    const modalities = [_]api.ResponseModality{.image};
     const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(grounding_options);
     var tools_buffer: [1]api.Tool = undefined;
     const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
@@ -135,7 +134,7 @@ pub fn buildGenerateRequest(
         .contents = &contents,
         .tools = tools,
         .generationConfig = .{
-            .responseModalities = &modalities,
+            .responseModalities = &api.default_response_modalities,
             .thinkingConfig = api.thinkingConfigFromOptions(thinking_options),
             .responseFormat = api.responseFormatFromOutputOptions(output_options),
         },
@@ -314,7 +313,7 @@ test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
         request,
     );
 }
@@ -328,7 +327,7 @@ test "buildGenerateRequest includes image output options" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"],\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"],\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}}," ++ expected_safety_settings_json ++ "}",
         request,
     );
 }
@@ -360,7 +359,7 @@ test "buildGenerateRequest includes web grounding tool" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"tools\":[{\"google_search\":{}}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"tools\":[{\"google_search\":{}}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
         request,
     );
 }
@@ -404,7 +403,7 @@ test "buildCountTokensRequest wraps fixed generate content request" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}}",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}}",
         request,
     );
 

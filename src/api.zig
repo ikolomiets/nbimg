@@ -29,10 +29,12 @@ pub const Model = enum {
 };
 
 pub const ResponseModality = enum {
+    text,
     image,
 
     pub fn apiName(modality: ResponseModality) []const u8 {
         return switch (modality) {
+            .text => "TEXT",
             .image => "IMAGE",
         };
     }
@@ -41,6 +43,8 @@ pub const ResponseModality = enum {
         try writer.write(modality.apiName());
     }
 };
+
+pub const default_response_modalities = [_]ResponseModality{ .text, .image };
 
 pub const ImageAspectRatio = enum {
     r1_1,
@@ -541,6 +545,16 @@ test "default safety settings serialize all supported harm categories as block n
     try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_SEXUALLY_EXPLICIT\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_DANGEROUS_CONTENT\"") != null);
     try std.testing.expectEqual(@as(usize, 4), countOccurrences(json, "\"threshold\":\"BLOCK_NONE\""));
+}
+
+test "default response modalities request text and image output" {
+    const gpa = std.testing.allocator;
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(default_response_modalities, .{}, &output.writer);
+
+    try std.testing.expectEqualStrings("[\"TEXT\",\"IMAGE\"]", output.written());
 }
 
 test "responseFormatFromOutputOptions serializes Gemini image response enum names" {

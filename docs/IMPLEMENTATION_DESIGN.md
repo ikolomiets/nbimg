@@ -168,6 +168,9 @@ Argument rules are intentionally narrow:
 - The output controls may be provided independently. If both are omitted,
   `nbimg` omits `generationConfig.responseFormat` and leaves Gemini's output
   shape defaults unchanged.
+- `gen` and `edit` request both text and image response parts by default with
+  `generationConfig.responseModalities` set to `["TEXT", "IMAGE"]`. There is
+  currently no user-facing flag for changing response modalities.
 - For `gen` and `edit`, `--grounding MODE` is optional and accepted at most
   once. Valid modes are `none`, `web`, `image`, and `web,image`. If omitted or
   set to `none`, `nbimg` omits request `tools`.
@@ -298,7 +301,7 @@ has this shape:
     }
   ],
   "generationConfig": {
-    "responseModalities": ["IMAGE"]
+    "responseModalities": ["TEXT", "IMAGE"]
   },
   "safetySettings": [
     { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
@@ -321,7 +324,7 @@ accepted enum names:
 ```json
 {
   "generationConfig": {
-    "responseModalities": ["IMAGE"],
+    "responseModalities": ["TEXT", "IMAGE"],
     "responseFormat": {
       "image": {
         "aspectRatio": "ASPECT_RATIO_SIXTEEN_BY_NINE",
@@ -360,7 +363,7 @@ When `--thinking-level`, `--include-thoughts`, or both are provided, `gen` and
 ```json
 {
   "generationConfig": {
-    "responseModalities": ["IMAGE"],
+    "responseModalities": ["TEXT", "IMAGE"],
     "thinkingConfig": {
       "thinkingLevel": "high",
       "includeThoughts": true
@@ -405,7 +408,7 @@ role text followed by a `file_data` part. For example:
     }
   ],
   "generationConfig": {
-    "responseModalities": ["IMAGE"]
+    "responseModalities": ["TEXT", "IMAGE"]
   },
   "safetySettings": [
     { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
@@ -629,7 +632,7 @@ to add the model field that Google requires inside nested
       }
     ],
     "generationConfig": {
-      "responseModalities": ["IMAGE"]
+      "responseModalities": ["TEXT", "IMAGE"]
     },
     "safetySettings": [
       { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },

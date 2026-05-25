@@ -262,11 +262,11 @@ The API supports inline media, File API uploads, Google Cloud Storage registrati
 
 ### 5.3 Image output controls
 
-Expose the image controls directly:
+Expose image shape and output-path controls directly. Keep response modalities
+fixed at text plus image in the minimal CLI unless product behavior
+intentionally changes.
 
 ```sh
---modality image
---modality text,image
 --aspect 1:1|16:9|9:16|4:5|...
 --size 512|1K|2K|4K
 --out PATH
@@ -274,16 +274,10 @@ Expose the image controls directly:
 --name-template 'candidate-{candidate}-part-{part}'
 ```
 
-Default:
+Default response modalities:
 
 ```sh
---modality image
-```
-
-For text plus image:
-
-```sh
---modality text,image
+text,image
 ```
 
 Google’s image docs state that responses can be configured for image-only output using `responseModalities`, while the default can include both text and image. ([Google AI for Developers][1]) The general API reference also defines `responseModalities` as the requested output modalities. ([Google AI for Developers][2])
@@ -701,7 +695,7 @@ State file:
 {
   "model": "gemini-3.1-flash-image-preview",
   "generation_config": {
-    "responseModalities": ["IMAGE"],
+    "responseModalities": ["TEXT", "IMAGE"],
     "responseFormat": {
       "image": {
         "aspectRatio": "16:9",
@@ -977,7 +971,6 @@ Common options:
 Image options:
   --aspect RATIO
   --size 512|1K|2K|4K
-  --modality image|text,image
 
 Input options:
   --prompt TEXT
@@ -1047,7 +1040,7 @@ Request shape:
     }
   ],
   "generationConfig": {
-    "responseModalities": ["IMAGE"],
+    "responseModalities": ["TEXT", "IMAGE"],
     "thinkingConfig": {
       "thinkingLevel": "high",
       "includeThoughts": true

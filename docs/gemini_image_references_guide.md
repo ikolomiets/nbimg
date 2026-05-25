@@ -375,7 +375,7 @@ For REST, current Google examples show uploaded file references as `file_data` w
     }
   ],
   "generationConfig": {
-    "responseModalities": ["IMAGE"],
+    "responseModalities": ["TEXT", "IMAGE"],
     "responseFormat": {
       "image": {
         "aspectRatio": "16:9",
@@ -576,4 +576,3 @@ Nano Banana 2 does not need hidden ControlNet-like metadata for character/object
 [1]: https://ai.google.dev/gemini-api/docs/gemini-3 "Gemini generateContent API  |  Google AI for Developers"
 [2]: https://ai.google.dev/gemini-api/docs/files "Gemini generateContent API  |  Google AI for Developers"
 [3]: https://ai.google.dev/gemini-api/docs/image-generation "Gemini API  |  Google AI for Developers"
-

@@ -168,7 +168,6 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     assert(part_index == parts.len);
 
     const contents = [_]GenerateContent{.{ .parts = parts }};
-    const modalities = [_]api.ResponseModality{.image};
     const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(request.grounding_options);
     var tools_buffer: [1]api.Tool = undefined;
     const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
@@ -179,7 +178,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         .contents = &contents,
         .tools = tools,
         .generationConfig = .{
-            .responseModalities = &modalities,
+            .responseModalities = &api.default_response_modalities,
             .thinkingConfig = api.thinkingConfigFromOptions(request.thinking_options),
             .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
         },
@@ -421,7 +420,7 @@ test "buildGenerateRequest builds edit request with base file data" {
     try std.testing.expect(file_part < edit_task);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"mime_type\":\"image/jpeg\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_uri\":\"https://generativelanguage.googleapis.com/v1beta/files/tjtj5me9i96c\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseFormat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
     try expectDefaultSafetySettings(request);
@@ -448,7 +447,7 @@ test "buildGenerateRequest includes edit image output options" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_FOUR_BY_FIVE\",\"imageSize\":\"IMAGE_SIZE_FOUR_K\"}}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
@@ -489,7 +488,7 @@ test "buildGenerateRequest includes edit web grounding tool" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{}}]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
     try expectDefaultSafetySettings(request);
 }
 

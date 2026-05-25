@@ -5,7 +5,7 @@ generation and the Gemini Files API.
 
 The current implementation is intentionally narrow:
 
-- generate image output from a text prompt
+- generate image and text output from a text prompt
 - edit an uploaded Gemini File API image with a text prompt
 - enable Google Search or Image Search grounding for generation and edit
 - configure Gemini Thinking level and request returned thought parts
@@ -85,6 +85,8 @@ Stdin prompts are limited to `16 KiB`.
 
 Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
 existing relative or absolute directory instead of the current directory.
+Gemini text response parts are written as `.txt` files beside generated image
+files.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
