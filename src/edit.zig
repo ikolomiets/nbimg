@@ -75,6 +75,7 @@ pub const EditRequest = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
+    thinking_options: api.ThinkingOptions = .{},
     base: UploadedImage,
     base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
@@ -98,6 +99,7 @@ const GenerateContent = struct {
 
 const GenerateConfig = struct {
     responseModalities: []const api.ResponseModality,
+    thinkingConfig: ?api.ThinkingConfig = null,
     responseFormat: ?api.ResponseFormatConfig = null,
 };
 
@@ -178,6 +180,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         .tools = tools,
         .generationConfig = .{
             .responseModalities = &modalities,
+            .thinkingConfig = api.thinkingConfigFromOptions(request.thinking_options),
             .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
         },
         .safetySettings = &api.default_safety_settings,
@@ -524,6 +527,24 @@ test "buildGenerateRequest includes edit combined grounding tool" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}]") != null);
+}
+
+test "buildGenerateRequest includes edit thinking config" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .thinking_options = .{
+            .level = .minimal,
+            .include_thoughts = true,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"minimal\",\"includeThoughts\":true}") != null);
 }
 
 fn expectDefaultSafetySettings(request_json: []const u8) !void {

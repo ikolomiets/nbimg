@@ -39,6 +39,7 @@ pub const GeneratedFile = struct {
     part_index: usize,
     mime: OutputMime,
     bytes: []u8,
+    thought: bool = false,
 
     pub fn deinit(file: *GeneratedFile, gpa: std.mem.Allocator) void {
         gpa.free(file.bytes);
@@ -65,11 +66,12 @@ pub fn generateContent(
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
+    thinking_options: api.ThinkingOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
 
-    const request_json = try buildGenerateRequest(gpa, prompt, output_options, grounding_options);
+    const request_json = try buildGenerateRequest(gpa, prompt, output_options, grounding_options, thinking_options);
     defer gpa.free(request_json);
 
     return api.postJson(gpa, io, api_key, api.generateContentUrl(.nano2), request_json);
@@ -82,11 +84,12 @@ pub fn countGenerateContentRequestTokens(
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
+    thinking_options: api.ThinkingOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
 
-    const request_json = try buildCountTokensRequest(gpa, prompt, output_options, grounding_options);
+    const request_json = try buildCountTokensRequest(gpa, prompt, output_options, grounding_options, thinking_options);
     defer gpa.free(request_json);
 
     return api.postJson(gpa, io, api_key, api.countTokensUrl(.nano2), request_json);
@@ -97,6 +100,7 @@ pub fn buildGenerateRequest(
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
+    thinking_options: api.ThinkingOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
 
@@ -108,6 +112,7 @@ pub fn buildGenerateRequest(
     };
     const GenerationConfig = struct {
         responseModalities: []const api.ResponseModality,
+        thinkingConfig: ?api.ThinkingConfig = null,
         responseFormat: ?api.ResponseFormatConfig = null,
     };
     const GenerateContentRequest = struct {
@@ -131,6 +136,7 @@ pub fn buildGenerateRequest(
         .tools = tools,
         .generationConfig = .{
             .responseModalities = &modalities,
+            .thinkingConfig = api.thinkingConfigFromOptions(thinking_options),
             .responseFormat = api.responseFormatFromOutputOptions(output_options),
         },
         .safetySettings = &api.default_safety_settings,
@@ -151,10 +157,11 @@ pub fn buildCountTokensRequest(
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
+    thinking_options: api.ThinkingOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
 
-    const generate_request_json = try buildGenerateRequest(gpa, prompt, output_options, grounding_options);
+    const generate_request_json = try buildGenerateRequest(gpa, prompt, output_options, grounding_options, thinking_options);
     defer gpa.free(generate_request_json);
 
     return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
@@ -179,6 +186,7 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
         const Part = struct {
             text: ?[]const u8 = null,
             inlineData: ?InlineData = null,
+            thought: bool = false,
             thoughtSignature: ?[]const u8 = null,
         };
         const InlineData = struct {
@@ -211,6 +219,7 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     errdefer gpa.free(owned_response_id);
 
     var files: std.ArrayList(GeneratedFile) = .empty;
+    var final_part_count: usize = 0;
     errdefer {
         for (files.items) |*file| file.deinit(gpa);
         files.deinit(gpa);
@@ -219,13 +228,16 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     for (parsed.value.candidates, 0..) |candidate, candidate_index| {
         const content = candidate.content orelse continue;
         for (content.parts, 0..) |part, part_index| {
-            var file = try decodePart(gpa, candidate_index, part_index, part);
-            errdefer file.deinit(gpa);
-            try files.append(gpa, file);
+            var file = (try decodePart(gpa, candidate_index, part_index, part)) orelse continue;
+            files.append(gpa, file) catch |err| {
+                file.deinit(gpa);
+                return err;
+            };
+            if (!file.thought) final_part_count += 1;
         }
     }
 
-    if (files.items.len == 0) return error.NoGeneratedParts;
+    if (final_part_count == 0) return error.NoGeneratedParts;
 
     return .{
         .response_id = owned_response_id,
@@ -238,8 +250,11 @@ fn decodePart(
     candidate_index: usize,
     part_index: usize,
     part: anytype,
-) !GeneratedFile {
+) !?GeneratedFile {
+    const thought = part.thought;
     if (part.text) |text| {
+        if (thought) return null;
+
         const bytes = try gpa.dupe(u8, text);
         errdefer gpa.free(bytes);
 
@@ -248,6 +263,7 @@ fn decodePart(
             .part_index = part_index,
             .mime = .text,
             .bytes = bytes,
+            .thought = false,
         };
     }
 
@@ -268,10 +284,20 @@ fn decodePart(
         .part_index = part_index,
         .mime = mime,
         .bytes = decoded,
+        .thought = thought,
     };
 }
 
 pub fn generatedFileName(buffer: []u8, response_id: []const u8, file: GeneratedFile) ![]const u8 {
+    if (file.thought) {
+        assert(file.mime != .text);
+        return std.fmt.bufPrint(
+            buffer,
+            "{s}-{d}-thought-{d}.{s}",
+            .{ response_id, file.candidate_index, file.part_index, file.mime.extension() },
+        );
+    }
+
     return std.fmt.bufPrint(
         buffer,
         "{s}-{d}-{d}.{s}",
@@ -284,7 +310,7 @@ const expected_safety_settings_json =
 
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{});
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -298,7 +324,7 @@ test "buildGenerateRequest includes image output options" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r16_9,
         .image_size = .k2,
-    }, .{});
+    }, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -311,7 +337,7 @@ test "buildGenerateRequest includes partial image output options" {
     const gpa = std.testing.allocator;
     const aspect_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r9_16,
-    }, .{});
+    }, .{}, .{});
     defer gpa.free(aspect_request);
 
     try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"ASPECT_RATIO_NINE_BY_SIXTEEN\"") != null);
@@ -319,7 +345,7 @@ test "buildGenerateRequest includes partial image output options" {
 
     const size_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .image_size = .px512,
-    }, .{});
+    }, .{}, .{});
     defer gpa.free(size_request);
 
     try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"IMAGE_SIZE_FIVE_TWELVE\"") != null);
@@ -330,7 +356,7 @@ test "buildGenerateRequest includes web grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
-    });
+    }, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -343,7 +369,7 @@ test "buildGenerateRequest includes image grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .image = true,
-    });
+    }, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"imageSearch\":{}}}}]") != null);
@@ -355,15 +381,26 @@ test "buildGenerateRequest includes combined grounding tool" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
         .image = true,
-    });
+    }, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}]") != null);
 }
 
+test "buildGenerateRequest includes thinking config" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{
+        .level = .high,
+        .include_thoughts = true,
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"high\",\"includeThoughts\":true}") != null);
+}
+
 test "buildCountTokensRequest wraps fixed generate content request" {
     const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{});
+    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -401,6 +438,10 @@ test "live API generateContent request shape is valid" {
         .{
             .web = true,
             .image = true,
+        },
+        .{
+            .level = .minimal,
+            .include_thoughts = true,
         },
     ) catch |err| {
         std.debug.print("error: countTokens request failed: {s}\n", .{@errorName(err)});
@@ -452,6 +493,54 @@ test "decodeGeneratedFiles decodes image and text parts" {
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, files.items[0].bytes);
     try std.testing.expectEqual(OutputMime.text, files.items[1].mime);
     try std.testing.expectEqualStrings("hello", files.items[1].bytes);
+}
+
+test "decodeGeneratedFiles decodes thought images and skips thought text" {
+    const gpa = std.testing.allocator;
+    const json =
+        \\{
+        \\  "responseId": "test-response",
+        \\  "candidates": [{
+        \\    "content": {
+        \\      "parts": [
+        \\        {"text": "planning", "thought": true},
+        \\        {"inlineData": {"mimeType": "image/jpeg", "data": "AQID"}, "thought": true},
+        \\        {"inlineData": {"mimeType": "image/png", "data": "BAUG"}}
+        \\      ]
+        \\    }
+        \\  }]
+        \\}
+    ;
+
+    var files = try decodeGeneratedFiles(gpa, json);
+    defer files.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), files.items.len);
+    try std.testing.expect(files.items[0].thought);
+    try std.testing.expectEqual(OutputMime.jpeg, files.items[0].mime);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, files.items[0].bytes);
+    try std.testing.expect(!files.items[1].thought);
+    try std.testing.expectEqual(OutputMime.png, files.items[1].mime);
+    try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, files.items[1].bytes);
+}
+
+test "decodeGeneratedFiles rejects response with only thought parts" {
+    const gpa = std.testing.allocator;
+    const json =
+        \\{
+        \\  "responseId": "test-response",
+        \\  "candidates": [{
+        \\    "content": {
+        \\      "parts": [
+        \\        {"text": "planning", "thought": true},
+        \\        {"inlineData": {"mimeType": "image/jpeg", "data": "AQID"}, "thought": true}
+        \\      ]
+        \\    }
+        \\  }]
+        \\}
+    ;
+
+    try std.testing.expectError(error.NoGeneratedParts, decodeGeneratedFiles(gpa, json));
 }
 
 test "decodeGeneratedFiles accepts observed Gemini image response shape" {
@@ -560,4 +649,17 @@ test "generatedFileName uses response id candidate part template" {
     var buffer: [64]u8 = undefined;
     const name = try generatedFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs", file);
     try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs-12-3.webp", name);
+}
+
+test "generatedFileName marks thought images" {
+    const file = GeneratedFile{
+        .candidate_index = 0,
+        .part_index = 4,
+        .mime = .jpeg,
+        .bytes = @constCast("x"),
+        .thought = true,
+    };
+    var buffer: [64]u8 = undefined;
+    const name = try generatedFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs", file);
+    try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs-0-thought-4.jpg", name);
 }

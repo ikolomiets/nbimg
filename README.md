@@ -8,6 +8,7 @@ The current implementation is intentionally narrow:
 - generate image output from a text prompt
 - edit an uploaded Gemini File API image with a text prompt
 - enable Google Search or Image Search grounding for generation and edit
+- configure Gemini Thinking level and request returned thought parts
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print sanitized response traffic by default, with optional request traffic
@@ -91,6 +92,13 @@ ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
 `5:4`, `8:1`, `9:16`, `16:9`, and `21:9`. Valid image sizes are `512`, `1K`,
 `2K`, and `4K`. If both flags are omitted, `nbimg` leaves Gemini's output
 shape defaults unchanged.
+
+Use `--thinking-level minimal|high` with `gen` or `edit` to control Gemini's
+thinking effort. Omit it to use Gemini's default. Use `--include-thoughts` to
+ask Gemini to return thought parts in the response. Response traffic is already
+logged to stderr by default, so thought text is visible there when returned.
+Thought image parts are written beside final outputs, using filenames such as
+`RESPONSE-0-thought-0.jpg`.
 
 Use `--grounding MODE` with `gen` or `edit` when the prompt should be grounded
 with Google Search. Valid modes are `none`, `web`, `image`, and `web,image`.
@@ -183,6 +191,8 @@ Useful edit flags:
 --aspect-ratio RATIO
 --image-size SIZE
 --grounding none|web|image|web,image
+--thinking-level minimal|high
+--include-thoughts
 --out-dir DIR
 ```
 
@@ -244,7 +254,8 @@ zig build test-live-api-files-delete
 `generateContent` is billable, so the request-shape live tests for `gen` and
 `edit` use `countTokens` as a lower-cost validation endpoint instead of
 generating content. The `gen` and `edit` request-shape live tests include
-`web,image` grounding to validate the tool-bearing request shape. The edit
-request-shape live test uploads `sample_images/good_night.jpeg` through the
-Files API, validates the edit request with the uploaded `files/...` name, and
-deletes the uploaded file after validation.
+`web,image` grounding and `thinkingConfig` to validate the tool-bearing and
+Thinking request shape. The edit request-shape live test uploads
+`sample_images/good_night.jpeg` through the Files API, validates the edit
+request with the uploaded `files/...` name, and deletes the uploaded file after
+validation.

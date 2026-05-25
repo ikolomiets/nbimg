@@ -340,7 +340,6 @@ For Gemini 3 image models, the CLI should expose Thinking as a first-class group
 --thinking-level minimal
 --thinking-level high
 --include-thoughts
---save-thoughts DIR
 ```
 
 For example:
@@ -351,13 +350,17 @@ nbimg gen \
   --model nano2 \
   --thinking-level high \
   --include-thoughts \
-  --save-thoughts ./thoughts \
   --out ./out/orbits
 ```
 
 Google documents that Gemini 3 image models are thinking models; Thinking is enabled by default and cannot be disabled. For Gemini 3.1 Flash Image, the documented thinking levels are `minimal` and `high`, and `includeThoughts` controls whether thoughts are returned. ([Google AI for Developers][1])
 
 The chat state must also preserve **thought signatures** exactly when present. Google describes thought signatures as encrypted representations used to preserve reasoning context in multi-turn interactions and states that they should be passed back exactly. ([Google AI for Developers][1])
+
+For one-shot generation and edit commands, thought output should not have a
+separate destination flag. Returned thought text stays visible in the raw
+response log, and returned thought images are saved beside final images in the
+normal output directory with a `thought` marker in the filename.
 
 ---
 
@@ -570,7 +573,7 @@ For each part:
 | ---------------------------- | -------------------------------------------------------------- |
 | `text`                       | Print to stdout or save as `.txt`                              |
 | `inlineData`                 | Base64-decode and write image file                             |
-| thought part                 | Save only when `--include-thoughts` / `--save-thoughts` is set |
+| thought part                 | Save thought images only when `--include-thoughts` is set; leave thought text in response logs |
 | grounding metadata           | Save JSON and optional attribution HTML                        |
 | safety / finish metadata     | Save in response metadata JSON                                 |
 | thought signatures           | Store in chat state exactly                                    |

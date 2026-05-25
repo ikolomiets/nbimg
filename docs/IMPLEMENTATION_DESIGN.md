@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -23,9 +23,9 @@ binary accepts one prompt through `--prompt` or stdin fallback, sends fixed
 generation or edit requests to the Gemini API, decodes image or text parts from
 the response, and writes each generated part to the selected output directory
 or current working directory. Generation and edit requests can optionally
-enable Google Search or Image Search grounding. It can also upload image files
-to Gemini's Files API, list or get uploaded file metadata, and delete uploaded
-files.
+enable Google Search or Image Search grounding, set Gemini Thinking level, and
+request returned thought parts. It can also upload image files to Gemini's
+Files API, list or get uploaded file metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, or response snapshots.
@@ -42,7 +42,8 @@ The code is split into seven source files:
   lookup, request dispatch, response handling, and file writing.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
-  logging options, transport helpers, and response log sanitization.
+  logging options, transport helpers, Thinking/output/grounding wire helpers,
+  and response log sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction, generated response decoding, generated file
   metadata, and output naming.
@@ -136,8 +137,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -179,6 +180,14 @@ Argument rules are intentionally narrow:
   visible through the default stderr response traffic log.
 - Image Search grounding is for visual search context and currently cannot be
   used to search for people.
+- For `gen` and `edit`, `--thinking-level LEVEL` is optional and accepted at
+  most once. Valid levels are `minimal` and `high`. If omitted, `nbimg` omits
+  `generationConfig.thinkingConfig.thinkingLevel`.
+- `--include-thoughts` is optional and accepted at most once for `gen` and
+  `edit`. It requests returned thought parts by setting
+  `generationConfig.thinkingConfig.includeThoughts` to `true`. Thought text is
+  only visible in the existing stderr response log. Thought image parts are
+  saved beside final output files and use `thought` in the filename.
 - For `edit`, at least one `--ref ROLE=files/ID,MIME` is required. The first
   `--ref` is the base image to edit and is always labeled `BASE_IMAGE`; it
   must not include a custom label.
@@ -237,8 +246,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -344,6 +353,25 @@ top-level `tools` array. The accepted grounding modes serialize as:
 Grounding metadata remains part of Gemini's ordinary response JSON. The
 current implementation does not parse it into a separate type and does not
 write sidecar attribution files.
+
+When `--thinking-level`, `--include-thoughts`, or both are provided, `gen` and
+`edit` add `generationConfig.thinkingConfig` to the same request shape:
+
+```json
+{
+  "generationConfig": {
+    "responseModalities": ["IMAGE"],
+    "thinkingConfig": {
+      "thinkingLevel": "high",
+      "includeThoughts": true
+    }
+  }
+}
+```
+
+`thinkingLevel` is omitted when `--thinking-level` is absent, and
+`includeThoughts` is omitted unless `--include-thoughts` is set. `nbimg`
+currently exposes only `minimal` and `high`.
 
 `api.default_safety_settings` supplies the static top-level `safetySettings`
 array for all `generateContent` requests. It configures harassment, hate
@@ -631,10 +659,15 @@ responseId
 candidates[].content.parts[]
 ```
 
-Each part is converted into one `GeneratedFile`:
+Supported final parts and thought image parts are converted into
+`GeneratedFile` values:
 
 - Text parts become `.txt` files containing the returned UTF-8 text.
 - Inline image parts are base64-decoded and become image files.
+- Parts with `thought: true` are treated as thought parts. Thought text is
+  skipped for file output and remains visible only in the raw stderr response
+  log. Thought inline image parts are decoded, marked as thoughts, and written
+  beside final output files.
 - The root `responseId` is copied once into `GeneratedFiles` for output
   naming.
 
@@ -656,10 +689,11 @@ data:
 - `mimeType`
 
 If root `responseId` is missing or empty, decoding fails with
-`error.MissingResponseId`. If `responseId` is present but no supported parts
-are found, decoding fails with `error.NoGeneratedParts`. Unsupported part
-shapes, missing MIME types, unsupported MIME types, missing inline data,
-invalid JSON, or invalid base64 are surfaced as parse failures by the CLI.
+`error.MissingResponseId`. If `responseId` is present but no supported final
+parts are found, decoding fails with `error.NoGeneratedParts`, even when
+thought parts were present. Unsupported part shapes, missing MIME types,
+unsupported MIME types, missing inline data, invalid JSON, or invalid base64
+are surfaced as parse failures by the CLI.
 
 ## Output Naming And Writes
 
@@ -672,11 +706,18 @@ from the root response ID and response position:
 {responseId}-{candidate_index}-{part_index}.{extension}
 ```
 
+Thought image filenames add a `thought` marker:
+
+```text
+{responseId}-{candidate_index}-thought-{part_index}.{extension}
+```
+
 For example:
 
 ```text
 PMMIapvKNtLj_uMPq8a8oQs-0-0.jpg
 PMMIapvKNtLj_uMPq8a8oQs-0-1.txt
+PMMIapvKNtLj_uMPq8a8oQs-0-thought-2.jpg
 ```
 
 Writes are exclusive. If a target file already exists, the write fails instead
@@ -787,8 +828,8 @@ lower-cost validation endpoint to confirm that Gemini accepts the current
 The live request uses `aspectRatio: "16:9"` and `imageSize: "2K"` to confirm
 Gemini accepts the output-option wire shape after those CLI values are mapped
 to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`. It also enables
-`web,image` grounding to validate the tool-bearing request shape through the
-same non-generation endpoint.
+`web,image` grounding and `thinkingConfig` with returned thoughts requested to
+validate those request shapes through the same non-generation endpoint.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
@@ -799,7 +840,8 @@ and then deletes the uploaded file. The live edit request uses
 `aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
 serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
 output options on edit requests. It also enables `web,image` grounding. It
-does not call `generateContent`.
+also includes `thinkingConfig` with returned thoughts requested. It does not
+call `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name

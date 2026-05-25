@@ -22,6 +22,7 @@ pub const GenCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
+    thinking_options: api.ThinkingOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -31,6 +32,7 @@ pub const EditCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
+    thinking_options: api.ThinkingOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
@@ -133,6 +135,11 @@ pub const ParseError = error{
     EmptyGrounding,
     DuplicateGrounding,
     InvalidGrounding,
+    MissingThinkingLevel,
+    EmptyThinkingLevel,
+    DuplicateThinkingLevel,
+    InvalidThinkingLevel,
+    DuplicateIncludeThoughts,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -237,7 +244,15 @@ pub fn run(init: std.process.Init) u8 {
 }
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
-    var response = api_gen.generateContent(gpa, init.io, api_key, command.prompt, command.output_options, command.grounding_options) catch |err| {
+    var response = api_gen.generateContent(
+        gpa,
+        init.io,
+        api_key,
+        command.prompt,
+        command.output_options,
+        command.grounding_options,
+        command.thinking_options,
+    ) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -270,6 +285,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         .prompt = command.prompt,
         .output_options = command.output_options,
         .grounding_options = command.grounding_options,
+        .thinking_options = command.thinking_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -588,7 +604,9 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var prompt: ?[]const u8 = null;
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
+    var thinking_options: api.ThinkingOptions = .{};
     var grounding_seen = false;
+    var include_thoughts_seen = false;
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -609,6 +627,10 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             try parseImageSizeOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--grounding")) {
             try parseGroundingOption(command_args, &grounding_options, &grounding_seen);
+        } else if (std.mem.eql(u8, arg, "--thinking-level")) {
+            try parseThinkingLevelOption(command_args, &thinking_options);
+        } else if (std.mem.eql(u8, arg, "--include-thoughts")) {
+            try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -624,6 +646,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .output_options = output_options,
         .grounding_options = grounding_options,
+        .thinking_options = thinking_options,
         .out_dir = out_dir,
     };
 }
@@ -632,7 +655,9 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var prompt: ?[]const u8 = null;
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
+    var thinking_options: api.ThinkingOptions = .{};
     var grounding_seen = false;
+    var include_thoughts_seen = false;
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.ReferenceRole = .scene;
@@ -661,6 +686,10 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             try parseImageSizeOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--grounding")) {
             try parseGroundingOption(command_args, &grounding_options, &grounding_seen);
+        } else if (std.mem.eql(u8, arg, "--thinking-level")) {
+            try parseThinkingLevelOption(command_args, &thinking_options);
+        } else if (std.mem.eql(u8, arg, "--include-thoughts")) {
+            try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -698,6 +727,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .prompt = parsed_prompt,
         .output_options = output_options,
         .grounding_options = grounding_options,
+        .thinking_options = thinking_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -737,6 +767,27 @@ fn parseGroundingOption(
     if (value.len == 0) return error.EmptyGrounding;
     grounding_options.* = api.GroundingOptions.fromName(value) orelse return error.InvalidGrounding;
     grounding_seen.* = true;
+}
+
+fn parseThinkingLevelOption(
+    command_args: *CommandArgs,
+    thinking_options: *api.ThinkingOptions,
+) ParseError!void {
+    if (thinking_options.level != null) return error.DuplicateThinkingLevel;
+
+    const value = try command_args.nextValue(error.MissingThinkingLevel);
+    if (value.len == 0) return error.EmptyThinkingLevel;
+    thinking_options.level = api.ThinkingLevel.fromName(value) orelse return error.InvalidThinkingLevel;
+}
+
+fn parseIncludeThoughtsOption(
+    thinking_options: *api.ThinkingOptions,
+    include_thoughts_seen: *bool,
+) ParseError!void {
+    if (include_thoughts_seen.*) return error.DuplicateIncludeThoughts;
+
+    thinking_options.include_thoughts = true;
+    include_thoughts_seen.* = true;
 }
 
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
@@ -1198,6 +1249,55 @@ test "writeGeneratedFiles writes generated files under relative output directory
     try std.testing.expectEqualStrings("hello", written);
 }
 
+test "writeGeneratedFiles writes thought images under same output directory" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
+    defer gpa.free(out_dir);
+
+    var items = [_]api_gen.GeneratedFile{
+        .{
+            .candidate_index = 0,
+            .part_index = 0,
+            .mime = .jpeg,
+            .bytes = @constCast(&[_]u8{1}),
+            .thought = true,
+        },
+        .{
+            .candidate_index = 0,
+            .part_index = 1,
+            .mime = .png,
+            .bytes = @constCast(&[_]u8{2}),
+        },
+    };
+    const files = api_gen.GeneratedFiles{
+        .response_id = @constCast("test-response"),
+        .items = &items,
+    };
+
+    try writeGeneratedFiles(std.testing.io, out_dir, files);
+
+    const thought = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "test-response-0-thought-0.jpg",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(thought);
+    try std.testing.expectEqualSlices(u8, &.{1}, thought);
+
+    const final = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "test-response-0-1.png",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(final);
+    try std.testing.expectEqualSlices(u8, &.{2}, final);
+}
+
 fn writeStdoutLine(io: std.Io, line: []const u8) !void {
     const stdout = std.Io.File.stdout();
     try stdout.writeStreamingAll(io, line);
@@ -1333,6 +1433,11 @@ fn printUsageError(err: ParseError) void {
         error.EmptyGrounding => std.debug.print("error: grounding mode must not be empty\n", .{}),
         error.DuplicateGrounding => std.debug.print("error: grounding mode specified more than once\n", .{}),
         error.InvalidGrounding => std.debug.print("error: grounding mode must be none, web, image, or web,image\n", .{}),
+        error.MissingThinkingLevel => std.debug.print("error: missing thinking level\n", .{}),
+        error.EmptyThinkingLevel => std.debug.print("error: thinking level must not be empty\n", .{}),
+        error.DuplicateThinkingLevel => std.debug.print("error: thinking level specified more than once\n", .{}),
+        error.InvalidThinkingLevel => std.debug.print("error: thinking level must be minimal or high\n", .{}),
+        error.DuplicateIncludeThoughts => std.debug.print("error: include thoughts specified more than once\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1344,8 +1449,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1363,7 +1468,11 @@ fn usageText() []const u8 {
         "       --image-size accepts 512, 1K, 2K, or 4K\n" ++
         "\n" ++
         "grounding options:\n" ++
-        "       --grounding accepts none, web, image, or web,image\n";
+        "       --grounding accepts none, web, image, or web,image\n" ++
+        "\n" ++
+        "thinking options:\n" ++
+        "       --thinking-level accepts minimal or high\n" ++
+        "       --include-thoughts requests returned thought parts; thought images are saved beside final outputs\n";
 }
 
 test "usageText documents edit reference roles and defaults" {
@@ -1372,6 +1481,8 @@ test "usageText documents edit reference roles and defaults" {
         "--aspect-ratio RATIO",
         "--image-size SIZE",
         "--grounding MODE",
+        "--thinking-level LEVEL",
+        "--include-thoughts",
         "--out-dir DIR",
         "--ref ROLE=files/ID,MIME",
         "first --ref is the BASE_IMAGE and must omit LABEL",
@@ -1390,6 +1501,8 @@ test "usageText documents edit reference roles and defaults" {
         "1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9",
         "512, 1K, 2K, or 4K",
         "none, web, image, or web,image",
+        "minimal or high",
+        "thought images are saved beside final outputs",
     };
 
     for (expected) |needle| {
@@ -1406,6 +1519,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), gen.output_options.aspect_ratio);
     try std.testing.expectEqual(@as(?api.ImageSize, null), gen.output_options.image_size);
     try std.testing.expect(!gen.grounding_options.hasAny());
+    try std.testing.expect(!gen.thinking_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1532,6 +1646,22 @@ test "parseArgs accepts gen grounding modes" {
     try std.testing.expect(!none_gen.grounding_options.hasAny());
 }
 
+test "parseArgs accepts gen thinking options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--thinking-level",
+        "high",
+        "--include-thoughts",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expectEqual(api.ThinkingLevel.high, gen.thinking_options.level.?);
+    try std.testing.expect(gen.thinking_options.include_thoughts);
+}
+
 test "parseArgs accepts print request flag in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1615,6 +1745,31 @@ test "parseArgs rejects invalid gen grounding arguments" {
     try std.testing.expectError(error.InvalidGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding", "image,web", "--prompt", "My fair lady" }));
 }
 
+test "parseArgs rejects invalid gen thinking arguments" {
+    try std.testing.expectError(error.MissingThinkingLevel, parseArgs(&.{ "nbimg", "gen", "--thinking-level" }));
+    try std.testing.expectError(error.MissingThinkingLevel, parseArgs(&.{ "nbimg", "gen", "--thinking-level", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyThinkingLevel, parseArgs(&.{ "nbimg", "gen", "--thinking-level", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateThinkingLevel, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--thinking-level",
+        "minimal",
+        "--thinking-level",
+        "high",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.InvalidThinkingLevel, parseArgs(&.{ "nbimg", "gen", "--thinking-level", "low", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateIncludeThoughts, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--include-thoughts",
+        "--include-thoughts",
+        "--prompt",
+        "My fair lady",
+    }));
+}
+
 test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1638,6 +1793,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), edit.output_options.aspect_ratio);
     try std.testing.expectEqual(@as(?api.ImageSize, null), edit.output_options.image_size);
     try std.testing.expect(!edit.grounding_options.hasAny());
+    try std.testing.expect(!edit.thinking_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1693,6 +1849,24 @@ test "parseArgs accepts edit grounding modes" {
     try std.testing.expect(edit.grounding_options.image);
 }
 
+test "parseArgs accepts edit thinking options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--thinking-level",
+        "minimal",
+        "--include-thoughts",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(api.ThinkingLevel.minimal, edit.thinking_options.level.?);
+    try std.testing.expect(edit.thinking_options.include_thoughts);
+}
+
 test "parseArgs rejects invalid edit grounding arguments" {
     try std.testing.expectError(error.MissingGrounding, parseArgs(&.{
         "nbimg",
@@ -1718,6 +1892,36 @@ test "parseArgs rejects invalid edit grounding arguments" {
         "web",
         "--grounding",
         "image",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects invalid edit thinking arguments" {
+    try std.testing.expectError(error.MissingThinkingLevel, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--thinking-level",
+    }));
+    try std.testing.expectError(error.InvalidThinkingLevel, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--thinking-level",
+        "medium",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.DuplicateIncludeThoughts, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--include-thoughts",
+        "--include-thoughts",
         "--ref",
         "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
@@ -3041,6 +3245,41 @@ test "parseArgs rejects grounding for files commands" {
     }));
 }
 
+test "parseArgs rejects thinking options for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--thinking-level",
+        "high",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--include-thoughts",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--thinking-level",
+        "minimal",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--include-thoughts",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -3108,6 +3347,10 @@ test "live API edit request shape is valid" {
             .grounding_options = .{
                 .web = true,
                 .image = true,
+            },
+            .thinking_options = .{
+                .level = .high,
+                .include_thoughts = true,
             },
             .base = .{
                 .name = uploaded_file.name,

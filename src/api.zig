@@ -154,6 +154,50 @@ pub const GroundingOptions = struct {
     }
 };
 
+pub const ThinkingLevel = enum {
+    minimal,
+    high,
+
+    pub fn fromName(name: []const u8) ?ThinkingLevel {
+        if (std.mem.eql(u8, name, "minimal")) return .minimal;
+        if (std.mem.eql(u8, name, "high")) return .high;
+        return null;
+    }
+
+    pub fn apiName(level: ThinkingLevel) []const u8 {
+        return switch (level) {
+            .minimal => "minimal",
+            .high => "high",
+        };
+    }
+
+    pub fn jsonStringify(level: ThinkingLevel, writer: anytype) !void {
+        try writer.write(level.apiName());
+    }
+};
+
+pub const ThinkingOptions = struct {
+    level: ?ThinkingLevel = null,
+    include_thoughts: bool = false,
+
+    pub fn hasAny(options: ThinkingOptions) bool {
+        return options.level != null or options.include_thoughts;
+    }
+};
+
+pub const ThinkingConfig = struct {
+    thinkingLevel: ?ThinkingLevel = null,
+    includeThoughts: ?bool = null,
+};
+
+pub fn thinkingConfigFromOptions(options: ThinkingOptions) ?ThinkingConfig {
+    if (!options.hasAny()) return null;
+    return .{
+        .thinkingLevel = options.level,
+        .includeThoughts = if (options.include_thoughts) true else null,
+    };
+}
+
 pub const SearchType = struct {};
 
 pub const SearchTypes = struct {
@@ -526,6 +570,45 @@ test "GroundingOptions parses supported CLI names" {
     try std.testing.expect(GroundingOptions.fromName("web,image").?.web);
     try std.testing.expect(GroundingOptions.fromName("web,image").?.image);
     try std.testing.expectEqual(@as(?GroundingOptions, null), GroundingOptions.fromName("image,web"));
+}
+
+test "ThinkingOptions parses and serializes supported CLI levels" {
+    try std.testing.expectEqual(ThinkingLevel.minimal, ThinkingLevel.fromName("minimal").?);
+    try std.testing.expectEqual(ThinkingLevel.high, ThinkingLevel.fromName("high").?);
+    try std.testing.expectEqual(@as(?ThinkingLevel, null), ThinkingLevel.fromName("low"));
+
+    const gpa = std.testing.allocator;
+    const thinking_config = thinkingConfigFromOptions(.{
+        .level = .minimal,
+        .include_thoughts = true,
+    }).?;
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(thinking_config, .{ .emit_null_optional_fields = false }, &output.writer);
+    try std.testing.expectEqualStrings(
+        "{\"thinkingLevel\":\"minimal\",\"includeThoughts\":true}",
+        output.written(),
+    );
+}
+
+test "thinkingConfigFromOptions omits absent thinking fields" {
+    const gpa = std.testing.allocator;
+
+    try std.testing.expectEqual(@as(?ThinkingConfig, null), thinkingConfigFromOptions(.{}));
+
+    const level_only = thinkingConfigFromOptions(.{ .level = .high }).?;
+    var level_output: std.Io.Writer.Allocating = .init(gpa);
+    defer level_output.deinit();
+    try std.json.Stringify.value(level_only, .{ .emit_null_optional_fields = false }, &level_output.writer);
+    try std.testing.expectEqualStrings("{\"thinkingLevel\":\"high\"}", level_output.written());
+
+    const thoughts_only = thinkingConfigFromOptions(.{ .include_thoughts = true }).?;
+    var thoughts_output: std.Io.Writer.Allocating = .init(gpa);
+    defer thoughts_output.deinit();
+    try std.json.Stringify.value(thoughts_only, .{ .emit_null_optional_fields = false }, &thoughts_output.writer);
+    try std.testing.expectEqualStrings("{\"includeThoughts\":true}", thoughts_output.written());
 }
 
 test "googleSearchToolFromGroundingOptions serializes web search grounding" {
