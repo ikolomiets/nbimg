@@ -42,11 +42,18 @@ shape changes, and add newly discovered gaps in priority order.
 - Current status: `--aspect-ratio` and `--image-size` serialize through
   `generationConfig.responseFormat.image` using Gemini enum values such as
   `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`.
-- Remaining gap: image `mimeType` and `delivery` are not user-configurable.
-  Live `countTokens` accepted `IMAGE_JPEG` with `INLINE` and `URI`, but adding
-  flags needs response-shape and output-writing behavior validation.
+- Current status: do not add a public `--delivery` option for the nano2 image
+  model. Billable `generateContent` validation showed Gemini rejects explicit
+  `responseFormat.image.delivery` values, including both `INLINE` and `URI`,
+  even though `countTokens` accepts them.
+- Remaining gap: image `mimeType` is not user-configurable because only
+  `IMAGE_JPEG` is currently useful. URI delivery is also not implemented
+  because Gemini currently rejects explicit delivery on `generateContent`.
 - Testing: keep golden request JSON tests and live countTokens validation
-  covering the selected REST wire shape.
+  covering the selected aspect/size REST wire shape. Before serializing future
+  `delivery` or `mimeType` fields, validate against billable `generateContent`
+  or a non-billable endpoint proven to match it, because `countTokens` accepted
+  explicit `delivery` values that `generateContent` rejected.
 
 ## 5. Configurable Safety Settings
 
