@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -22,8 +22,10 @@ The current build stays stdlib-only and keeps the module layout flat. The
 binary accepts one prompt through `--prompt` or stdin fallback, sends fixed
 generation or edit requests to the Gemini API, decodes image or text parts from
 the response, and writes each generated part to the selected output directory
-or current working directory. It can also upload image files to Gemini's Files
-API, list or get uploaded file metadata, and delete uploaded files.
+or current working directory. Generation and edit requests can optionally
+enable Google Search or Image Search grounding. It can also upload image files
+to Gemini's Files API, list or get uploaded file metadata, and delete uploaded
+files.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, or response snapshots.
@@ -94,11 +96,12 @@ uploaded/listed/fetched File metadata.
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
-modality values, static safety settings, and logging. `gen`, `edit`, and
-`files` reuse its JSON GET/POST/DELETE helpers, lower-level request-with-body
-helper for resumable uploads, common `HttpResponse` ownership type, `Model`
-constants, and global traffic logging switch. Headers are not exposed through
-the logging path, so API keys stay out of diagnostic output.
+modality values, grounding tool wire structures, static safety settings, and
+logging. `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers,
+lower-level request-with-body helper for resumable uploads, common
+`HttpResponse` ownership type, `Model` constants, and global traffic logging
+switch. Headers are not exposed through the logging path, so API keys stay out
+of diagnostic output.
 
 `build.zig` defines separate `nbimg` modules and executables for installed and
 development artifacts. The installed `zig-out/bin/nbimg` executable is built in
@@ -133,8 +136,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -164,6 +167,18 @@ Argument rules are intentionally narrow:
 - The output controls may be provided independently. If both are omitted,
   `nbimg` omits `generationConfig.responseFormat` and leaves Gemini's output
   shape defaults unchanged.
+- For `gen` and `edit`, `--grounding MODE` is optional and accepted at most
+  once. Valid modes are `none`, `web`, `image`, and `web,image`. If omitted or
+  set to `none`, `nbimg` omits request `tools`.
+- `--grounding web` enables Google Search grounding with a plain
+  `google_search` tool. `--grounding image` enables Image Search grounding by
+  sending `google_search.searchTypes.imageSearch`. `--grounding web,image`
+  sends both `webSearch` and `imageSearch` under `searchTypes`.
+- Grounding metadata is not separately decoded, saved, or printed. If Gemini
+  returns `groundingMetadata`, it remains part of the raw response body and is
+  visible through the default stderr response traffic log.
+- Image Search grounding is for visual search context and currently cannot be
+  used to search for people.
 - For `edit`, at least one `--ref ROLE=files/ID,MIME` is required. The first
   `--ref` is the base image to edit and is always labeled `BASE_IMAGE`; it
   must not include a custom label.
@@ -222,8 +237,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -310,6 +325,25 @@ accepted enum names:
 
 If only one output option is provided, only that field is emitted under
 `responseFormat.image`.
+
+When `--grounding` is `web`, `image`, or `web,image`, `gen` and `edit` add a
+top-level `tools` array. The accepted grounding modes serialize as:
+
+```json
+{"tools":[{"google_search":{}}]}
+```
+
+```json
+{"tools":[{"google_search":{"searchTypes":{"imageSearch":{}}}}]}
+```
+
+```json
+{"tools":[{"google_search":{"searchTypes":{"webSearch":{},"imageSearch":{}}}}]}
+```
+
+Grounding metadata remains part of Gemini's ordinary response JSON. The
+current implementation does not parse it into a separate type and does not
+write sidecar attribution files.
 
 `api.default_safety_settings` supplies the static top-level `safetySettings`
 array for all `generateContent` requests. It configures harassment, hate
@@ -683,6 +717,7 @@ Current tests cover:
 
 - Accepted and rejected CLI argument forms.
 - The exact generated JSON request for `nbimg gen`.
+- Grounding tool serialization for web, image, and combined web/image modes.
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
 - Files API upload MIME detection.
@@ -751,7 +786,9 @@ lower-cost validation endpoint to confirm that Gemini accepts the current
 `GenerateContentRequest` JSON shape without calling paid content generation.
 The live request uses `aspectRatio: "16:9"` and `imageSize: "2K"` to confirm
 Gemini accepts the output-option wire shape after those CLI values are mapped
-to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`.
+to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`. It also enables
+`web,image` grounding to validate the tool-bearing request shape through the
+same non-generation endpoint.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
@@ -761,7 +798,8 @@ edit base image with MIME `image/jpeg`, sends the edit request to `countTokens`,
 and then deletes the uploaded file. The live edit request uses
 `aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
 serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
-output options on edit requests. It does not call `generateContent`.
+output options on edit requests. It also enables `web,image` grounding. It
+does not call `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name

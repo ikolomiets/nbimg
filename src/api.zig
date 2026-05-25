@@ -137,6 +137,57 @@ pub const ImageOutputOptions = struct {
     }
 };
 
+pub const GroundingOptions = struct {
+    web: bool = false,
+    image: bool = false,
+
+    pub fn hasAny(options: GroundingOptions) bool {
+        return options.web or options.image;
+    }
+
+    pub fn fromName(name: []const u8) ?GroundingOptions {
+        if (std.mem.eql(u8, name, "none")) return .{};
+        if (std.mem.eql(u8, name, "web")) return .{ .web = true };
+        if (std.mem.eql(u8, name, "image")) return .{ .image = true };
+        if (std.mem.eql(u8, name, "web,image")) return .{ .web = true, .image = true };
+        return null;
+    }
+};
+
+pub const SearchType = struct {};
+
+pub const SearchTypes = struct {
+    webSearch: ?SearchType = null,
+    imageSearch: ?SearchType = null,
+};
+
+pub const GoogleSearch = struct {
+    searchTypes: ?SearchTypes = null,
+};
+
+pub const Tool = struct {
+    google_search: GoogleSearch,
+};
+
+pub fn googleSearchToolFromGroundingOptions(options: GroundingOptions) ?Tool {
+    if (!options.hasAny()) return null;
+
+    if (options.web and !options.image) {
+        return .{
+            .google_search = .{},
+        };
+    }
+
+    return .{
+        .google_search = .{
+            .searchTypes = .{
+                .webSearch = if (options.web) SearchType{} else null,
+                .imageSearch = if (options.image) SearchType{} else null,
+            },
+        },
+    };
+}
+
 pub const ResponseFormatConfig = struct {
     image: ?ImageResponseFormat = null,
 };
@@ -464,6 +515,49 @@ test "responseFormatFromOutputOptions serializes Gemini image response enum name
         "{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}",
         output.written(),
     );
+}
+
+test "GroundingOptions parses supported CLI names" {
+    try std.testing.expect(!GroundingOptions.fromName("none").?.hasAny());
+    try std.testing.expect(GroundingOptions.fromName("web").?.web);
+    try std.testing.expect(!GroundingOptions.fromName("web").?.image);
+    try std.testing.expect(!GroundingOptions.fromName("image").?.web);
+    try std.testing.expect(GroundingOptions.fromName("image").?.image);
+    try std.testing.expect(GroundingOptions.fromName("web,image").?.web);
+    try std.testing.expect(GroundingOptions.fromName("web,image").?.image);
+    try std.testing.expectEqual(@as(?GroundingOptions, null), GroundingOptions.fromName("image,web"));
+}
+
+test "googleSearchToolFromGroundingOptions serializes web search grounding" {
+    try expectGroundingToolJson(
+        .{ .web = true },
+        "{\"google_search\":{}}",
+    );
+}
+
+test "googleSearchToolFromGroundingOptions serializes image search grounding" {
+    try expectGroundingToolJson(
+        .{ .image = true },
+        "{\"google_search\":{\"searchTypes\":{\"imageSearch\":{}}}}",
+    );
+}
+
+test "googleSearchToolFromGroundingOptions serializes combined search grounding" {
+    try expectGroundingToolJson(
+        .{ .web = true, .image = true },
+        "{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}",
+    );
+}
+
+fn expectGroundingToolJson(options: GroundingOptions, expected_json: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const tool = googleSearchToolFromGroundingOptions(options).?;
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(tool, .{ .emit_null_optional_fields = false }, &output.writer);
+    try std.testing.expectEqualStrings(expected_json, output.written());
 }
 
 test "ImageResponseAspectRatio maps all accepted CLI aspect ratios to Gemini enum names" {

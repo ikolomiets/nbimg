@@ -7,6 +7,7 @@ The current implementation is intentionally narrow:
 
 - generate image output from a text prompt
 - edit an uploaded Gemini File API image with a text prompt
+- enable Google Search or Image Search grounding for generation and edit
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print sanitized response traffic by default, with optional request traffic
@@ -91,6 +92,46 @@ ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
 `2K`, and `4K`. If both flags are omitted, `nbimg` leaves Gemini's output
 shape defaults unchanged.
 
+Use `--grounding MODE` with `gen` or `edit` when the prompt should be grounded
+with Google Search. Valid modes are `none`, `web`, `image`, and `web,image`.
+The default is `none`.
+
+Grounding adds the Gemini `google_search` tool to the request. The model may
+then search before answering, use the retrieved context while generating, and
+return `groundingMetadata` in the raw API response. `nbimg` does not save that
+metadata separately; response traffic is logged to stderr by default, so the
+metadata remains visible there when Gemini returns it.
+
+Web grounding is for current factual or real-world context, such as recent
+events, venue details, weather-aware scenes, or up-to-date product information:
+
+```sh
+zig-out/bin/nbimg gen \
+  --grounding web \
+  --prompt "Create a 16:9 editorial image of the current Toronto skyline at sunrise, using accurate recent landmark details"
+```
+
+Image Search grounding is for visual search context. It lets Gemini use Google
+Image Search results for visual grounding before generating, which is useful
+for current visual trends, real object appearance, species or location
+references, mood boards, and visual research. Google's current image docs state
+that Image Search grounding cannot be used to search for people.
+
+```sh
+zig-out/bin/nbimg gen \
+  --grounding image \
+  --prompt "Use image search to find accurate images of a resplendent quetzal bird, then create a clean 3:2 wallpaper inspired by its real colors and shape"
+```
+
+Use combined `web,image` grounding when the prompt benefits from both factual
+web context and visual image-search context:
+
+```sh
+zig-out/bin/nbimg gen \
+  --grounding web,image \
+  --prompt "Create a magazine-style page about the latest Gemini image model news, with a current hero image style informed by recent visual coverage"
+```
+
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
 The first `--ref` is the base image to edit and is always labeled
 `BASE_IMAGE`; omit a custom label on that first reference. Supported MIME values
@@ -141,6 +182,7 @@ Useful edit flags:
 --do-not TEXT
 --aspect-ratio RATIO
 --image-size SIZE
+--grounding none|web|image|web,image
 --out-dir DIR
 ```
 
@@ -201,7 +243,8 @@ zig build test-live-api-files-delete
 
 `generateContent` is billable, so the request-shape live tests for `gen` and
 `edit` use `countTokens` as a lower-cost validation endpoint instead of
-generating content. The edit request-shape live test uploads
-`sample_images/good_night.jpeg` through the Files API, validates the edit
-request with the uploaded `files/...` name, and deletes the uploaded file after
-validation.
+generating content. The `gen` and `edit` request-shape live tests include
+`web,image` grounding to validate the tool-bearing request shape. The edit
+request-shape live test uploads `sample_images/good_night.jpeg` through the
+Files API, validates the edit request with the uploaded `files/...` name, and
+deletes the uploaded file after validation.

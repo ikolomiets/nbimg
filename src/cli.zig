@@ -21,6 +21,7 @@ const default_cli_traffic_log_options = api.TrafficLogOptions{ .print_response =
 pub const GenCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
+    grounding_options: api.GroundingOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -29,6 +30,7 @@ pub const max_edit_constraints = 16;
 pub const EditCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
+    grounding_options: api.GroundingOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
@@ -127,6 +129,10 @@ pub const ParseError = error{
     EmptyImageSize,
     DuplicateImageSize,
     InvalidImageSize,
+    MissingGrounding,
+    EmptyGrounding,
+    DuplicateGrounding,
+    InvalidGrounding,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -231,7 +237,7 @@ pub fn run(init: std.process.Init) u8 {
 }
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
-    var response = api_gen.generateContent(gpa, init.io, api_key, command.prompt, command.output_options) catch |err| {
+    var response = api_gen.generateContent(gpa, init.io, api_key, command.prompt, command.output_options, command.grounding_options) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -263,6 +269,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     const edit_request = api_edit.EditRequest{
         .prompt = command.prompt,
         .output_options = command.output_options,
+        .grounding_options = command.grounding_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -580,6 +587,8 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
 fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!GenCommand {
     var prompt: ?[]const u8 = null;
     var output_options: api.ImageOutputOptions = .{};
+    var grounding_options: api.GroundingOptions = .{};
+    var grounding_seen = false;
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -598,6 +607,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             try parseAspectRatioOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--image-size")) {
             try parseImageSizeOption(command_args, &output_options);
+        } else if (std.mem.eql(u8, arg, "--grounding")) {
+            try parseGroundingOption(command_args, &grounding_options, &grounding_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -612,6 +623,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .output_options = output_options,
+        .grounding_options = grounding_options,
         .out_dir = out_dir,
     };
 }
@@ -619,6 +631,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
 fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseError!EditCommand {
     var prompt: ?[]const u8 = null;
     var output_options: api.ImageOutputOptions = .{};
+    var grounding_options: api.GroundingOptions = .{};
+    var grounding_seen = false;
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.ReferenceRole = .scene;
@@ -645,6 +659,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             try parseAspectRatioOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--image-size")) {
             try parseImageSizeOption(command_args, &output_options);
+        } else if (std.mem.eql(u8, arg, "--grounding")) {
+            try parseGroundingOption(command_args, &grounding_options, &grounding_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -681,6 +697,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     return .{
         .prompt = parsed_prompt,
         .output_options = output_options,
+        .grounding_options = grounding_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -707,6 +724,19 @@ fn parseImageSizeOption(command_args: *CommandArgs, output_options: *api.ImageOu
     const value = try command_args.nextValue(error.MissingImageSize);
     if (value.len == 0) return error.EmptyImageSize;
     output_options.image_size = api.ImageSize.fromName(value) orelse return error.InvalidImageSize;
+}
+
+fn parseGroundingOption(
+    command_args: *CommandArgs,
+    grounding_options: *api.GroundingOptions,
+    grounding_seen: *bool,
+) ParseError!void {
+    if (grounding_seen.*) return error.DuplicateGrounding;
+
+    const value = try command_args.nextValue(error.MissingGrounding);
+    if (value.len == 0) return error.EmptyGrounding;
+    grounding_options.* = api.GroundingOptions.fromName(value) orelse return error.InvalidGrounding;
+    grounding_seen.* = true;
 }
 
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
@@ -1299,6 +1329,10 @@ fn printUsageError(err: ParseError) void {
         error.EmptyImageSize => std.debug.print("error: image size must not be empty\n", .{}),
         error.DuplicateImageSize => std.debug.print("error: image size specified more than once\n", .{}),
         error.InvalidImageSize => std.debug.print("error: image size must be 512, 1K, 2K, or 4K\n", .{}),
+        error.MissingGrounding => std.debug.print("error: missing grounding mode\n", .{}),
+        error.EmptyGrounding => std.debug.print("error: grounding mode must not be empty\n", .{}),
+        error.DuplicateGrounding => std.debug.print("error: grounding mode specified more than once\n", .{}),
+        error.InvalidGrounding => std.debug.print("error: grounding mode must be none, web, image, or web,image\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1310,8 +1344,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1326,7 +1360,10 @@ fn usageText() []const u8 {
         "\n" ++
         "output image options:\n" ++
         "       --aspect-ratio accepts 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9\n" ++
-        "       --image-size accepts 512, 1K, 2K, or 4K\n";
+        "       --image-size accepts 512, 1K, 2K, or 4K\n" ++
+        "\n" ++
+        "grounding options:\n" ++
+        "       --grounding accepts none, web, image, or web,image\n";
 }
 
 test "usageText documents edit reference roles and defaults" {
@@ -1334,6 +1371,7 @@ test "usageText documents edit reference roles and defaults" {
     const expected = [_][]const u8{
         "--aspect-ratio RATIO",
         "--image-size SIZE",
+        "--grounding MODE",
         "--out-dir DIR",
         "--ref ROLE=files/ID,MIME",
         "first --ref is the BASE_IMAGE and must omit LABEL",
@@ -1351,6 +1389,7 @@ test "usageText documents edit reference roles and defaults" {
         "image/jpeg, image/png, or image/webp",
         "1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9",
         "512, 1K, 2K, or 4K",
+        "none, web, image, or web,image",
     };
 
     for (expected) |needle| {
@@ -1366,6 +1405,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), gen.output_options.aspect_ratio);
     try std.testing.expectEqual(@as(?api.ImageSize, null), gen.output_options.image_size);
+    try std.testing.expect(!gen.grounding_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1443,6 +1483,55 @@ test "parseArgs accepts partial gen image output options" {
     try std.testing.expectEqual(api.ImageSize.px512, size_gen.output_options.image_size.?);
 }
 
+test "parseArgs accepts gen grounding modes" {
+    const web_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--grounding",
+        "web",
+        "--prompt",
+        "My fair lady",
+    });
+    const web_gen = expectGenCommand(web_command);
+    try std.testing.expect(web_gen.grounding_options.web);
+    try std.testing.expect(!web_gen.grounding_options.image);
+
+    const image_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--grounding",
+        "image",
+        "--prompt",
+        "My fair lady",
+    });
+    const image_gen = expectGenCommand(image_command);
+    try std.testing.expect(!image_gen.grounding_options.web);
+    try std.testing.expect(image_gen.grounding_options.image);
+
+    const combined_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--grounding",
+        "web,image",
+        "--prompt",
+        "My fair lady",
+    });
+    const combined_gen = expectGenCommand(combined_command);
+    try std.testing.expect(combined_gen.grounding_options.web);
+    try std.testing.expect(combined_gen.grounding_options.image);
+
+    const none_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--grounding",
+        "none",
+        "--prompt",
+        "My fair lady",
+    });
+    const none_gen = expectGenCommand(none_command);
+    try std.testing.expect(!none_gen.grounding_options.hasAny());
+}
+
 test "parseArgs accepts print request flag in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1508,6 +1597,24 @@ test "parseArgs rejects invalid gen image output option arguments" {
     try std.testing.expectError(error.InvalidImageSize, parseArgs(&.{ "nbimg", "gen", "--image-size", "1024x1024", "--prompt", "My fair lady" }));
 }
 
+test "parseArgs rejects invalid gen grounding arguments" {
+    try std.testing.expectError(error.MissingGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding" }));
+    try std.testing.expectError(error.MissingGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateGrounding, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--grounding",
+        "web",
+        "--grounding",
+        "image",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.InvalidGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding", "search", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidGrounding, parseArgs(&.{ "nbimg", "gen", "--grounding", "image,web", "--prompt", "My fair lady" }));
+}
+
 test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1530,6 +1637,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), edit.output_options.aspect_ratio);
     try std.testing.expectEqual(@as(?api.ImageSize, null), edit.output_options.image_size);
+    try std.testing.expect(!edit.grounding_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1566,6 +1674,55 @@ test "parseArgs accepts edit image output options" {
 
     try std.testing.expectEqual(api.ImageAspectRatio.r4_5, edit.output_options.aspect_ratio.?);
     try std.testing.expectEqual(api.ImageSize.k4, edit.output_options.image_size.?);
+}
+
+test "parseArgs accepts edit grounding modes" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--grounding",
+        "web,image",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expect(edit.grounding_options.web);
+    try std.testing.expect(edit.grounding_options.image);
+}
+
+test "parseArgs rejects invalid edit grounding arguments" {
+    try std.testing.expectError(error.MissingGrounding, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--grounding",
+    }));
+    try std.testing.expectError(error.InvalidGrounding, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--grounding",
+        "image,web",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.DuplicateGrounding, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--grounding",
+        "web",
+        "--grounding",
+        "image",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
 }
 
 test "parseArgs rejects invalid edit output directory arguments" {
@@ -2847,6 +3004,43 @@ test "parseArgs rejects image output options for files commands" {
     }));
 }
 
+test "parseArgs rejects grounding for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--grounding",
+        "web",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--grounding",
+        "image",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--grounding",
+        "web,image",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--grounding",
+        "web",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -2910,6 +3104,10 @@ test "live API edit request shape is valid" {
             .output_options = .{
                 .aspect_ratio = .r4_5,
                 .image_size = .k1,
+            },
+            .grounding_options = .{
+                .web = true,
+                .image = true,
             },
             .base = .{
                 .name = uploaded_file.name,

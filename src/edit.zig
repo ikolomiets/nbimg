@@ -74,6 +74,7 @@ pub const Reference = struct {
 pub const EditRequest = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
+    grounding_options: api.GroundingOptions = .{},
     base: UploadedImage,
     base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
@@ -102,6 +103,7 @@ const GenerateConfig = struct {
 
 const GenerateContentRequest = struct {
     contents: []const GenerateContent,
+    tools: ?[]const api.Tool = null,
     generationConfig: GenerateConfig,
     safetySettings: []const api.SafetySetting,
 };
@@ -165,8 +167,15 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
 
     const contents = [_]GenerateContent{.{ .parts = parts }};
     const modalities = [_]api.ResponseModality{.image};
+    const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(request.grounding_options);
+    var tools_buffer: [1]api.Tool = undefined;
+    const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
+        tools_buffer[0] = tool;
+        break :tools tools_buffer[0..1];
+    } else null;
     const generate_request = GenerateContentRequest{
         .contents = &contents,
+        .tools = tools,
         .generationConfig = .{
             .responseModalities = &modalities,
             .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
@@ -460,6 +469,61 @@ test "buildGenerateRequest includes partial edit image output options" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageSize\":\"IMAGE_SIZE_ONE_K\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"aspectRatio\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
+}
+
+test "buildGenerateRequest includes edit web grounding tool" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .grounding_options = .{
+            .web = true,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"IMAGE\"]") != null);
+    try expectDefaultSafetySettings(request);
+}
+
+test "buildGenerateRequest includes edit image grounding tool" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .grounding_options = .{
+            .image = true,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"imageSearch\":{}}}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"webSearch\"") == null);
+}
+
+test "buildGenerateRequest includes edit combined grounding tool" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .grounding_options = .{
+            .web = true,
+            .image = true,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}]") != null);
 }
 
 fn expectDefaultSafetySettings(request_json: []const u8) !void {
