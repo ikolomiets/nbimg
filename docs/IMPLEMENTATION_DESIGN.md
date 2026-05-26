@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -24,9 +24,11 @@ generation or edit requests to the Gemini API, decodes image or text parts from
 the response, and writes each generated part to the selected output directory
 or current working directory. Generation and edit requests can optionally
 enable Google Search or Image Search grounding, set Gemini Thinking level, and
-request returned thought parts, or set one Gemini safety threshold across all
-emitted safety categories. It can also upload image files to Gemini's Files API,
-list or get uploaded file metadata, and delete uploaded files.
+request returned thought parts, set one Gemini safety threshold across all
+emitted safety categories, or set advanced generation controls such as
+sampling, seed, output-token budget, stop sequences, and logprob diagnostics.
+It can also upload image files to Gemini's Files API, list or get uploaded file
+metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, or response snapshots.
@@ -44,8 +46,8 @@ The code is split into seven source files:
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, image MIME parsing and serialization,
-  Thinking/output/grounding wire helpers, generated response decoding and
-  output naming, and response log
+  Thinking/output/generation/grounding wire helpers, generated response
+  decoding and output naming, and response log
   sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction.
@@ -108,8 +110,9 @@ uploaded/listed/fetched File metadata.
 validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
 modality values, image MIME parsing/serialization for edit references and
-file uploads, grounding tool wire structures, generated response decoding,
-generated file metadata, output naming, safety setting helpers, and logging.
+file uploads, generation config helpers, grounding tool wire structures,
+generated response decoding, generated file metadata, output naming, safety
+setting helpers, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
 ownership type, `Model` constants, and global traffic logging switch. Headers
@@ -149,8 +152,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -183,6 +186,17 @@ Argument rules are intentionally narrow:
 - `gen` and `edit` request both text and image response parts by default with
   `generationConfig.responseModalities` set to `["TEXT", "IMAGE"]`. There is
   currently no user-facing flag for changing response modalities.
+- For `gen` and `edit`, advanced generation options are optional and omitted
+  from JSON unless explicitly set. Supported controls are `--temperature`
+  (`0.0..2.0`), `--top-p` (`0.0..1.0`), `--seed` (signed 32-bit decimal
+  integer), `--max-output-tokens` (`1..32768`), `--presence-penalty` and
+  `--frequency-penalty` (`-2.0 <= value < 2.0`), repeatable `--stop TEXT`
+  (non-empty, unique, at most 5), `--response-logprobs`, and `--logprobs`
+  (`1..20`).
+- `--response-logprobs` is valid by itself and requests chosen-token log
+  probability diagnostics. `--logprobs` requests top-token alternatives and is
+  valid only when `--response-logprobs` is also explicitly present. These
+  diagnostics are not image confidence scores.
 - For `gen` and `edit`, `--grounding MODE` is optional and accepted at most
   once. Valid modes are `none`, `web`, `image`, and `web,image`. If omitted or
   set to `none`, `nbimg` omits request `tools`.
@@ -273,8 +287,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -286,6 +300,27 @@ edit reference details:
        valid ROLE values: scene|character|object|style|pose|composition|background|texture|image
        omitted LABEL auto-assigns by role: SCENE_REFERENCE_A, CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A
        MIME must be image/jpeg, image/png, or image/webp
+
+output image options:
+       --aspect-ratio accepts 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9
+       --image-size accepts 512, 1K, 2K, or 4K
+
+advanced generation options:
+       --temperature accepts 0.0 to 2.0
+       --top-p accepts 0.0 to 1.0
+       --seed accepts a signed 32-bit decimal integer
+       --max-output-tokens accepts 1 to 32768
+       --presence-penalty and --frequency-penalty accept -2.0 up to but not including 2.0
+       --stop accepts up to 5 non-empty unique stop sequences and may be repeated
+       --response-logprobs enables chosen-token log probability diagnostics
+       --logprobs accepts 1 to 20 and requires --response-logprobs
+
+grounding options:
+       --grounding accepts none, web, image, or web,image
+
+thinking options:
+       --thinking-level accepts minimal or high
+       --include-thoughts requests returned thought parts; thought images are saved beside final outputs
 
 safety options:
        --safety accepts none, off, high, medium, or low
@@ -364,6 +399,31 @@ accepted enum names:
 
 If only one output option is provided, only that field is emitted under
 `responseFormat.image`.
+
+When advanced generation controls are set, `gen` and `edit` add the matching
+lower-camel Gemini fields to the same `generationConfig` object:
+
+```json
+{
+  "generationConfig": {
+    "responseModalities": ["TEXT", "IMAGE"],
+    "maxOutputTokens": 4096,
+    "temperature": 0.7,
+    "topP": 0.95,
+    "seed": 42,
+    "presencePenalty": 0.0,
+    "frequencyPenalty": 0.0,
+    "responseLogprobs": true,
+    "logprobs": 1,
+    "stopSequences": ["END"]
+  }
+}
+```
+
+Unset generation controls are omitted instead of serializing model defaults.
+`--response-logprobs` serializes `responseLogprobs: true` even when
+`--logprobs` is omitted. `--logprobs` serializes only after the parser has
+confirmed that `--response-logprobs` was also explicitly provided.
 
 When `--grounding` is `web`, `image`, or `web,image`, `gen` and `edit` add a
 top-level `tools` array. The accepted grounding modes serialize as:
@@ -875,8 +935,10 @@ lower-cost validation endpoint to confirm that Gemini accepts the current
 The live request uses `aspectRatio: "16:9"` and `imageSize: "2K"` to confirm
 Gemini accepts the output-option wire shape after those CLI values are mapped
 to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`. It also enables
-`web,image` grounding and `thinkingConfig` with returned thoughts requested to
-validate those request shapes through the same non-generation endpoint.
+`web,image` grounding, `thinkingConfig` with returned thoughts requested, and
+representative advanced generation controls including sampling, seed, token
+budget, penalties, stop sequences, and logprob diagnostics to validate those
+request shapes through the same non-generation endpoint.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
@@ -887,8 +949,9 @@ and then deletes the uploaded file. The live edit request uses
 `aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
 serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
 output options on edit requests. It also enables `web,image` grounding. It
-also includes `thinkingConfig` with returned thoughts requested. It does not
-call `generateContent`.
+also includes `thinkingConfig` with returned thoughts requested and the same
+representative advanced generation controls. It does not call
+`generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload
 `sample_images/good_night.jpeg` with the fixed display name
@@ -912,7 +975,7 @@ fails before cleanup, and can fail due to quota or remote API errors.
 The following areas are intentionally not implemented yet:
 
 - Model selection and capability validation.
-- Image editing and multimodal input parts.
+- Local image inputs without prior Files API upload.
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
 - Response snapshots.

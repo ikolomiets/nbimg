@@ -34,19 +34,7 @@ specific migration need.
   or a non-billable endpoint proven to match it, because `countTokens` accepted
   explicit `delivery` values that `generateContent` rejected.
 
-## 2. Generic Generation Controls
-
-- Current gap: generic `GenerationConfig` fields such as `candidateCount`,
-  `maxOutputTokens`, `temperature`, `topP`, `topK`, `seed`, penalties,
-  logprobs, and stop sequences are not exposed.
-- Likely CLI/API surface: add conservative flags only for fields confirmed to
-  be image-compatible, with validation for numeric ranges and duplicates.
-- Implementation notes: avoid a broad raw passthrough until there is a clear
-  compatibility and validation strategy.
-- Testing: add parser tests, request JSON tests, and live validation for each
-  image-compatible field group.
-
-## 3. Request-Level Controls
+## 2. Request-Level Controls
 
 - Current gap: request-level fields such as `systemInstruction`,
   `cachedContent`, `serviceTier`, and `store` are not exposed.

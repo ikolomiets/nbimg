@@ -19,6 +19,7 @@ pub fn generateContent(
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
     safety_options: api.SafetyOptions,
+    generation_options: api.GenerationOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
@@ -30,6 +31,7 @@ pub fn generateContent(
         grounding_options,
         thinking_options,
         safety_options,
+        generation_options,
     );
     defer gpa.free(request_json);
 
@@ -45,6 +47,7 @@ pub fn countGenerateContentRequestTokens(
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
     safety_options: api.SafetyOptions,
+    generation_options: api.GenerationOptions,
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
@@ -56,6 +59,7 @@ pub fn countGenerateContentRequestTokens(
         grounding_options,
         thinking_options,
         safety_options,
+        generation_options,
     );
     defer gpa.free(request_json);
 
@@ -69,6 +73,7 @@ pub fn buildGenerateRequest(
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
     safety_options: api.SafetyOptions,
+    generation_options: api.GenerationOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
 
@@ -78,15 +83,10 @@ pub fn buildGenerateRequest(
     const Content = struct {
         parts: []const TextPart,
     };
-    const GenerationConfig = struct {
-        responseModalities: []const api.ResponseModality,
-        thinkingConfig: ?api.ThinkingConfig = null,
-        responseFormat: ?api.ResponseFormatConfig = null,
-    };
     const GenerateContentRequest = struct {
         contents: []const Content,
         tools: ?[]const api.Tool = null,
-        generationConfig: GenerationConfig,
+        generationConfig: api.GenerationConfig,
         safetySettings: []const api.SafetySetting,
     };
 
@@ -102,11 +102,11 @@ pub fn buildGenerateRequest(
     const request = GenerateContentRequest{
         .contents = &contents,
         .tools = tools,
-        .generationConfig = .{
-            .responseModalities = &api.default_response_modalities,
-            .thinkingConfig = api.thinkingConfigFromOptions(thinking_options),
-            .responseFormat = api.responseFormatFromOutputOptions(output_options),
-        },
+        .generationConfig = api.generationConfigFromOptions(
+            output_options,
+            thinking_options,
+            &generation_options,
+        ),
         .safetySettings = &safety_settings,
     };
 
@@ -127,6 +127,7 @@ pub fn buildCountTokensRequest(
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
     safety_options: api.SafetyOptions,
+    generation_options: api.GenerationOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
 
@@ -137,6 +138,7 @@ pub fn buildCountTokensRequest(
         grounding_options,
         thinking_options,
         safety_options,
+        generation_options,
     );
     defer gpa.free(generate_request_json);
 
@@ -148,7 +150,7 @@ const expected_safety_settings_json =
 
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{});
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -162,7 +164,7 @@ test "buildGenerateRequest includes image output options" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r16_9,
         .image_size = .k2,
-    }, .{}, .{}, .{});
+    }, .{}, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -175,7 +177,7 @@ test "buildGenerateRequest includes partial image output options" {
     const gpa = std.testing.allocator;
     const aspect_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r9_16,
-    }, .{}, .{}, .{});
+    }, .{}, .{}, .{}, .{});
     defer gpa.free(aspect_request);
 
     try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"ASPECT_RATIO_NINE_BY_SIXTEEN\"") != null);
@@ -183,7 +185,7 @@ test "buildGenerateRequest includes partial image output options" {
 
     const size_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .image_size = .px512,
-    }, .{}, .{}, .{});
+    }, .{}, .{}, .{}, .{});
     defer gpa.free(size_request);
 
     try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"IMAGE_SIZE_FIVE_TWELVE\"") != null);
@@ -194,7 +196,7 @@ test "buildGenerateRequest includes web grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
-    }, .{}, .{});
+    }, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -207,7 +209,7 @@ test "buildGenerateRequest includes image grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .image = true,
-    }, .{}, .{});
+    }, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"imageSearch\":{}}}}]") != null);
@@ -219,7 +221,7 @@ test "buildGenerateRequest includes combined grounding tool" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
         .image = true,
-    }, .{}, .{});
+    }, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}]") != null);
@@ -230,17 +232,49 @@ test "buildGenerateRequest includes thinking config" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{
         .level = .high,
         .include_thoughts = true,
-    }, .{});
+    }, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"high\",\"includeThoughts\":true}") != null);
+}
+
+test "buildGenerateRequest includes advanced generation options" {
+    const gpa = std.testing.allocator;
+    var generation_options = api.GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = -42,
+        .presence_penalty = -1.5,
+        .frequency_penalty = 1.25,
+        .response_logprobs = true,
+        .logprobs = 5,
+    };
+    generation_options.appendStopSequence("END");
+    generation_options.appendStopSequence("STOP");
+
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, generation_options);
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"maxOutputTokens\":4096") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"temperature\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"topP\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"seed\":-42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"presencePenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"frequencyPenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseLogprobs\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"logprobs\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"stopSequences\":[\"END\",\"STOP\"]") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
 }
 
 test "buildGenerateRequest applies safety threshold to all categories" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{
         .threshold = .off,
-    });
+    }, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"safetySettings\":[") != null);
@@ -253,7 +287,7 @@ test "buildGenerateRequest applies safety threshold to all categories" {
 
 test "buildCountTokensRequest wraps fixed generate content request" {
     const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, .{});
+    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
@@ -279,6 +313,18 @@ test "live API generateContent request shape is valid" {
     };
     defer api.traffic_log_options = .{};
 
+    var generation_options = api.GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = 42,
+        .presence_penalty = 0.0,
+        .frequency_penalty = 0.0,
+        .response_logprobs = true,
+        .logprobs = 1,
+    };
+    generation_options.appendStopSequence("END");
+
     var response = countGenerateContentRequestTokens(
         gpa,
         std.testing.io,
@@ -299,6 +345,7 @@ test "live API generateContent request shape is valid" {
         .{
             .threshold = .block_only_high,
         },
+        generation_options,
     ) catch |err| {
         std.debug.print("error: countTokens request failed: {s}\n", .{@errorName(err)});
         return err;

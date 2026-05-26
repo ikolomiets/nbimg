@@ -194,12 +194,141 @@ pub const ThinkingConfig = struct {
     includeThoughts: ?bool = null,
 };
 
+pub const max_stop_sequences = 5;
+pub const max_output_tokens = 32768;
+
+pub const GenerationOptions = struct {
+    max_output_tokens: ?u32 = null,
+    temperature: ?f64 = null,
+    top_p: ?f64 = null,
+    seed: ?i32 = null,
+    presence_penalty: ?f64 = null,
+    frequency_penalty: ?f64 = null,
+    response_logprobs: bool = false,
+    logprobs: ?u8 = null,
+    stop_sequences: [max_stop_sequences][]const u8 = [_][]const u8{""} ** max_stop_sequences,
+    stop_sequence_count: usize = 0,
+
+    pub fn hasAny(options: GenerationOptions) bool {
+        return options.max_output_tokens != null or
+            options.temperature != null or
+            options.top_p != null or
+            options.seed != null or
+            options.presence_penalty != null or
+            options.frequency_penalty != null or
+            options.response_logprobs or
+            options.logprobs != null or
+            options.stop_sequence_count > 0;
+    }
+
+    pub fn stopSequenceSlice(options: *const GenerationOptions) []const []const u8 {
+        assert(options.stop_sequence_count <= max_stop_sequences);
+        return options.stop_sequences[0..options.stop_sequence_count];
+    }
+
+    pub fn appendStopSequence(options: *GenerationOptions, value: []const u8) void {
+        assert(value.len > 0);
+        assert(options.stop_sequence_count < max_stop_sequences);
+
+        options.stop_sequences[options.stop_sequence_count] = value;
+        options.stop_sequence_count += 1;
+    }
+};
+
+pub const GenerationConfig = struct {
+    responseModalities: []const ResponseModality,
+    thinkingConfig: ?ThinkingConfig = null,
+    responseFormat: ?ResponseFormatConfig = null,
+    maxOutputTokens: ?u32 = null,
+    temperature: ?f64 = null,
+    topP: ?f64 = null,
+    seed: ?i32 = null,
+    presencePenalty: ?f64 = null,
+    frequencyPenalty: ?f64 = null,
+    responseLogprobs: ?bool = null,
+    logprobs: ?u8 = null,
+    stopSequences: ?[]const []const u8 = null,
+};
+
 pub fn thinkingConfigFromOptions(options: ThinkingOptions) ?ThinkingConfig {
     if (!options.hasAny()) return null;
     return .{
         .thinkingLevel = options.level,
         .includeThoughts = if (options.include_thoughts) true else null,
     };
+}
+
+pub fn generationConfigFromOptions(
+    output_options: ImageOutputOptions,
+    thinking_options: ThinkingOptions,
+    generation_options: *const GenerationOptions,
+) GenerationConfig {
+    assertValidGenerationOptions(generation_options.*);
+
+    return .{
+        .responseModalities = &default_response_modalities,
+        .thinkingConfig = thinkingConfigFromOptions(thinking_options),
+        .responseFormat = responseFormatFromOutputOptions(output_options),
+        .maxOutputTokens = generation_options.max_output_tokens,
+        .temperature = generation_options.temperature,
+        .topP = generation_options.top_p,
+        .seed = generation_options.seed,
+        .presencePenalty = generation_options.presence_penalty,
+        .frequencyPenalty = generation_options.frequency_penalty,
+        .responseLogprobs = if (generation_options.response_logprobs) true else null,
+        .logprobs = generation_options.logprobs,
+        .stopSequences = if (generation_options.stop_sequence_count > 0)
+            generation_options.stopSequenceSlice()
+        else
+            null,
+    };
+}
+
+pub fn assertValidGenerationOptions(options: GenerationOptions) void {
+    assert(options.stop_sequence_count <= max_stop_sequences);
+
+    if (options.max_output_tokens) |tokens| {
+        assert(tokens >= 1);
+        assert(tokens <= max_output_tokens);
+    }
+
+    if (options.temperature) |temperature| {
+        assert(std.math.isFinite(temperature));
+        assert(temperature >= 0.0);
+        assert(temperature <= 2.0);
+    }
+
+    if (options.top_p) |top_p| {
+        assert(std.math.isFinite(top_p));
+        assert(top_p >= 0.0);
+        assert(top_p <= 1.0);
+    }
+
+    if (options.presence_penalty) |presence_penalty| {
+        assert(std.math.isFinite(presence_penalty));
+        assert(presence_penalty >= -2.0);
+        assert(presence_penalty < 2.0);
+    }
+
+    if (options.frequency_penalty) |frequency_penalty| {
+        assert(std.math.isFinite(frequency_penalty));
+        assert(frequency_penalty >= -2.0);
+        assert(frequency_penalty < 2.0);
+    }
+
+    if (options.logprobs) |logprobs| {
+        assert(options.response_logprobs);
+        assert(logprobs >= 1);
+        assert(logprobs <= 20);
+    }
+
+    const stops = options.stopSequenceSlice();
+    for (stops, 0..) |stop, index| {
+        assert(stop.len > 0);
+        for (stops[index + 1 ..]) |other| {
+            assert(!std.mem.eql(u8, stop, other));
+        }
+    }
 }
 
 pub const SearchType = struct {};
@@ -881,6 +1010,84 @@ test "thinkingConfigFromOptions omits absent thinking fields" {
     defer thoughts_output.deinit();
     try std.json.Stringify.value(thoughts_only, .{ .emit_null_optional_fields = false }, &thoughts_output.writer);
     try std.testing.expectEqualStrings("{\"includeThoughts\":true}", thoughts_output.written());
+}
+
+test "GenerationOptions tracks optional advanced controls" {
+    var options = GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = -42,
+        .presence_penalty = -1.5,
+        .frequency_penalty = 1.25,
+        .response_logprobs = true,
+        .logprobs = 5,
+    };
+    options.appendStopSequence("END");
+    options.appendStopSequence("STOP");
+
+    assertValidGenerationOptions(options);
+    try std.testing.expect(options.hasAny());
+    try std.testing.expectEqual(@as(usize, 2), options.stopSequenceSlice().len);
+    try std.testing.expectEqualStrings("END", options.stopSequenceSlice()[0]);
+    try std.testing.expectEqualStrings("STOP", options.stopSequenceSlice()[1]);
+}
+
+test "generationConfigFromOptions serializes advanced generation controls" {
+    const gpa = std.testing.allocator;
+    var options = GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = -42,
+        .presence_penalty = -1.5,
+        .frequency_penalty = 1.25,
+        .response_logprobs = true,
+        .logprobs = 5,
+    };
+    options.appendStopSequence("END");
+    options.appendStopSequence("STOP");
+
+    const generation_config = generationConfigFromOptions(.{}, .{}, &options);
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(generation_config, .{ .emit_null_optional_fields = false }, &output.writer);
+    const json = output.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"maxOutputTokens\":4096") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"temperature\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"topP\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"seed\":-42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"presencePenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"frequencyPenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"responseLogprobs\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"logprobs\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stopSequences\":[\"END\",\"STOP\"]") != null);
+}
+
+test "generationConfigFromOptions omits unset advanced controls" {
+    const gpa = std.testing.allocator;
+    const options: GenerationOptions = .{};
+    const generation_config = generationConfigFromOptions(.{}, .{}, &options);
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(generation_config, .{ .emit_null_optional_fields = false }, &output.writer);
+    const json = output.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"maxOutputTokens\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"temperature\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"topP\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"seed\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"presencePenalty\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"frequencyPenalty\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"responseLogprobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"logprobs\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"stopSequences\"") == null);
 }
 
 test "googleSearchToolFromGroundingOptions serializes web search grounding" {

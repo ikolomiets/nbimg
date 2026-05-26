@@ -24,6 +24,7 @@ pub const GenCommand = struct {
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
+    generation_options: api.GenerationOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -35,6 +36,7 @@ pub const EditCommand = struct {
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
+    generation_options: api.GenerationOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
@@ -146,6 +148,40 @@ pub const ParseError = error{
     EmptySafety,
     DuplicateSafety,
     InvalidSafety,
+    MissingTemperature,
+    EmptyTemperature,
+    DuplicateTemperature,
+    InvalidTemperature,
+    MissingTopP,
+    EmptyTopP,
+    DuplicateTopP,
+    InvalidTopP,
+    MissingSeed,
+    EmptySeed,
+    DuplicateSeed,
+    InvalidSeed,
+    MissingMaxOutputTokens,
+    EmptyMaxOutputTokens,
+    DuplicateMaxOutputTokens,
+    InvalidMaxOutputTokens,
+    MissingPresencePenalty,
+    EmptyPresencePenalty,
+    DuplicatePresencePenalty,
+    InvalidPresencePenalty,
+    MissingFrequencyPenalty,
+    EmptyFrequencyPenalty,
+    DuplicateFrequencyPenalty,
+    InvalidFrequencyPenalty,
+    MissingStop,
+    EmptyStop,
+    TooManyStops,
+    DuplicateStop,
+    DuplicateResponseLogprobs,
+    MissingLogprobs,
+    EmptyLogprobs,
+    DuplicateLogprobs,
+    InvalidLogprobs,
+    LogprobsRequiresResponseLogprobs,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -259,6 +295,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         command.grounding_options,
         command.thinking_options,
         command.safety_options,
+        command.generation_options,
     ) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
@@ -294,6 +331,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         .grounding_options = command.grounding_options,
         .thinking_options = command.thinking_options,
         .safety_options = command.safety_options,
+        .generation_options = command.generation_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -614,9 +652,11 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
     var safety_options: api.SafetyOptions = .{};
+    var generation_options: api.GenerationOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
     var safety_seen = false;
+    var response_logprobs_seen = false;
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -643,6 +683,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--safety")) {
             try parseSafetyOption(command_args, &safety_options, &safety_seen);
+        } else if (try parseGenerationOption(command_args, arg, &generation_options, &response_logprobs_seen)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -654,12 +696,15 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
         }
     }
 
+    try validateGenerationOptionDependencies(generation_options);
+
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
         .output_options = output_options,
         .grounding_options = grounding_options,
         .thinking_options = thinking_options,
         .safety_options = safety_options,
+        .generation_options = generation_options,
         .out_dir = out_dir,
     };
 }
@@ -670,9 +715,11 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
     var safety_options: api.SafetyOptions = .{};
+    var generation_options: api.GenerationOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
     var safety_seen = false;
+    var response_logprobs_seen = false;
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.ReferenceRole = .scene;
@@ -707,6 +754,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--safety")) {
             try parseSafetyOption(command_args, &safety_options, &safety_seen);
+        } else if (try parseGenerationOption(command_args, arg, &generation_options, &response_logprobs_seen)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -737,6 +786,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
 
     const parsed_base = base orelse return error.MissingBase;
     try validateEditReferenceLimits(base_role, references[0..reference_count]);
+    try validateGenerationOptionDependencies(generation_options);
 
     const parsed_prompt = prompt orelse try fallbackPrompt(stdin_prompt);
 
@@ -746,6 +796,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .grounding_options = grounding_options,
         .thinking_options = thinking_options,
         .safety_options = safety_options,
+        .generation_options = generation_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -819,6 +870,164 @@ fn parseSafetyOption(
     if (value.len == 0) return error.EmptySafety;
     safety_options.* = api.SafetyOptions.fromName(value) orelse return error.InvalidSafety;
     safety_seen.* = true;
+}
+
+fn parseGenerationOption(
+    command_args: *CommandArgs,
+    arg: []const u8,
+    generation_options: *api.GenerationOptions,
+    response_logprobs_seen: *bool,
+) ParseError!bool {
+    if (std.mem.eql(u8, arg, "--temperature")) {
+        try parseFloatRangeOption(
+            command_args,
+            &generation_options.temperature,
+            error.MissingTemperature,
+            error.EmptyTemperature,
+            error.DuplicateTemperature,
+            error.InvalidTemperature,
+            0.0,
+            2.0,
+            true,
+        );
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--top-p")) {
+        try parseFloatRangeOption(
+            command_args,
+            &generation_options.top_p,
+            error.MissingTopP,
+            error.EmptyTopP,
+            error.DuplicateTopP,
+            error.InvalidTopP,
+            0.0,
+            1.0,
+            true,
+        );
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--seed")) {
+        if (generation_options.seed != null) return error.DuplicateSeed;
+
+        const value = try command_args.nextValue(error.MissingSeed);
+        if (value.len == 0) return error.EmptySeed;
+        generation_options.seed = std.fmt.parseInt(i32, value, 10) catch return error.InvalidSeed;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--max-output-tokens")) {
+        if (generation_options.max_output_tokens != null) return error.DuplicateMaxOutputTokens;
+
+        const value = try command_args.nextValue(error.MissingMaxOutputTokens);
+        if (value.len == 0) return error.EmptyMaxOutputTokens;
+        const parsed = std.fmt.parseInt(u32, value, 10) catch return error.InvalidMaxOutputTokens;
+        if (parsed < 1 or parsed > api.max_output_tokens) return error.InvalidMaxOutputTokens;
+        generation_options.max_output_tokens = parsed;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--presence-penalty")) {
+        try parseFloatRangeOption(
+            command_args,
+            &generation_options.presence_penalty,
+            error.MissingPresencePenalty,
+            error.EmptyPresencePenalty,
+            error.DuplicatePresencePenalty,
+            error.InvalidPresencePenalty,
+            -2.0,
+            2.0,
+            false,
+        );
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--frequency-penalty")) {
+        try parseFloatRangeOption(
+            command_args,
+            &generation_options.frequency_penalty,
+            error.MissingFrequencyPenalty,
+            error.EmptyFrequencyPenalty,
+            error.DuplicateFrequencyPenalty,
+            error.InvalidFrequencyPenalty,
+            -2.0,
+            2.0,
+            false,
+        );
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--stop")) {
+        try parseStopOption(command_args, generation_options);
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--response-logprobs")) {
+        if (response_logprobs_seen.*) return error.DuplicateResponseLogprobs;
+
+        generation_options.response_logprobs = true;
+        response_logprobs_seen.* = true;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--logprobs")) {
+        if (generation_options.logprobs != null) return error.DuplicateLogprobs;
+
+        const value = try command_args.nextValue(error.MissingLogprobs);
+        if (value.len == 0) return error.EmptyLogprobs;
+        const parsed = std.fmt.parseInt(u8, value, 10) catch return error.InvalidLogprobs;
+        if (parsed < 1 or parsed > 20) return error.InvalidLogprobs;
+        generation_options.logprobs = parsed;
+        return true;
+    }
+
+    return false;
+}
+
+fn parseFloatRangeOption(
+    command_args: *CommandArgs,
+    target: *?f64,
+    missing_error: ParseError,
+    empty_error: ParseError,
+    duplicate_error: ParseError,
+    invalid_error: ParseError,
+    min: f64,
+    max: f64,
+    max_inclusive: bool,
+) ParseError!void {
+    if (target.* != null) return duplicate_error;
+
+    const value = try command_args.nextValue(missing_error);
+    if (value.len == 0) return empty_error;
+    const parsed = std.fmt.parseFloat(f64, value) catch return invalid_error;
+    if (!std.math.isFinite(parsed)) return invalid_error;
+    if (parsed < min) return invalid_error;
+    if (max_inclusive) {
+        if (parsed > max) return invalid_error;
+    } else {
+        if (parsed >= max) return invalid_error;
+    }
+
+    target.* = parsed;
+}
+
+fn parseStopOption(command_args: *CommandArgs, generation_options: *api.GenerationOptions) ParseError!void {
+    const value = try command_args.nextValue(error.MissingStop);
+    if (value.len == 0) return error.EmptyStop;
+    if (generation_options.stop_sequence_count >= api.max_stop_sequences) return error.TooManyStops;
+
+    for (generation_options.stopSequenceSlice()) |stop| {
+        if (std.mem.eql(u8, stop, value)) return error.DuplicateStop;
+    }
+
+    generation_options.appendStopSequence(value);
+}
+
+fn validateGenerationOptionDependencies(generation_options: api.GenerationOptions) ParseError!void {
+    if (generation_options.logprobs != null and !generation_options.response_logprobs) {
+        return error.LogprobsRequiresResponseLogprobs;
+    }
 }
 
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
@@ -1473,6 +1682,40 @@ fn printUsageError(err: ParseError) void {
         error.EmptySafety => std.debug.print("error: safety level must not be empty\n", .{}),
         error.DuplicateSafety => std.debug.print("error: safety level specified more than once\n", .{}),
         error.InvalidSafety => std.debug.print("error: safety level must be none, off, high, medium, or low\n", .{}),
+        error.MissingTemperature => std.debug.print("error: missing temperature\n", .{}),
+        error.EmptyTemperature => std.debug.print("error: temperature must not be empty\n", .{}),
+        error.DuplicateTemperature => std.debug.print("error: temperature specified more than once\n", .{}),
+        error.InvalidTemperature => std.debug.print("error: temperature must be a finite number from 0.0 to 2.0\n", .{}),
+        error.MissingTopP => std.debug.print("error: missing top-p\n", .{}),
+        error.EmptyTopP => std.debug.print("error: top-p must not be empty\n", .{}),
+        error.DuplicateTopP => std.debug.print("error: top-p specified more than once\n", .{}),
+        error.InvalidTopP => std.debug.print("error: top-p must be a finite number from 0.0 to 1.0\n", .{}),
+        error.MissingSeed => std.debug.print("error: missing seed\n", .{}),
+        error.EmptySeed => std.debug.print("error: seed must not be empty\n", .{}),
+        error.DuplicateSeed => std.debug.print("error: seed specified more than once\n", .{}),
+        error.InvalidSeed => std.debug.print("error: seed must be a signed 32-bit decimal integer\n", .{}),
+        error.MissingMaxOutputTokens => std.debug.print("error: missing max output tokens\n", .{}),
+        error.EmptyMaxOutputTokens => std.debug.print("error: max output tokens must not be empty\n", .{}),
+        error.DuplicateMaxOutputTokens => std.debug.print("error: max output tokens specified more than once\n", .{}),
+        error.InvalidMaxOutputTokens => std.debug.print("error: max output tokens must be an integer from 1 to 32768\n", .{}),
+        error.MissingPresencePenalty => std.debug.print("error: missing presence penalty\n", .{}),
+        error.EmptyPresencePenalty => std.debug.print("error: presence penalty must not be empty\n", .{}),
+        error.DuplicatePresencePenalty => std.debug.print("error: presence penalty specified more than once\n", .{}),
+        error.InvalidPresencePenalty => std.debug.print("error: presence penalty must be a finite number from -2.0 up to but not including 2.0\n", .{}),
+        error.MissingFrequencyPenalty => std.debug.print("error: missing frequency penalty\n", .{}),
+        error.EmptyFrequencyPenalty => std.debug.print("error: frequency penalty must not be empty\n", .{}),
+        error.DuplicateFrequencyPenalty => std.debug.print("error: frequency penalty specified more than once\n", .{}),
+        error.InvalidFrequencyPenalty => std.debug.print("error: frequency penalty must be a finite number from -2.0 up to but not including 2.0\n", .{}),
+        error.MissingStop => std.debug.print("error: missing stop sequence\n", .{}),
+        error.EmptyStop => std.debug.print("error: stop sequence must not be empty\n", .{}),
+        error.TooManyStops => std.debug.print("error: at most 5 stop sequences are supported\n", .{}),
+        error.DuplicateStop => std.debug.print("error: stop sequence specified more than once\n", .{}),
+        error.DuplicateResponseLogprobs => std.debug.print("error: response logprobs specified more than once\n", .{}),
+        error.MissingLogprobs => std.debug.print("error: missing logprobs count\n", .{}),
+        error.EmptyLogprobs => std.debug.print("error: logprobs count must not be empty\n", .{}),
+        error.DuplicateLogprobs => std.debug.print("error: logprobs count specified more than once\n", .{}),
+        error.InvalidLogprobs => std.debug.print("error: logprobs count must be an integer from 1 to 20\n", .{}),
+        error.LogprobsRequiresResponseLogprobs => std.debug.print("error: --logprobs requires --response-logprobs\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1484,8 +1727,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1501,6 +1744,16 @@ fn usageText() []const u8 {
         "output image options:\n" ++
         "       --aspect-ratio accepts 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9\n" ++
         "       --image-size accepts 512, 1K, 2K, or 4K\n" ++
+        "\n" ++
+        "advanced generation options:\n" ++
+        "       --temperature accepts 0.0 to 2.0\n" ++
+        "       --top-p accepts 0.0 to 1.0\n" ++
+        "       --seed accepts a signed 32-bit decimal integer\n" ++
+        "       --max-output-tokens accepts 1 to 32768\n" ++
+        "       --presence-penalty and --frequency-penalty accept -2.0 up to but not including 2.0\n" ++
+        "       --stop accepts up to 5 non-empty unique stop sequences and may be repeated\n" ++
+        "       --response-logprobs enables chosen-token log probability diagnostics\n" ++
+        "       --logprobs accepts 1 to 20 and requires --response-logprobs\n" ++
         "\n" ++
         "grounding options:\n" ++
         "       --grounding accepts none, web, image, or web,image\n" ++
@@ -1518,6 +1771,15 @@ test "usageText documents edit reference roles and defaults" {
     const expected = [_][]const u8{
         "--aspect-ratio RATIO",
         "--image-size SIZE",
+        "--temperature FLOAT",
+        "--top-p FLOAT",
+        "--seed INT",
+        "--max-output-tokens INT",
+        "--presence-penalty FLOAT",
+        "--frequency-penalty FLOAT",
+        "--stop TEXT",
+        "--response-logprobs",
+        "--logprobs INT",
         "--grounding MODE",
         "--thinking-level LEVEL",
         "--include-thoughts",
@@ -1539,6 +1801,14 @@ test "usageText documents edit reference roles and defaults" {
         "image/jpeg, image/png, or image/webp",
         "1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9",
         "512, 1K, 2K, or 4K",
+        "0.0 to 2.0",
+        "0.0 to 1.0",
+        "signed 32-bit decimal integer",
+        "1 to 32768",
+        "-2.0 up to but not including 2.0",
+        "up to 5 non-empty unique stop sequences",
+        "chosen-token log probability diagnostics",
+        "1 to 20 and requires --response-logprobs",
         "none, web, image, or web,image",
         "minimal or high",
         "thought images are saved beside final outputs",
@@ -1561,6 +1831,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(!gen.grounding_options.hasAny());
     try std.testing.expect(!gen.thinking_options.hasAny());
     try std.testing.expectEqual(api.HarmBlockThreshold.block_none, gen.safety_options.threshold);
+    try std.testing.expect(!gen.generation_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1845,6 +2116,134 @@ test "parseArgs rejects invalid gen safety arguments" {
     try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "block-none", "--prompt", "My fair lady" }));
 }
 
+test "parseArgs accepts gen advanced generation options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--temperature",
+        "0.7",
+        "--top-p",
+        "0.95",
+        "--seed",
+        "-42",
+        "--max-output-tokens",
+        "4096",
+        "--presence-penalty",
+        "-1.5",
+        "--frequency-penalty",
+        "1.999",
+        "--stop",
+        "END",
+        "--stop",
+        "STOP",
+        "--response-logprobs",
+        "--logprobs",
+        "5",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+    const options = gen.generation_options;
+
+    try std.testing.expectApproxEqAbs(@as(f64, 0.7), options.temperature.?, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.95), options.top_p.?, 0.000001);
+    try std.testing.expectEqual(@as(i32, -42), options.seed.?);
+    try std.testing.expectEqual(@as(u32, 4096), options.max_output_tokens.?);
+    try std.testing.expectApproxEqAbs(@as(f64, -1.5), options.presence_penalty.?, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.999), options.frequency_penalty.?, 0.000001);
+    try std.testing.expect(options.response_logprobs);
+    try std.testing.expectEqual(@as(u8, 5), options.logprobs.?);
+    try std.testing.expectEqual(@as(usize, 2), options.stop_sequence_count);
+    try std.testing.expectEqualStrings("END", options.stopSequenceSlice()[0]);
+    try std.testing.expectEqualStrings("STOP", options.stopSequenceSlice()[1]);
+}
+
+test "parseArgs accepts response logprobs without top candidate logprobs" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--response-logprobs",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expect(gen.generation_options.response_logprobs);
+    try std.testing.expectEqual(@as(?u8, null), gen.generation_options.logprobs);
+}
+
+test "parseArgs accepts advanced generation options in any order" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--logprobs",
+        "1",
+        "--prompt",
+        "My fair lady",
+        "--response-logprobs",
+        "--stop",
+        "END",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expect(gen.generation_options.response_logprobs);
+    try std.testing.expectEqual(@as(u8, 1), gen.generation_options.logprobs.?);
+    try std.testing.expectEqualStrings("END", gen.generation_options.stopSequenceSlice()[0]);
+}
+
+test "parseArgs rejects invalid gen advanced generation arguments" {
+    try std.testing.expectError(error.MissingTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature" }));
+    try std.testing.expectError(error.MissingTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptyTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "1", "--temperature", "2", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "-0.1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "2.1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidTemperature, parseArgs(&.{ "nbimg", "gen", "--temperature", "nan", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingTopP, parseArgs(&.{ "nbimg", "gen", "--top-p" }));
+    try std.testing.expectError(error.EmptyTopP, parseArgs(&.{ "nbimg", "gen", "--top-p", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateTopP, parseArgs(&.{ "nbimg", "gen", "--top-p", "0.5", "--top-p", "1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidTopP, parseArgs(&.{ "nbimg", "gen", "--top-p", "-0.1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidTopP, parseArgs(&.{ "nbimg", "gen", "--top-p", "1.1", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingSeed, parseArgs(&.{ "nbimg", "gen", "--seed" }));
+    try std.testing.expectError(error.EmptySeed, parseArgs(&.{ "nbimg", "gen", "--seed", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateSeed, parseArgs(&.{ "nbimg", "gen", "--seed", "1", "--seed", "2", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidSeed, parseArgs(&.{ "nbimg", "gen", "--seed", "2147483648", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidSeed, parseArgs(&.{ "nbimg", "gen", "--seed", "1.5", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingMaxOutputTokens, parseArgs(&.{ "nbimg", "gen", "--max-output-tokens" }));
+    try std.testing.expectError(error.EmptyMaxOutputTokens, parseArgs(&.{ "nbimg", "gen", "--max-output-tokens", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateMaxOutputTokens, parseArgs(&.{ "nbimg", "gen", "--max-output-tokens", "1", "--max-output-tokens", "2", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidMaxOutputTokens, parseArgs(&.{ "nbimg", "gen", "--max-output-tokens", "0", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidMaxOutputTokens, parseArgs(&.{ "nbimg", "gen", "--max-output-tokens", "32769", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingPresencePenalty, parseArgs(&.{ "nbimg", "gen", "--presence-penalty" }));
+    try std.testing.expectError(error.EmptyPresencePenalty, parseArgs(&.{ "nbimg", "gen", "--presence-penalty", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicatePresencePenalty, parseArgs(&.{ "nbimg", "gen", "--presence-penalty", "0", "--presence-penalty", "1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidPresencePenalty, parseArgs(&.{ "nbimg", "gen", "--presence-penalty", "-2.1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidPresencePenalty, parseArgs(&.{ "nbimg", "gen", "--presence-penalty", "2", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingFrequencyPenalty, parseArgs(&.{ "nbimg", "gen", "--frequency-penalty" }));
+    try std.testing.expectError(error.EmptyFrequencyPenalty, parseArgs(&.{ "nbimg", "gen", "--frequency-penalty", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateFrequencyPenalty, parseArgs(&.{ "nbimg", "gen", "--frequency-penalty", "0", "--frequency-penalty", "1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidFrequencyPenalty, parseArgs(&.{ "nbimg", "gen", "--frequency-penalty", "-2.1", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidFrequencyPenalty, parseArgs(&.{ "nbimg", "gen", "--frequency-penalty", "2", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingStop, parseArgs(&.{ "nbimg", "gen", "--stop" }));
+    try std.testing.expectError(error.EmptyStop, parseArgs(&.{ "nbimg", "gen", "--stop", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateStop, parseArgs(&.{ "nbimg", "gen", "--stop", "END", "--stop", "END", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.TooManyStops, parseArgs(&.{ "nbimg", "gen", "--stop", "1", "--stop", "2", "--stop", "3", "--stop", "4", "--stop", "5", "--stop", "6", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.DuplicateResponseLogprobs, parseArgs(&.{ "nbimg", "gen", "--response-logprobs", "--response-logprobs", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.MissingLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs" }));
+    try std.testing.expectError(error.EmptyLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs", "", "--response-logprobs", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs", "1", "--logprobs", "2", "--response-logprobs", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs", "0", "--response-logprobs", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs", "21", "--response-logprobs", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.LogprobsRequiresResponseLogprobs, parseArgs(&.{ "nbimg", "gen", "--logprobs", "1", "--prompt", "My fair lady" }));
+}
+
 test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1870,6 +2269,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expect(!edit.grounding_options.hasAny());
     try std.testing.expect(!edit.thinking_options.hasAny());
     try std.testing.expectEqual(api.HarmBlockThreshold.block_none, edit.safety_options.threshold);
+    try std.testing.expect(!edit.generation_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1957,6 +2357,44 @@ test "parseArgs accepts edit safety options" {
     const edit = expectEditCommand(parsed_command);
 
     try std.testing.expectEqual(api.HarmBlockThreshold.off, edit.safety_options.threshold);
+}
+
+test "parseArgs accepts edit advanced generation options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--temperature",
+        "2",
+        "--top-p",
+        "0",
+        "--seed",
+        "42",
+        "--max-output-tokens",
+        "32768",
+        "--presence-penalty",
+        "-2",
+        "--frequency-penalty",
+        "0",
+        "--stop",
+        "END",
+        "--response-logprobs",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+    const options = edit.generation_options;
+
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), options.temperature.?, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), options.top_p.?, 0.000001);
+    try std.testing.expectEqual(@as(i32, 42), options.seed.?);
+    try std.testing.expectEqual(@as(u32, api.max_output_tokens), options.max_output_tokens.?);
+    try std.testing.expectApproxEqAbs(@as(f64, -2.0), options.presence_penalty.?, 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), options.frequency_penalty.?, 0.000001);
+    try std.testing.expect(options.response_logprobs);
+    try std.testing.expectEqual(@as(?u8, null), options.logprobs);
+    try std.testing.expectEqualStrings("END", options.stopSequenceSlice()[0]);
 }
 
 test "parseArgs rejects invalid edit grounding arguments" {
@@ -3441,6 +3879,42 @@ test "parseArgs rejects safety options for files commands" {
     }));
 }
 
+test "parseArgs rejects advanced generation options for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--temperature",
+        "1",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--top-p",
+        "0.95",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--seed",
+        "42",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--response-logprobs",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -3495,6 +3969,18 @@ test "live API edit request shape is valid" {
     defer uploaded_file.deinit(gpa);
     defer deleteLiveEditSampleImage(gpa, api_key, uploaded_file.name);
 
+    var generation_options = api.GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = 42,
+        .presence_penalty = 0.0,
+        .frequency_penalty = 0.0,
+        .response_logprobs = true,
+        .logprobs = 1,
+    };
+    generation_options.appendStopSequence("END");
+
     var response = api_edit.countGenerateContentRequestTokens(
         gpa,
         std.testing.io,
@@ -3516,6 +4002,7 @@ test "live API edit request shape is valid" {
             .safety_options = .{
                 .threshold = .block_only_high,
             },
+            .generation_options = generation_options,
             .base = .{
                 .name = uploaded_file.name,
                 .mime = upload_mime,

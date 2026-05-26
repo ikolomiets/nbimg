@@ -56,6 +56,7 @@ pub const EditRequest = struct {
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
+    generation_options: api.GenerationOptions = .{},
     base: UploadedImage,
     base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
@@ -77,16 +78,10 @@ const GenerateContent = struct {
     parts: []const GeneratePart,
 };
 
-const GenerateConfig = struct {
-    responseModalities: []const api.ResponseModality,
-    thinkingConfig: ?api.ThinkingConfig = null,
-    responseFormat: ?api.ResponseFormatConfig = null,
-};
-
 const GenerateContentRequest = struct {
     contents: []const GenerateContent,
     tools: ?[]const api.Tool = null,
-    generationConfig: GenerateConfig,
+    generationConfig: api.GenerationConfig,
     safetySettings: []const api.SafetySetting,
 };
 
@@ -158,11 +153,11 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     const generate_request = GenerateContentRequest{
         .contents = &contents,
         .tools = tools,
-        .generationConfig = .{
-            .responseModalities = &api.default_response_modalities,
-            .thinkingConfig = api.thinkingConfigFromOptions(request.thinking_options),
-            .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
-        },
+        .generationConfig = api.generationConfigFromOptions(
+            request.output_options,
+            request.thinking_options,
+            &request.generation_options,
+        ),
         .safetySettings = &safety_settings,
     };
 
@@ -326,6 +321,7 @@ fn assertValidEditRequest(request: EditRequest) void {
 
     for (request.preserves) |preserve| assert(preserve.len > 0);
     for (request.do_nots) |do_not| assert(do_not.len > 0);
+    api.assertValidGenerationOptions(request.generation_options);
 }
 
 fn baseSceneAnchor() []const u8 {
@@ -525,6 +521,45 @@ test "buildGenerateRequest includes edit thinking config" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"minimal\",\"includeThoughts\":true}") != null);
+}
+
+test "buildGenerateRequest includes edit advanced generation options" {
+    const gpa = std.testing.allocator;
+    var generation_options = api.GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = -42,
+        .presence_penalty = -1.5,
+        .frequency_penalty = 1.25,
+        .response_logprobs = true,
+        .logprobs = 5,
+    };
+    generation_options.appendStopSequence("END");
+    generation_options.appendStopSequence("STOP");
+
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .generation_options = generation_options,
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"maxOutputTokens\":4096") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"temperature\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"topP\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"seed\":-42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"presencePenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"frequencyPenalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"responseLogprobs\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"logprobs\":5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"stopSequences\":[\"END\",\"STOP\"]") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
 }
 
 test "buildGenerateRequest applies edit safety threshold to all categories" {

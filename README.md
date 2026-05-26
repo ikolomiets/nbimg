@@ -10,6 +10,8 @@ The current implementation is intentionally narrow:
 - enable Google Search or Image Search grounding for generation and edit
 - configure Gemini Thinking level and request returned thought parts
 - configure one Gemini safety threshold across all emitted safety categories
+- configure advanced Gemini generation controls such as sampling, seed,
+  output-token budget, stop sequences, and logprob diagnostics
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print sanitized response traffic by default, with optional request traffic
@@ -95,6 +97,39 @@ ratios are `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`,
 `5:4`, `8:1`, `9:16`, `16:9`, and `21:9`. Valid image sizes are `512`, `1K`,
 `2K`, and `4K`. If both flags are omitted, `nbimg` leaves Gemini's output
 shape defaults unchanged.
+
+Advanced generation controls are available on both `gen` and `edit`. They are
+token-generation controls sent under Gemini `generationConfig`; they do not
+replace image-specific controls such as `--aspect-ratio` or `--image-size`.
+All are omitted from the request unless explicitly set.
+
+Use `--temperature FLOAT` and `--top-p FLOAT` to tune sampling behavior.
+`--temperature` accepts `0.0` through `2.0`; lower values are more
+conservative, while higher values allow more variation. `--top-p` accepts
+`0.0` through `1.0` and is mostly useful for controlled prompt experiments.
+
+Use `--seed INT` for best-effort reproducibility. The seed must be a signed
+32-bit decimal integer. Exact repeatability is not guaranteed by Gemini; keep
+the same prompt, model, inputs, and generation settings when comparing runs.
+
+Use `--max-output-tokens INT` as an output budget or termination guard. It
+accepts `1` through `32768`. It does not select image resolution or visual
+quality, and values that are too low can truncate generated text or stop
+generation early.
+
+Use `--presence-penalty FLOAT` and `--frequency-penalty FLOAT` for text-heavy
+responses where repeated wording matters. Both accept values from `-2.0` up to
+but not including `2.0`. Positive values discourage repetition; negative
+values can encourage reuse. These are not reliable visual-diversity controls.
+
+Use repeatable `--stop TEXT` to stop text generation when a literal sequence is
+encountered. Up to five non-empty unique stop sequences are accepted. Stop
+sequences are case-sensitive text controls, not negative prompts.
+
+Use `--response-logprobs` for token-level diagnostics on chosen response
+tokens. Add `--logprobs INT` with a value from `1` through `20` to request
+top-token alternatives at each step; `--logprobs` requires
+`--response-logprobs`. These diagnostics are not image confidence scores.
 
 Use `--thinking-level minimal|high` with `gen` or `edit` to control Gemini's
 thinking effort. Omit it to use Gemini's default. Use `--include-thoughts` to
@@ -206,6 +241,15 @@ Useful edit flags:
 --do-not TEXT
 --aspect-ratio RATIO
 --image-size SIZE
+--temperature FLOAT
+--top-p FLOAT
+--seed INT
+--max-output-tokens INT
+--presence-penalty FLOAT
+--frequency-penalty FLOAT
+--stop TEXT
+--response-logprobs
+--logprobs INT
 --grounding none|web|image|web,image
 --thinking-level minimal|high
 --include-thoughts
@@ -270,8 +314,9 @@ zig build test-live-api-files-delete
 `generateContent` is billable, so the request-shape live tests for `gen` and
 `edit` use `countTokens` as a lower-cost validation endpoint instead of
 generating content. The `gen` and `edit` request-shape live tests include
-`web,image` grounding and `thinkingConfig` to validate the tool-bearing and
-Thinking request shape. The edit request-shape live test uploads
+`web,image` grounding, `thinkingConfig`, and representative advanced
+generation controls to validate the tool-bearing, Thinking, and
+`generationConfig` request shape. The edit request-shape live test uploads
 `sample_images/good_night.jpeg` through the Files API, validates the edit
 request with the uploaded `files/...` name, and deletes the uploaded file after
 validation.
