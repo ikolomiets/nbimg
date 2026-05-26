@@ -14,27 +14,6 @@ const file_uri_prefix = "https://generativelanguage.googleapis.com/v1beta/";
 const live_base_name = "files/tjtj5me9i96c";
 const live_prompt = "change visual style to Broadway musical";
 
-pub const InputMime = enum {
-    jpeg,
-    png,
-    webp,
-
-    pub fn fromName(name: []const u8) ?InputMime {
-        if (std.mem.eql(u8, name, "image/jpeg")) return .jpeg;
-        if (std.mem.eql(u8, name, "image/png")) return .png;
-        if (std.mem.eql(u8, name, "image/webp")) return .webp;
-        return null;
-    }
-
-    pub fn apiName(mime: InputMime) []const u8 {
-        return switch (mime) {
-            .jpeg => "image/jpeg",
-            .png => "image/png",
-            .webp => "image/webp",
-        };
-    }
-};
-
 pub const ReferenceRole = enum {
     scene,
     character,
@@ -62,7 +41,7 @@ pub const ReferenceRole = enum {
 
 pub const UploadedImage = struct {
     name: []const u8,
-    mime: InputMime,
+    mime: api.ImageMime,
 };
 
 pub const Reference = struct {

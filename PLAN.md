@@ -4,6 +4,18 @@ This file tracks prioritized TODO items for `nbimg`. Keep it synchronized with
 the current codebase: remove items when implemented, revise items when the API
 shape changes, and add newly discovered gaps in priority order.
 
+## Module Design Guardrail
+
+Adhere to the chosen module ownership before adding new behavior. Shared Gemini
+wire mechanics, parsing rules, MIME/name enums, transport helpers, response
+decoding, and cross-command request primitives belong in `src/api.zig`.
+Command modules should keep only command-specific parsing, validation, request
+assembly, and response handling. If a helper would be duplicated between
+`src/gen.zig`, `src/edit.zig`, or `src/files.zig`, treat that as a design
+signal to pick one shared owner, usually `src/api.zig`, before implementation.
+Avoid compatibility aliases for internal duplicated types unless there is a
+specific migration need.
+
 ## 1. `responseFormat.image` Output Options
 
 - Current status: `--aspect-ratio` and `--image-size` serialize through

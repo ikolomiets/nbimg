@@ -42,8 +42,9 @@ The code is split into seven source files:
   lookup, request dispatch, response handling, and file writing.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
-  logging options, transport helpers, Thinking/output/grounding wire helpers,
-  generated response decoding and output naming, and response log
+  logging options, transport helpers, image MIME parsing and serialization,
+  Thinking/output/grounding wire helpers, generated response decoding and
+  output naming, and response log
   sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
   countTokens request construction.
@@ -51,7 +52,7 @@ The code is split into seven source files:
   request construction, edit manifest text, File API URI derivation, and
   countTokens wrapping.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
-  construction, upload MIME detection, upload/list/get response decoding, and
+  construction, upload/list/get response decoding, and
   Files API endpoint handling.
 
 The public API namespace is intentionally split by command domain:
@@ -78,6 +79,15 @@ Command-domain modules must not depend on each other. `src/gen.zig`,
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
 
+Treat these module boundaries as part of the implementation design, not as
+descriptive afterthoughts. Before adding a type, parser, serializer, endpoint
+helper, or response decoder, pick the owning module and check sibling command
+modules for the same concept. Repeated Gemini wire rules, MIME handling,
+canonical resource-name handling, transport behavior, logging behavior, or
+response decoding logic should be centralized in `src/api.zig` instead of
+copied into command modules. Command modules should remain narrow so duplicate
+internal enums and conversion helpers do not accumulate.
+
 `src/gen.zig` owns Gemini native image generation semantics for the fixed
 `nano2` model. It builds the `GenerateContentRequest` JSON, wraps that shape
 for `countTokens`, and sends generation and token-count requests.
@@ -88,15 +98,16 @@ their model-facing `file_uri` values from the common Gemini File API prefix,
 interleaves role anchor text and `file_data` parts, and wraps the same request
 shape for `countTokens`.
 
-`src/files.zig` owns Gemini Files API semantics. It maps upload path extensions
-to MIME types, performs resumable upload start/finalize calls, builds
-paginated list URLs and file-resource get/delete URLs, and decodes
+`src/files.zig` owns Gemini Files API semantics. It receives shared image MIME
+types from `src/api.zig`, performs resumable upload start/finalize calls,
+builds paginated list URLs and file-resource get/delete URLs, and decodes
 uploaded/listed/fetched File metadata.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
-modality values, grounding tool wire structures, generated response decoding,
+modality values, image MIME parsing/serialization for edit references and
+file uploads, grounding tool wire structures, generated response decoding,
 generated file metadata, output naming, static safety settings, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
@@ -764,7 +775,7 @@ Current tests cover:
 - Grounding tool serialization for web, image, and combined web/image modes.
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
-- Files API upload MIME detection.
+- Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
 - Decoding Files API upload, list, and get responses.

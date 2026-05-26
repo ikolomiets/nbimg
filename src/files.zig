@@ -10,31 +10,8 @@ const max_display_name_codepoints = 512;
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
 
-pub const InputMime = enum {
-    jpeg,
-    png,
-    webp,
-
-    pub fn fromPath(path: []const u8) ?InputMime {
-        const extension = std.fs.path.extension(path);
-        if (std.ascii.eqlIgnoreCase(extension, ".jpg")) return .jpeg;
-        if (std.ascii.eqlIgnoreCase(extension, ".jpeg")) return .jpeg;
-        if (std.ascii.eqlIgnoreCase(extension, ".png")) return .png;
-        if (std.ascii.eqlIgnoreCase(extension, ".webp")) return .webp;
-        return null;
-    }
-
-    pub fn apiName(mime: InputMime) []const u8 {
-        return switch (mime) {
-            .jpeg => "image/jpeg",
-            .png => "image/png",
-            .webp => "image/webp",
-        };
-    }
-};
-
 pub const FileUpload = struct {
-    mime: InputMime,
+    mime: api.ImageMime,
     bytes: []const u8,
     display_name: ?[]const u8 = null,
 };
@@ -476,14 +453,6 @@ fn filesListBaseUrl() []const u8 {
     return "https://generativelanguage.googleapis.com/v1beta/files";
 }
 
-test "InputMime detects supported image extensions" {
-    try std.testing.expectEqual(InputMime.jpeg, InputMime.fromPath("sample_images/good_night.jpeg").?);
-    try std.testing.expectEqual(InputMime.jpeg, InputMime.fromPath("photo.JPG").?);
-    try std.testing.expectEqual(InputMime.png, InputMime.fromPath("photo.png").?);
-    try std.testing.expectEqual(InputMime.webp, InputMime.fromPath("photo.webp").?);
-    try std.testing.expectEqual(@as(?InputMime, null), InputMime.fromPath("photo.gif"));
-}
-
 test "decodeUploadedFileName returns owned file name" {
     const gpa = std.testing.allocator;
     const name = try decodeUploadedFileName(
@@ -750,7 +719,7 @@ test "live API files get returns uploaded file metadata" {
         try std.testing.expectEqualStrings(live_upload_display_name, display_name);
     }
     if (fetched_file.mime_type) |mime_type| {
-        try std.testing.expectEqualStrings(InputMime.jpeg.apiName(), mime_type);
+        try std.testing.expectEqualStrings(api.ImageMime.jpeg.apiName(), mime_type);
     }
 }
 
@@ -826,7 +795,7 @@ test "live API files delete removes uploaded file and reports missing files" {
 }
 
 fn uploadSampleImage(gpa: std.mem.Allocator, api_key: []const u8) !File {
-    const mime = InputMime.fromPath(sample_image_path) orelse return error.UnsupportedInputMime;
+    const mime = api.ImageMime.fromPath(sample_image_path) orelse return error.UnsupportedInputMime;
     const bytes = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         sample_image_path,

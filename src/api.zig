@@ -422,6 +422,36 @@ pub const CountTokensResult = struct {
     cached_content_token_count: ?u64 = null,
 };
 
+pub const ImageMime = enum {
+    jpeg,
+    png,
+    webp,
+
+    pub fn fromName(name: []const u8) ?ImageMime {
+        if (std.mem.eql(u8, name, "image/jpeg")) return .jpeg;
+        if (std.mem.eql(u8, name, "image/png")) return .png;
+        if (std.mem.eql(u8, name, "image/webp")) return .webp;
+        return null;
+    }
+
+    pub fn fromPath(path: []const u8) ?ImageMime {
+        const extension = std.fs.path.extension(path);
+        if (std.ascii.eqlIgnoreCase(extension, ".jpg")) return .jpeg;
+        if (std.ascii.eqlIgnoreCase(extension, ".jpeg")) return .jpeg;
+        if (std.ascii.eqlIgnoreCase(extension, ".png")) return .png;
+        if (std.ascii.eqlIgnoreCase(extension, ".webp")) return .webp;
+        return null;
+    }
+
+    pub fn apiName(mime: ImageMime) []const u8 {
+        return switch (mime) {
+            .jpeg => "image/jpeg",
+            .png => "image/png",
+            .webp => "image/webp",
+        };
+    }
+};
+
 pub const OutputMime = enum {
     png,
     jpeg,
@@ -741,6 +771,24 @@ test "responseFormatFromOutputOptions serializes Gemini image response enum name
         "{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}",
         output.written(),
     );
+}
+
+test "ImageMime parses supported API MIME names" {
+    try std.testing.expectEqual(ImageMime.jpeg, ImageMime.fromName("image/jpeg").?);
+    try std.testing.expectEqual(ImageMime.png, ImageMime.fromName("image/png").?);
+    try std.testing.expectEqual(ImageMime.webp, ImageMime.fromName("image/webp").?);
+    try std.testing.expectEqual(@as(?ImageMime, null), ImageMime.fromName("image/gif"));
+    try std.testing.expectEqualStrings("image/jpeg", ImageMime.jpeg.apiName());
+    try std.testing.expectEqualStrings("image/png", ImageMime.png.apiName());
+    try std.testing.expectEqualStrings("image/webp", ImageMime.webp.apiName());
+}
+
+test "ImageMime detects supported image extensions" {
+    try std.testing.expectEqual(ImageMime.jpeg, ImageMime.fromPath("sample_images/good_night.jpeg").?);
+    try std.testing.expectEqual(ImageMime.jpeg, ImageMime.fromPath("photo.JPG").?);
+    try std.testing.expectEqual(ImageMime.png, ImageMime.fromPath("photo.png").?);
+    try std.testing.expectEqual(ImageMime.webp, ImageMime.fromPath("photo.webp").?);
+    try std.testing.expectEqual(@as(?ImageMime, null), ImageMime.fromPath("photo.gif"));
 }
 
 test "GroundingOptions parses supported CLI names" {

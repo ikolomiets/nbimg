@@ -360,7 +360,7 @@ fn runFilesUpload(
     api_key: []const u8,
     command: FilesUploadCommand,
 ) u8 {
-    const mime = api_files.InputMime.fromPath(command.path) orelse {
+    const mime = api.ImageMime.fromPath(command.path) orelse {
         std.debug.print("error: unsupported upload file type; expected .jpg, .jpeg, .png, or .webp\n", .{});
         return exit_usage;
     };
@@ -809,7 +809,7 @@ fn parseImageInput(value: []const u8, empty_error: ParseError) ParseError!api_ed
 
     return .{
         .name = name,
-        .mime = api_edit.InputMime.fromName(mime_name) orelse return error.InvalidMime,
+        .mime = api.ImageMime.fromName(mime_name) orelse return error.InvalidMime,
     };
 }
 
@@ -1783,7 +1783,7 @@ test "parseArgs accepts minimal edit command" {
 
     try std.testing.expectEqualStrings("change visual style to Broadway musical", edit.prompt);
     try std.testing.expectEqualStrings("files/tjtj5me9i96c", edit.base.name);
-    try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.base.mime);
+    try std.testing.expectEqual(api.ImageMime.jpeg, edit.base.mime);
     try std.testing.expectEqual(api_edit.ReferenceRole.scene, edit.base_role);
     try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
@@ -1972,7 +1972,7 @@ test "parseArgs accepts stdin fallback prompt for edit" {
 
     try std.testing.expectEqualStrings("change visual style to Broadway musical", edit.prompt);
     try std.testing.expectEqualStrings("files/tjtj5me9i96c", edit.base.name);
-    try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.base.mime);
+    try std.testing.expectEqual(api.ImageMime.jpeg, edit.base.mime);
 }
 
 test "parseArgs accepts edit base reference role constraints and request log flag" {
@@ -2026,13 +2026,13 @@ test "parseArgs accepts first ref as base and later generic references" {
     try std.testing.expectEqual(api_edit.ReferenceRole.character, edit.references[0].role);
     try std.testing.expectEqualStrings("CHARACTER_A", edit.references[0].label);
     try std.testing.expectEqualStrings("files/person", edit.references[0].image.name);
-    try std.testing.expectEqual(api_edit.InputMime.jpeg, edit.references[0].image.mime);
+    try std.testing.expectEqual(api.ImageMime.jpeg, edit.references[0].image.mime);
     try std.testing.expectEqual(api_edit.ReferenceRole.object, edit.references[1].role);
     try std.testing.expectEqualStrings("OBJECT_PRODUCT", edit.references[1].label);
-    try std.testing.expectEqual(api_edit.InputMime.png, edit.references[1].image.mime);
+    try std.testing.expectEqual(api.ImageMime.png, edit.references[1].image.mime);
     try std.testing.expectEqual(api_edit.ReferenceRole.style, edit.references[2].role);
     try std.testing.expectEqualStrings("STYLE_REFERENCE_A", edit.references[2].label);
-    try std.testing.expectEqual(api_edit.InputMime.webp, edit.references[2].image.mime);
+    try std.testing.expectEqual(api.ImageMime.webp, edit.references[2].image.mime);
     try std.testing.expectEqual(api_edit.ReferenceRole.pose, edit.references[3].role);
     try std.testing.expectEqualStrings("POSE_MAIN", edit.references[3].label);
 }
@@ -2068,7 +2068,7 @@ test "parseArgs accepts first edit reference with non-scene role" {
     const edit = expectEditCommand(parsed_command);
 
     try std.testing.expectEqualStrings("files/base-style", edit.base.name);
-    try std.testing.expectEqual(api_edit.InputMime.webp, edit.base.mime);
+    try std.testing.expectEqual(api.ImageMime.webp, edit.base.mime);
     try std.testing.expectEqual(api_edit.ReferenceRole.style, edit.base_role);
     try std.testing.expectEqual(@as(usize, 0), edit.reference_count);
 }
@@ -3329,7 +3329,7 @@ test "live API edit request shape is valid" {
     };
     defer api.traffic_log_options = .{};
 
-    const upload_mime = api_files.InputMime.fromPath(live_edit_sample_image_path) orelse return error.UnsupportedInputMime;
+    const upload_mime = api.ImageMime.fromPath(live_edit_sample_image_path) orelse return error.UnsupportedInputMime;
     var uploaded_file = try uploadLiveEditSampleImage(gpa, api_key, upload_mime);
     defer uploaded_file.deinit(gpa);
     defer deleteLiveEditSampleImage(gpa, api_key, uploaded_file.name);
@@ -3354,7 +3354,7 @@ test "live API edit request shape is valid" {
             },
             .base = .{
                 .name = uploaded_file.name,
-                .mime = editMimeFromUploadMime(upload_mime),
+                .mime = upload_mime,
             },
             .base_role = .scene,
         },
@@ -3386,7 +3386,7 @@ test "live API edit request shape is valid" {
 fn uploadLiveEditSampleImage(
     gpa: std.mem.Allocator,
     api_key: []const u8,
-    mime: api_files.InputMime,
+    mime: api.ImageMime,
 ) !api_files.File {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
@@ -3431,14 +3431,6 @@ fn deleteLiveEditSampleImage(gpa: std.mem.Allocator, api_key: []const u8, name: 
             .{ name, @intFromEnum(response.status), response.body },
         );
     }
-}
-
-fn editMimeFromUploadMime(mime: api_files.InputMime) api_edit.InputMime {
-    return switch (mime) {
-        .jpeg => .jpeg,
-        .png => .png,
-        .webp => .webp,
-    };
 }
 
 test "readPromptFromReader reads stdin fallback prompt" {
