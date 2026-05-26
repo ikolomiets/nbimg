@@ -398,24 +398,40 @@ pub const SafetySetting = struct {
     threshold: HarmBlockThreshold,
 };
 
-pub const default_safety_settings = [_]SafetySetting{
-    .{
-        .category = .harassment,
-        .threshold = .block_none,
-    },
-    .{
-        .category = .hate_speech,
-        .threshold = .block_none,
-    },
-    .{
-        .category = .sexually_explicit,
-        .threshold = .block_none,
-    },
-    .{
-        .category = .dangerous_content,
-        .threshold = .block_none,
-    },
+pub const SafetyOptions = struct {
+    threshold: HarmBlockThreshold = .block_none,
+
+    pub fn fromName(name: []const u8) ?SafetyOptions {
+        if (std.mem.eql(u8, name, "none")) return .{ .threshold = .block_none };
+        if (std.mem.eql(u8, name, "off")) return .{ .threshold = .off };
+        if (std.mem.eql(u8, name, "high")) return .{ .threshold = .block_only_high };
+        if (std.mem.eql(u8, name, "medium")) return .{ .threshold = .block_medium_and_above };
+        if (std.mem.eql(u8, name, "low")) return .{ .threshold = .block_low_and_above };
+        return null;
+    }
 };
+
+pub const supported_harm_categories = [_]HarmCategory{
+    .harassment,
+    .hate_speech,
+    .sexually_explicit,
+    .dangerous_content,
+};
+
+pub fn safetySettingsFromOptions(options: SafetyOptions) [supported_harm_categories.len]SafetySetting {
+    var settings: [supported_harm_categories.len]SafetySetting = undefined;
+
+    for (supported_harm_categories, 0..) |category, index| {
+        settings[index] = .{
+            .category = category,
+            .threshold = options.threshold,
+        };
+    }
+
+    return settings;
+}
+
+pub const default_safety_settings = safetySettingsFromOptions(.{});
 
 pub const CountTokensResult = struct {
     total_tokens: u64,
@@ -743,6 +759,32 @@ test "default safety settings serialize all supported harm categories as block n
     try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_SEXUALLY_EXPLICIT\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_DANGEROUS_CONTENT\"") != null);
     try std.testing.expectEqual(@as(usize, 4), countOccurrences(json, "\"threshold\":\"BLOCK_NONE\""));
+}
+
+test "SafetyOptions parses supported CLI names" {
+    try std.testing.expectEqual(HarmBlockThreshold.block_none, SafetyOptions.fromName("none").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.off, SafetyOptions.fromName("off").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_only_high, SafetyOptions.fromName("high").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_medium_and_above, SafetyOptions.fromName("medium").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_low_and_above, SafetyOptions.fromName("low").?.threshold);
+    try std.testing.expect(SafetyOptions.fromName("block-none") == null);
+}
+
+test "safetySettingsFromOptions applies one threshold to all supported categories" {
+    const gpa = std.testing.allocator;
+    const settings = safetySettingsFromOptions(.{ .threshold = .off });
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+
+    try std.json.Stringify.value(settings, .{}, &output.writer);
+    const json = output.written();
+
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_HARASSMENT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_HATE_SPEECH\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_SEXUALLY_EXPLICIT\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_DANGEROUS_CONTENT\"") != null);
+    try std.testing.expectEqual(@as(usize, 4), countOccurrences(json, "\"threshold\":\"OFF\""));
 }
 
 test "default response modalities request text and image output" {

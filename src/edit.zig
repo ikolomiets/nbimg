@@ -55,6 +55,7 @@ pub const EditRequest = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
+    safety_options: api.SafetyOptions = .{},
     base: UploadedImage,
     base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
@@ -153,6 +154,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         tools_buffer[0] = tool;
         break :tools tools_buffer[0..1];
     } else null;
+    const safety_settings = api.safetySettingsFromOptions(request.safety_options);
     const generate_request = GenerateContentRequest{
         .contents = &contents,
         .tools = tools,
@@ -161,7 +163,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
             .thinkingConfig = api.thinkingConfigFromOptions(request.thinking_options),
             .responseFormat = api.responseFormatFromOutputOptions(request.output_options),
         },
-        .safetySettings = &api.default_safety_settings,
+        .safetySettings = &safety_settings,
     };
 
     var output: std.Io.Writer.Allocating = .init(gpa);
@@ -523,6 +525,28 @@ test "buildGenerateRequest includes edit thinking config" {
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"minimal\",\"includeThoughts\":true}") != null);
+}
+
+test "buildGenerateRequest applies edit safety threshold to all categories" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .safety_options = .{
+            .threshold = .block_low_and_above,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"safetySettings\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"threshold\":\"BLOCK_NONE\"") == null);
 }
 
 fn expectDefaultSafetySettings(request_json: []const u8) !void {

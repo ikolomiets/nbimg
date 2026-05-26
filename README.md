@@ -9,6 +9,7 @@ The current implementation is intentionally narrow:
 - edit an uploaded Gemini File API image with a text prompt
 - enable Google Search or Image Search grounding for generation and edit
 - configure Gemini Thinking level and request returned thought parts
+- configure one Gemini safety threshold across all emitted safety categories
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print sanitized response traffic by default, with optional request traffic
@@ -101,6 +102,19 @@ ask Gemini to return thought parts in the response. Response traffic is already
 logged to stderr by default, so thought text is visible there when returned.
 Thought image parts are written beside final outputs, using filenames such as
 `RESPONSE-0-thought-0.jpg`.
+
+Use `--safety none|off|high|medium|low` with `gen` or `edit` to choose one
+Gemini safety threshold for every safety category that `nbimg` sends. The
+default is `none`, which preserves the existing `BLOCK_NONE` request shape.
+The levels serialize as `BLOCK_NONE`, `OFF`, `BLOCK_ONLY_HIGH`,
+`BLOCK_MEDIUM_AND_ABOVE`, or `BLOCK_LOW_AND_ABOVE`.
+
+`--safety` controls only Gemini's adjustable request-level `safetySettings`.
+Google's Gemini safety documentation describes additional built-in protections
+that are not controlled by client safety settings and may still block prompts,
+responses, or image generation: <https://ai.google.dev/docs/safety_setting_gemini>.
+The exact image-generation behavior of `BLOCK_NONE` versus `OFF` is not
+defined by `nbimg`; both are exposed for API coverage.
 
 Use `--grounding MODE` with `gen` or `edit` when the prompt should be grounded
 with Google Search. Valid modes are `none`, `web`, `image`, and `web,image`.

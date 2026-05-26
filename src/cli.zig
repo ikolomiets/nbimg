@@ -23,6 +23,7 @@ pub const GenCommand = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
+    safety_options: api.SafetyOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -33,6 +34,7 @@ pub const EditCommand = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
+    safety_options: api.SafetyOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
@@ -140,6 +142,10 @@ pub const ParseError = error{
     DuplicateThinkingLevel,
     InvalidThinkingLevel,
     DuplicateIncludeThoughts,
+    MissingSafety,
+    EmptySafety,
+    DuplicateSafety,
+    InvalidSafety,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -252,6 +258,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         command.output_options,
         command.grounding_options,
         command.thinking_options,
+        command.safety_options,
     ) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
@@ -286,6 +293,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         .output_options = command.output_options,
         .grounding_options = command.grounding_options,
         .thinking_options = command.thinking_options,
+        .safety_options = command.safety_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -605,8 +613,10 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
+    var safety_options: api.SafetyOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
+    var safety_seen = false;
     var out_dir: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
@@ -631,6 +641,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             try parseThinkingLevelOption(command_args, &thinking_options);
         } else if (std.mem.eql(u8, arg, "--include-thoughts")) {
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
+        } else if (std.mem.eql(u8, arg, "--safety")) {
+            try parseSafetyOption(command_args, &safety_options, &safety_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -647,6 +659,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
         .output_options = output_options,
         .grounding_options = grounding_options,
         .thinking_options = thinking_options,
+        .safety_options = safety_options,
         .out_dir = out_dir,
     };
 }
@@ -656,8 +669,10 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
+    var safety_options: api.SafetyOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
+    var safety_seen = false;
     var out_dir: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.ReferenceRole = .scene;
@@ -690,6 +705,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             try parseThinkingLevelOption(command_args, &thinking_options);
         } else if (std.mem.eql(u8, arg, "--include-thoughts")) {
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
+        } else if (std.mem.eql(u8, arg, "--safety")) {
+            try parseSafetyOption(command_args, &safety_options, &safety_seen);
         } else if (std.mem.eql(u8, arg, "--prompt")) {
             if (prompt != null) return error.DuplicatePrompt;
 
@@ -728,6 +745,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .output_options = output_options,
         .grounding_options = grounding_options,
         .thinking_options = thinking_options,
+        .safety_options = safety_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -788,6 +806,19 @@ fn parseIncludeThoughtsOption(
 
     thinking_options.include_thoughts = true;
     include_thoughts_seen.* = true;
+}
+
+fn parseSafetyOption(
+    command_args: *CommandArgs,
+    safety_options: *api.SafetyOptions,
+    safety_seen: *bool,
+) ParseError!void {
+    if (safety_seen.*) return error.DuplicateSafety;
+
+    const value = try command_args.nextValue(error.MissingSafety);
+    if (value.len == 0) return error.EmptySafety;
+    safety_options.* = api.SafetyOptions.fromName(value) orelse return error.InvalidSafety;
+    safety_seen.* = true;
 }
 
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
@@ -1438,6 +1469,10 @@ fn printUsageError(err: ParseError) void {
         error.DuplicateThinkingLevel => std.debug.print("error: thinking level specified more than once\n", .{}),
         error.InvalidThinkingLevel => std.debug.print("error: thinking level must be minimal or high\n", .{}),
         error.DuplicateIncludeThoughts => std.debug.print("error: include thoughts specified more than once\n", .{}),
+        error.MissingSafety => std.debug.print("error: missing safety level\n", .{}),
+        error.EmptySafety => std.debug.print("error: safety level must not be empty\n", .{}),
+        error.DuplicateSafety => std.debug.print("error: safety level specified more than once\n", .{}),
+        error.InvalidSafety => std.debug.print("error: safety level must be none, off, high, medium, or low\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1449,8 +1484,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1472,7 +1507,10 @@ fn usageText() []const u8 {
         "\n" ++
         "thinking options:\n" ++
         "       --thinking-level accepts minimal or high\n" ++
-        "       --include-thoughts requests returned thought parts; thought images are saved beside final outputs\n";
+        "       --include-thoughts requests returned thought parts; thought images are saved beside final outputs\n" ++
+        "\n" ++
+        "safety options:\n" ++
+        "       --safety accepts none, off, high, medium, or low\n";
 }
 
 test "usageText documents edit reference roles and defaults" {
@@ -1483,6 +1521,7 @@ test "usageText documents edit reference roles and defaults" {
         "--grounding MODE",
         "--thinking-level LEVEL",
         "--include-thoughts",
+        "--safety LEVEL",
         "--out-dir DIR",
         "--ref ROLE=files/ID,MIME",
         "first --ref is the BASE_IMAGE and must omit LABEL",
@@ -1503,6 +1542,7 @@ test "usageText documents edit reference roles and defaults" {
         "none, web, image, or web,image",
         "minimal or high",
         "thought images are saved beside final outputs",
+        "none, off, high, medium, or low",
     };
 
     for (expected) |needle| {
@@ -1520,6 +1560,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqual(@as(?api.ImageSize, null), gen.output_options.image_size);
     try std.testing.expect(!gen.grounding_options.hasAny());
     try std.testing.expect(!gen.thinking_options.hasAny());
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, gen.safety_options.threshold);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -1662,6 +1703,23 @@ test "parseArgs accepts gen thinking options" {
     try std.testing.expect(gen.thinking_options.include_thoughts);
 }
 
+test "parseArgs accepts gen safety options" {
+    const none_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "none", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, expectGenCommand(none_command).safety_options.threshold);
+
+    const off_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "off", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.off, expectGenCommand(off_command).safety_options.threshold);
+
+    const high_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "high", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_only_high, expectGenCommand(high_command).safety_options.threshold);
+
+    const medium_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "medium", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_medium_and_above, expectGenCommand(medium_command).safety_options.threshold);
+
+    const low_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "low", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, expectGenCommand(low_command).safety_options.threshold);
+}
+
 test "parseArgs accepts print request flag in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1770,6 +1828,23 @@ test "parseArgs rejects invalid gen thinking arguments" {
     }));
 }
 
+test "parseArgs rejects invalid gen safety arguments" {
+    try std.testing.expectError(error.MissingSafety, parseArgs(&.{ "nbimg", "gen", "--safety" }));
+    try std.testing.expectError(error.MissingSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptySafety, parseArgs(&.{ "nbimg", "gen", "--safety", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateSafety, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--safety",
+        "none",
+        "--safety",
+        "high",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "block-none", "--prompt", "My fair lady" }));
+}
+
 test "parseArgs accepts minimal edit command" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -1794,6 +1869,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(?api.ImageSize, null), edit.output_options.image_size);
     try std.testing.expect(!edit.grounding_options.hasAny());
     try std.testing.expect(!edit.thinking_options.hasAny());
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, edit.safety_options.threshold);
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -1867,6 +1943,22 @@ test "parseArgs accepts edit thinking options" {
     try std.testing.expect(edit.thinking_options.include_thoughts);
 }
 
+test "parseArgs accepts edit safety options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--safety",
+        "off",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(api.HarmBlockThreshold.off, edit.safety_options.threshold);
+}
+
 test "parseArgs rejects invalid edit grounding arguments" {
     try std.testing.expectError(error.MissingGrounding, parseArgs(&.{
         "nbimg",
@@ -1922,6 +2014,38 @@ test "parseArgs rejects invalid edit thinking arguments" {
         "edit",
         "--include-thoughts",
         "--include-thoughts",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+}
+
+test "parseArgs rejects invalid edit safety arguments" {
+    try std.testing.expectError(error.MissingSafety, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--safety",
+    }));
+    try std.testing.expectError(error.InvalidSafety, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--safety",
+        "strict",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
+    try std.testing.expectError(error.DuplicateSafety, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--safety",
+        "medium",
+        "--safety",
+        "low",
         "--ref",
         "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
@@ -3280,6 +3404,43 @@ test "parseArgs rejects thinking options for files commands" {
     }));
 }
 
+test "parseArgs rejects safety options for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--safety",
+        "none",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--safety",
+        "off",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--safety",
+        "high",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--safety",
+        "low",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -3351,6 +3512,9 @@ test "live API edit request shape is valid" {
             .thinking_options = .{
                 .level = .high,
                 .include_thoughts = true,
+            },
+            .safety_options = .{
+                .threshold = .block_only_high,
             },
             .base = .{
                 .name = uploaded_file.name,

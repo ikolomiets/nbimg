@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -24,8 +24,9 @@ generation or edit requests to the Gemini API, decodes image or text parts from
 the response, and writes each generated part to the selected output directory
 or current working directory. Generation and edit requests can optionally
 enable Google Search or Image Search grounding, set Gemini Thinking level, and
-request returned thought parts. It can also upload image files to Gemini's
-Files API, list or get uploaded file metadata, and delete uploaded files.
+request returned thought parts, or set one Gemini safety threshold across all
+emitted safety categories. It can also upload image files to Gemini's Files API,
+list or get uploaded file metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, or response snapshots.
@@ -108,7 +109,7 @@ validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
 modality values, image MIME parsing/serialization for edit references and
 file uploads, grounding tool wire structures, generated response decoding,
-generated file metadata, output naming, static safety settings, and logging.
+generated file metadata, output naming, safety setting helpers, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
 ownership type, `Model` constants, and global traffic logging switch. Headers
@@ -148,8 +149,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -202,6 +203,18 @@ Argument rules are intentionally narrow:
   `generationConfig.thinkingConfig.includeThoughts` to `true`. Thought text is
   only visible in the existing stderr response log. Thought image parts are
   saved beside final output files and use `thought` in the filename.
+- For `gen` and `edit`, `--safety LEVEL` is optional and accepted at most
+  once. Valid levels are `none`, `off`, `high`, `medium`, and `low`. If
+  omitted, `nbimg` preserves its current explicit `BLOCK_NONE` request shape.
+  The levels serialize as `BLOCK_NONE`, `OFF`, `BLOCK_ONLY_HIGH`,
+  `BLOCK_MEDIUM_AND_ABOVE`, and `BLOCK_LOW_AND_ABOVE` respectively, and the
+  selected threshold is applied to every safety category that `nbimg` emits.
+- `--safety` controls only Gemini's adjustable request-level
+  `safetySettings`. Google's Gemini safety documentation describes additional
+  built-in protections that are not controlled by client safety settings and
+  may still block prompts, responses, or image generation. `nbimg` exposes both
+  `none` and `off` for API coverage without defining the exact image-generation
+  behavior difference between those two thresholds.
 - For `edit`, at least one `--ref ROLE=files/ID,MIME` is required. The first
   `--ref` is the base image to edit and is always labeled `BASE_IMAGE`; it
   must not include a custom label.
@@ -260,8 +273,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -273,6 +286,9 @@ edit reference details:
        valid ROLE values: scene|character|object|style|pose|composition|background|texture|image
        omitted LABEL auto-assigns by role: SCENE_REFERENCE_A, CHARACTER_A, OBJECT_A, STYLE_REFERENCE_A, POSE_REFERENCE_A, COMPOSITION_REFERENCE_A, BACKGROUND_REFERENCE_A, TEXTURE_REFERENCE_A, IMAGE_REFERENCE_A
        MIME must be image/jpeg, image/png, or image/webp
+
+safety options:
+       --safety accepts none, off, high, medium, or low
 ```
 
 ## Authentication
@@ -387,11 +403,28 @@ When `--thinking-level`, `--include-thoughts`, or both are provided, `gen` and
 `includeThoughts` is omitted unless `--include-thoughts` is set. `nbimg`
 currently exposes only `minimal` and `high`.
 
-`api.default_safety_settings` supplies the static top-level `safetySettings`
-array for all `generateContent` requests. It configures harassment, hate
-speech, sexually explicit, and dangerous content categories with `BLOCK_NONE`.
-There are no CLI flags, environment variables, or command options to change
-these settings.
+`api.safetySettingsFromOptions` supplies the top-level `safetySettings` array
+for all `generateContent` requests. It configures harassment, hate speech,
+sexually explicit, and dangerous content categories with the single threshold
+chosen by `--safety`. The default is `BLOCK_NONE`.
+
+```json
+{
+  "safetySettings": [
+    { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF" },
+    { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF" },
+    { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF" },
+    { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF" }
+  ]
+}
+```
+
+The CLI intentionally does not expose per-category safety controls. Gemini's
+public safety documentation describes these request-level settings as
+adjustable filters and also describes built-in protections that are always
+blocked and cannot be adjusted by the client. As a result, `--safety` should be
+treated as request-level API coverage, not as a guarantee that image generation
+will bypass every Google-controlled safety check.
 
 `edit.buildGenerateRequest` builds image-editing requests with the same
 `generateContent` endpoint and output config, but the user content contains an

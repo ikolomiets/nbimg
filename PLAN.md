@@ -34,18 +34,7 @@ specific migration need.
   or a non-billable endpoint proven to match it, because `countTokens` accepted
   explicit `delivery` values that `generateContent` rejected.
 
-## 2. Configurable Safety Settings
-
-- Current gap: requests always send fixed `BLOCK_NONE` safety settings.
-- Likely CLI/API surface: add explicit safety threshold controls per supported
-  harm category, while preserving the current defaults unless changed
-  deliberately.
-- Implementation notes: keep safety parsing in the CLI and shared wire structs
-  in `src/api.zig`; document any categories the API accepts but the CLI omits.
-- Testing: cover parsing, duplicate category handling, request serialization,
-  and at least one live validation for changed safety settings.
-
-## 3. Generic Generation Controls
+## 2. Generic Generation Controls
 
 - Current gap: generic `GenerationConfig` fields such as `candidateCount`,
   `maxOutputTokens`, `temperature`, `topP`, `topK`, `seed`, penalties,
@@ -57,7 +46,7 @@ specific migration need.
 - Testing: add parser tests, request JSON tests, and live validation for each
   image-compatible field group.
 
-## 4. Request-Level Controls
+## 3. Request-Level Controls
 
 - Current gap: request-level fields such as `systemInstruction`,
   `cachedContent`, `serviceTier`, and `store` are not exposed.
