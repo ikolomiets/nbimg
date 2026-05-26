@@ -85,8 +85,8 @@ Stdin prompts are limited to `16 KiB`.
 
 Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
 existing relative or absolute directory instead of the current directory.
-Gemini text response parts are written as `.txt` files beside generated image
-files.
+Gemini text response parts are not written as sidecar files; they remain
+visible in the raw response JSON logged to stderr.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect

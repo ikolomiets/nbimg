@@ -43,10 +43,10 @@ The code is split into seven source files:
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, Thinking/output/grounding wire helpers,
-  and response log sanitization.
+  generated response decoding and output naming, and response log
+  sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: generateContent and
-  countTokens request construction, generated response decoding, generated file
-  metadata, and output naming.
+  countTokens request construction.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
   request construction, edit manifest text, File API URI derivation, and
   countTokens wrapping.
@@ -80,8 +80,7 @@ such as uploading a file and then validating an edit request belong in
 
 `src/gen.zig` owns Gemini native image generation semantics for the fixed
 `nano2` model. It builds the `GenerateContentRequest` JSON, wraps that shape
-for `countTokens`, decodes generated image/text parts, and formats response-ID
-based output names.
+for `countTokens`, and sends generation and token-count requests.
 
 `src/edit.zig` owns Gemini native image editing semantics for the fixed `nano2`
 model. It accepts uploaded File API resource names plus MIME types, derives
@@ -97,12 +96,13 @@ uploaded/listed/fetched File metadata.
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, shared generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
-modality values, grounding tool wire structures, static safety settings, and
-logging. `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers,
-lower-level request-with-body helper for resumable uploads, common
-`HttpResponse` ownership type, `Model` constants, and global traffic logging
-switch. Headers are not exposed through the logging path, so API keys stay out
-of diagnostic output.
+modality values, grounding tool wire structures, generated response decoding,
+generated file metadata, output naming, static safety settings, and logging.
+`gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
+request-with-body helper for resumable uploads, common `HttpResponse`
+ownership type, `Model` constants, and global traffic logging switch. Headers
+are not exposed through the logging path, so API keys stay out of diagnostic
+output.
 
 `build.zig` defines separate `nbimg` modules and executables for installed and
 development artifacts. The installed `zig-out/bin/nbimg` executable is built in
@@ -654,7 +654,7 @@ avoid safety, quota, billing, or output-shape failures.
 
 ## Response Decoding
 
-`gen.decodeGeneratedFiles` parses the response JSON with unknown fields
+`api.decodeGeneratedFiles` parses the response JSON with unknown fields
 ignored. It looks for:
 
 ```text
@@ -665,7 +665,8 @@ candidates[].content.parts[]
 Supported final parts and thought image parts are converted into
 `GeneratedFile` values:
 
-- Text parts become `.txt` files containing the returned UTF-8 text.
+- Text parts are skipped for file output and remain visible only in the raw
+  stderr response log.
 - Inline image parts are base64-decoded and become image files.
 - Parts with `thought: true` are treated as thought parts. Thought text is
   skipped for file output and remains visible only in the raw stderr response
@@ -719,7 +720,6 @@ For example:
 
 ```text
 PMMIapvKNtLj_uMPq8a8oQs-0-0.jpg
-PMMIapvKNtLj_uMPq8a8oQs-0-1.txt
 PMMIapvKNtLj_uMPq8a8oQs-0-thought-2.jpg
 ```
 
@@ -727,7 +727,7 @@ Writes are exclusive. If a target file already exists, the write fails instead
 of overwriting it.
 
 `cli.writeGeneratedFiles` asserts that at least one decoded file is present.
-This assertion is paired with `gen.decodeGeneratedFiles`, which rejects
+This assertion is paired with `api.decodeGeneratedFiles`, which rejects
 responses that produce zero generated files.
 
 ## Memory And Ownership
@@ -748,7 +748,7 @@ Allocator ownership is explicit:
   owned copy of the uploaded `files/...` name.
 - `files.decodeFile` and `files.decodeFileListPage` return owned File
   metadata. `decodeFileListPage` also returns an optional owned next page token.
-- `gen.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
+- `api.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
   buffers plus one owned response ID on the returned collection.
 - `HttpResponse.deinit`, `FileListPage.deinit`, `GeneratedFile.deinit`, and
   `GeneratedFiles.deinit` release owned allocations.
@@ -773,7 +773,7 @@ Current tests cover:
 - Files API file-resource URL construction and canonical file-name validation.
 - Files API list URL page-token encoding.
 - Redaction of known inline base64 fields in logged response JSON.
-- Decoding mixed image and text response parts.
+- Skipping text response parts while decoding mixed image and text responses.
 - Rejection of empty candidate output.
 - Rejection of unsupported image MIME types.
 - Cleanup behavior when decoding fails after earlier parts succeed.

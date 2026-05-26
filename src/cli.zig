@@ -266,7 +266,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         return exit_failure;
     }
 
-    var files = api_gen.decodeGeneratedFiles(gpa, response.body) catch |err| {
+    var files = api.decodeGeneratedFiles(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
         return exit_response_parse;
     };
@@ -307,7 +307,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         return exit_failure;
     }
 
-    var files = api_gen.decodeGeneratedFiles(gpa, response.body) catch |err| {
+    var files = api.decodeGeneratedFiles(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
         return exit_response_parse;
     };
@@ -1199,7 +1199,7 @@ fn openOutputDir(io: std.Io, out_dir: ?[]const u8) !OutputDir {
     };
 }
 
-fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api_gen.GeneratedFiles) !void {
+fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api.GeneratedFiles) !void {
     assert(files.items.len > 0);
 
     const output_dir = try openOutputDir(io, out_dir);
@@ -1207,7 +1207,7 @@ fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api_gen.Generate
 
     for (files.items) |file| {
         var name_buffer: [128]u8 = undefined;
-        const name = try api_gen.generatedFileName(&name_buffer, files.response_id, file);
+        const name = try api.generatedFileName(&name_buffer, files.response_id, file);
         try output_dir.dir.writeFile(io, .{
             .sub_path = name,
             .data = file.bytes,
@@ -1216,7 +1216,7 @@ fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api_gen.Generate
     }
 }
 
-test "writeGeneratedFiles writes generated files under relative output directory" {
+test "writeGeneratedFiles writes generated images under relative output directory" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -1224,15 +1224,15 @@ test "writeGeneratedFiles writes generated files under relative output directory
     const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
     defer gpa.free(out_dir);
 
-    var items = [_]api_gen.GeneratedFile{
+    var items = [_]api.GeneratedFile{
         .{
             .candidate_index = 0,
             .part_index = 0,
-            .mime = .text,
-            .bytes = @constCast("hello"),
+            .mime = .png,
+            .bytes = @constCast(&[_]u8{1}),
         },
     };
-    const files = api_gen.GeneratedFiles{
+    const files = api.GeneratedFiles{
         .response_id = @constCast("test-response"),
         .items = &items,
     };
@@ -1241,12 +1241,12 @@ test "writeGeneratedFiles writes generated files under relative output directory
 
     const written = try tmp_dir.dir.readFileAlloc(
         std.testing.io,
-        "test-response-0-0.txt",
+        "test-response-0-0.png",
         gpa,
         .limited(1024),
     );
     defer gpa.free(written);
-    try std.testing.expectEqualStrings("hello", written);
+    try std.testing.expectEqualSlices(u8, &.{1}, written);
 }
 
 test "writeGeneratedFiles writes thought images under same output directory" {
@@ -1257,7 +1257,7 @@ test "writeGeneratedFiles writes thought images under same output directory" {
     const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
     defer gpa.free(out_dir);
 
-    var items = [_]api_gen.GeneratedFile{
+    var items = [_]api.GeneratedFile{
         .{
             .candidate_index = 0,
             .part_index = 0,
@@ -1272,7 +1272,7 @@ test "writeGeneratedFiles writes thought images under same output directory" {
             .bytes = @constCast(&[_]u8{2}),
         },
     };
-    const files = api_gen.GeneratedFiles{
+    const files = api.GeneratedFiles{
         .response_id = @constCast("test-response"),
         .items = &items,
     };
