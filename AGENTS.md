@@ -35,7 +35,17 @@ Avoid billable endpoints for routine live tests: before using a billable API pat
 
 ## Commit & Pull Request Guidelines
 
-Follow the existing history with short imperative subjects such as `Add image edit command`. For non-trivial or cross-cutting changes, include a descriptive commit body that explains why the change exists and important behavior/API/docs changes. Pull requests should describe the reason and affected files.
+Use imperative commit subjects that describe the concrete behavior change, not
+only the touched subsystem. Prefer subjects such as `Add generation sampling
+controls` over vague subjects such as `Update CLI` or `Fix tests`.
+
+For any functional, user-facing, API-shape, documentation, or cross-module
+change, include a commit body. The body should explain why the change exists,
+summarize the important behavior/API/docs changes, and mention validation that
+was run. Tiny mechanical-only commits may omit the body when the subject is
+fully self-explanatory.
+
+Pull requests should describe the reason and affected files.
 
 ## Agent-Specific Instructions
 
