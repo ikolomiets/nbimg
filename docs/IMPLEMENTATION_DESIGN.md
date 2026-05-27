@@ -423,6 +423,13 @@ accepted enum names:
 If only one output option is provided, only that field is emitted under
 `responseFormat.image`.
 
+`nbimg` intentionally does not expose generated image `mimeType` or `delivery`
+controls yet. Image MIME selection is not user-configurable because only
+`IMAGE_JPEG` is currently useful for this model. URI delivery is also not
+implemented because live billable `generateContent` validation rejected
+explicit `responseFormat.image.delivery` values, including both `INLINE` and
+`URI`, even though `countTokens` accepted those request shapes.
+
 When advanced generation controls are set, `gen` and `edit` add the matching
 lower-camel Gemini fields to the same `generationConfig` object:
 
@@ -808,6 +815,13 @@ successful `countTokens` response means Google accepted the request for
 tokenization; it does not prove that `generateContent` will produce an image or
 avoid safety, quota, billing, or output-shape failures.
 
+This caveat applies directly to future `responseFormat.image` additions:
+`countTokens` accepted explicit `delivery` values that billable
+`generateContent` rejected. Before serializing future generated image
+`mimeType` or `delivery` fields, validate them against billable
+`generateContent` or a non-billable endpoint proven to match `generateContent`
+for those fields.
+
 ## Response Decoding
 
 `api.decodeGeneratedFiles` parses the response JSON with unknown fields
@@ -1033,6 +1047,8 @@ The following areas are intentionally not implemented yet:
 
 - Model selection and capability validation.
 - Local image inputs without prior Files API upload.
+- Generated image output `mimeType` and `delivery` controls, including URI
+  delivery.
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
 - Response snapshots.

@@ -48,6 +48,17 @@ separate Debug artifact from the build cache.
 
 ## Usage
 
+The CLI accepts these command forms:
+
+```sh
+nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--print-request]
+nbimg files get [--print-request] --name files/ID
+nbimg files delete [--print-request] --name files/ID
+```
+
 Generate an image from a prompt:
 
 ```sh
@@ -78,6 +89,13 @@ zig-out/bin/nbimg files upload \
   --display-name "nbimg sample image"
 ```
 
+`--path` is required once for `files upload`. The path must be non-empty, the
+file must be non-empty, and the supported upload extensions are `.jpg`, `.jpeg`,
+`.png`, and `.webp`. Upload reads are capped at `64 MiB`.
+
+Explicit and path-derived display names must be non-empty valid UTF-8 and at
+most 512 Unicode code points.
+
 Edit an uploaded image:
 
 ```sh
@@ -86,12 +104,17 @@ printf '%s\n' "change visual style to Broadway musical" | zig-out/bin/nbimg edit
 ```
 
 If `gen` or `edit` omits `--prompt`, `nbimg` reads the prompt from stdin.
-Stdin prompts are limited to `16 KiB`.
+Stdin prompts are preserved exactly, including trailing newlines, and are
+limited to `16 KiB`. Explicit `--prompt` values must be one shell argument, so
+quote prompts that contain spaces. Empty prompts are rejected, and prompts are
+not accepted as positional arguments.
 
 Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
-existing relative or absolute directory instead of the current directory.
-Gemini text response parts are not written as sidecar files; they remain
-visible in the raw response JSON logged to stderr.
+existing relative or absolute directory instead of the current directory. The
+flag may be used at most once, and the directory must already exist. Gemini text
+response parts are not written as sidecar files; they remain visible in the raw
+response JSON logged to stderr. `gen` and `edit` request both text and image
+response parts by default; there is no flag for changing response modalities.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
@@ -103,7 +126,8 @@ shape defaults unchanged.
 Advanced generation controls are available on both `gen` and `edit`. They are
 token-generation controls sent under Gemini `generationConfig`; they do not
 replace image-specific controls such as `--aspect-ratio` or `--image-size`.
-All are omitted from the request unless explicitly set.
+All are omitted from the request unless explicitly set. Except for repeatable
+`--stop`, each advanced generation option is accepted at most once.
 
 Use `--temperature FLOAT` and `--top-p FLOAT` to tune sampling behavior.
 `--temperature` accepts `0.0` through `2.0`; lower values are more
@@ -135,7 +159,7 @@ top-token alternatives at each step; `--logprobs` requires
 
 Request-level controls are available on both `gen` and `edit`. They are
 top-level Gemini `GenerateContentRequest` fields and are omitted unless
-explicitly set.
+explicitly set. Each request-level option is accepted at most once.
 
 Use `--system TEXT` to send a text-only Gemini `systemInstruction` alongside
 the user prompt. The value must be non-empty.
@@ -151,7 +175,8 @@ model default. If `priority` is requested and the response reports
 handles the response normally.
 
 Use `--store` to send `store:true`, or `--no-store` to send `store:false`.
-Omit both flags to use the project-level logging configuration.
+The flags are mutually exclusive. Omit both flags to use the project-level
+logging configuration.
 
 Use `--thinking-level minimal|high` with `gen` or `edit` to control Gemini's
 thinking effort. Omit it to use Gemini's default. Use `--include-thoughts` to
@@ -214,11 +239,12 @@ zig-out/bin/nbimg gen \
 ```
 
 The `edit` command takes uploaded image references in `files/ID,MIME` form.
-The first `--ref` is the base image to edit and is always labeled
-`BASE_IMAGE`; omit a custom label on that first reference. Supported MIME values
-are `image/jpeg`, `image/png`, and `image/webp`. The command derives the Gemini
-File API URI from the `files/...` name and does not call `files get` before
-generation.
+At least one `--ref` is required. The first `--ref` is the base image to edit
+and is always labeled `BASE_IMAGE`; omit a custom label on that first reference.
+Resource names must use canonical `files/...` form, and bare file IDs are
+rejected. Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`.
+The command derives the Gemini File API URI from the `files/...` name and does
+not call `files get` before generation.
 
 Generic edit references use this syntax:
 
@@ -233,6 +259,15 @@ Generic edit references use this syntax:
 
 Valid roles are `scene`, `character`, `object`, `style`, `pose`,
 `composition`, `background`, `texture`, and `image`.
+
+Later references may omit `LABEL`; `nbimg` then assigns deterministic labels
+such as `SCENE_REFERENCE_A`, `CHARACTER_A`, `OBJECT_A`, and
+`STYLE_REFERENCE_A`. Custom labels must be unique ASCII `SCREAMING_SNAKE_CASE`,
+start with a letter, and be at most 64 bytes. `BASE_IMAGE` is reserved.
+
+The current model limits edit inputs to 14 total images including the base
+image, at most 4 character references including a character base, and at most 10
+object references including an object base.
 
 For example:
 
@@ -280,11 +315,14 @@ Useful edit flags:
 --grounding none|web|image|web,image
 --thinking-level minimal|high
 --include-thoughts
+--safety none|off|high|medium|low
 --out-dir DIR
 ```
 
-Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops.
-Omitting these flags renders no extra preserve or do-not section.
+`--preserve TEXT` and `--do-not TEXT` are repeatable task-level constraints.
+Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops. Omitting
+these flags renders no extra preserve or do-not section. Each list is capped at
+16 non-empty entries.
 
 List uploaded file metadata:
 
@@ -304,6 +342,10 @@ Delete one uploaded file:
 zig-out/bin/nbimg files delete --name files/abc123
 ```
 
+`--name` is required once for `files get` and `files delete`. It must use
+canonical `files/...` form; bare file IDs are rejected. `files list` has no
+command-specific options.
+
 The upload, list, and get commands print JSON metadata to stdout.
 The delete command prints `OK` on success.
 
@@ -316,8 +358,10 @@ zig-out/bin/nbimg gen \
 ```
 
 Response traffic logs go to stderr by default. Use `--print-request` to also
-log request traffic. Command results, such as generated filenames, Files API
-metadata JSON, or delete `OK`, go to stdout.
+log request traffic. `--print-request` is accepted by all commands; for
+`files`, place it after the `upload`, `list`, `get`, or `delete` subcommand.
+Command results, such as generated filenames, Files API metadata JSON, or
+delete `OK`, go to stdout.
 
 ## Testing
 
