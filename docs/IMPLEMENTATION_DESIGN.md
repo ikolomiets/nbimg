@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -26,7 +26,9 @@ or current working directory. Generation and edit requests can optionally
 enable Google Search or Image Search grounding, set Gemini Thinking level, and
 request returned thought parts, set one Gemini safety threshold across all
 emitted safety categories, or set advanced generation controls such as
-sampling, seed, output-token budget, stop sequences, and logprob diagnostics.
+sampling, seed, output-token budget, stop sequences, and logprob diagnostics,
+or set request-level controls such as system instructions, cached content,
+service tier, and request storage.
 It can also upload image files to Gemini's Files API, list or get uploaded file
 metadata, and delete uploaded files.
 
@@ -107,12 +109,13 @@ builds paginated list URLs and file-resource get/delete URLs, and decodes
 uploaded/listed/fetched File metadata.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
-validation, shared generateContent/countTokens endpoint URLs, countTokens
+validation, canonical cached content name validation, shared
+generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared response
 modality values, image MIME parsing/serialization for edit references and
-file uploads, generation config helpers, grounding tool wire structures,
-generated response decoding, generated file metadata, output naming, safety
-setting helpers, and logging.
+file uploads, generation config helpers, request-level control wire helpers,
+grounding tool wire structures, generated response decoding, generated file
+metadata, output naming, safety setting helpers, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
 ownership type, `Model` constants, and global traffic logging switch. Headers
@@ -152,8 +155,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -197,6 +200,20 @@ Argument rules are intentionally narrow:
   probability diagnostics. `--logprobs` requests top-token alternatives and is
   valid only when `--response-logprobs` is also explicitly present. These
   diagnostics are not image confidence scores.
+- For `gen` and `edit`, request-level controls are optional and omitted from
+  JSON unless explicitly set. `--system TEXT` sends a non-empty text-only
+  `systemInstruction`. `--cached-content cachedContents/ID` attaches an
+  existing cached content resource and requires the canonical
+  `cachedContents/...` form; raw cache IDs are rejected.
+- `--service-tier TIER` accepts `flex`, `standard`, or `priority`. If omitted,
+  `nbimg` does not serialize `serviceTier`, so Gemini uses the project and
+  model default. If `priority` is requested and the successful response reports
+  `usageMetadata.serviceTier` as `standard`, `nbimg` prints a non-fatal
+  warning.
+- `--store` and `--no-store` are mutually exclusive request-level flags.
+  `--store` serializes `store: true`; `--no-store` serializes `store: false`.
+  If both are omitted, `nbimg` omits `store` and leaves project-level logging
+  behavior unchanged.
 - For `gen` and `edit`, `--grounding MODE` is optional and accepted at most
   once. Valid modes are `none`, `web`, `image`, and `web,image`. If omitted or
   set to `none`, `nbimg` omits request `tools`.
@@ -287,8 +304,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -314,6 +331,12 @@ advanced generation options:
        --stop accepts up to 5 non-empty unique stop sequences and may be repeated
        --response-logprobs enables chosen-token log probability diagnostics
        --logprobs accepts 1 to 20 and requires --response-logprobs
+
+request-level options:
+       --system sends a text-only Gemini systemInstruction
+       --cached-content requires canonical cachedContents/ID form
+       --service-tier accepts flex, standard, or priority
+       --store sends store:true; --no-store sends store:false; omit both to use project defaults
 
 grounding options:
        --grounding accepts none, web, image, or web,image
@@ -424,6 +447,35 @@ Unset generation controls are omitted instead of serializing model defaults.
 `--response-logprobs` serializes `responseLogprobs: true` even when
 `--logprobs` is omitted. `--logprobs` serializes only after the parser has
 confirmed that `--response-logprobs` was also explicitly provided.
+
+Request-level controls are represented separately from `generationConfig` in
+`api.RequestOptions` and serialize as top-level `GenerateContentRequest`
+fields for both `gen` and `edit`:
+
+```json
+{
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "Use editorial lighting."
+      }
+    ]
+  },
+  "cachedContent": "cachedContents/brand",
+  "serviceTier": "priority",
+  "store": false
+}
+```
+
+`--system` is text-only. `--cached-content` must already be in canonical
+`cachedContents/...` form. `--service-tier` accepts only `flex`, `standard`,
+and `priority`; `unspecified` is not exposed because omitting the flag already
+leaves Gemini's default routing in effect. `--store` and `--no-store` are
+mutually exclusive and are also omitted by default.
+
+The CLI checks successful responses for `usageMetadata.serviceTier`. If the
+request asked for `priority` but the response reports `standard`, it prints a
+warning and continues response decoding normally.
 
 When `--grounding` is `web`, `image`, or `web,image`, `gen` and `edit` add a
 top-level `tools` array. The accepted grounding modes serialize as:
@@ -865,6 +917,7 @@ Current tests cover:
 
 - Accepted and rejected CLI argument forms.
 - The exact generated JSON request for `nbimg gen`.
+- Request-level control parsing and JSON serialization for `gen` and `edit`.
 - Grounding tool serialization for web, image, and combined web/image modes.
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
@@ -938,7 +991,10 @@ to `ASPECT_RATIO_SIXTEEN_BY_NINE` and `IMAGE_SIZE_TWO_K`. It also enables
 `web,image` grounding, `thinkingConfig` with returned thoughts requested, and
 representative advanced generation controls including sampling, seed, token
 budget, penalties, stop sequences, and logprob diagnostics to validate those
-request shapes through the same non-generation endpoint.
+request shapes through the same non-generation endpoint. It also includes a
+text-only `systemInstruction`, `serviceTier: "standard"`, and `store: false`.
+Cached content is not included in the default live check because it requires an
+existing `cachedContents/...` resource.
 
 The live edit request validity check lives in `src/cli.zig` because it
 orchestrates both Files API upload/delete and edit `countTokens` validation. It
@@ -949,8 +1005,9 @@ and then deletes the uploaded file. The live edit request uses
 `aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
 serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
 output options on edit requests. It also enables `web,image` grounding. It
-also includes `thinkingConfig` with returned thoughts requested and the same
-representative advanced generation controls. It does not call
+also includes `thinkingConfig` with returned thoughts requested, the same
+representative advanced generation controls, a text-only `systemInstruction`,
+`serviceTier: "standard"`, and `store: false`. It does not call
 `generateContent`.
 
 Live Files API checks live in `src/files.zig`. They upload

@@ -57,6 +57,7 @@ pub const EditRequest = struct {
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
     generation_options: api.GenerationOptions = .{},
+    request_options: api.RequestOptions = .{},
     base: UploadedImage,
     base_role: ReferenceRole = .scene,
     references: []const Reference = &.{},
@@ -83,6 +84,10 @@ const GenerateContentRequest = struct {
     tools: ?[]const api.Tool = null,
     generationConfig: api.GenerationConfig,
     safetySettings: []const api.SafetySetting,
+    systemInstruction: ?api.TextContent = null,
+    cachedContent: ?[]const u8 = null,
+    serviceTier: ?api.ServiceTier = null,
+    store: ?bool = null,
 };
 
 pub fn generateContent(
@@ -143,6 +148,11 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     assert(part_index == parts.len);
 
     const contents = [_]GenerateContent{.{ .parts = parts }};
+    var system_instruction_parts_buffer: [1]api.TextPart = undefined;
+    const system_instruction: ?api.TextContent = if (request.request_options.system_instruction) |text| system_instruction: {
+        system_instruction_parts_buffer[0] = .{ .text = text };
+        break :system_instruction .{ .parts = system_instruction_parts_buffer[0..1] };
+    } else null;
     const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(request.grounding_options);
     var tools_buffer: [1]api.Tool = undefined;
     const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
@@ -159,6 +169,10 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
             &request.generation_options,
         ),
         .safetySettings = &safety_settings,
+        .systemInstruction = system_instruction,
+        .cachedContent = request.request_options.cached_content,
+        .serviceTier = request.request_options.service_tier,
+        .store = request.request_options.store,
     };
 
     var output: std.Io.Writer.Allocating = .init(gpa);
@@ -322,6 +336,7 @@ fn assertValidEditRequest(request: EditRequest) void {
     for (request.preserves) |preserve| assert(preserve.len > 0);
     for (request.do_nots) |do_not| assert(do_not.len > 0);
     api.assertValidGenerationOptions(request.generation_options);
+    api.assertValidRequestOptions(request.request_options);
 }
 
 fn baseSceneAnchor() []const u8 {
@@ -584,6 +599,32 @@ test "buildGenerateRequest applies edit safety threshold to all categories" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"threshold\":\"BLOCK_NONE\"") == null);
 }
 
+test "buildGenerateRequest includes edit request-level controls" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .request_options = .{
+            .system_instruction = "Preserve the subject identity.",
+            .cached_content = "cachedContents/edit-context",
+            .service_tier = .flex,
+            .store = true,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"systemInstruction\":{\"parts\":[{\"text\":\"Preserve the subject identity.\"}]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"cachedContent\":\"cachedContents/edit-context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"serviceTier\":\"flex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"store\":true") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
+}
+
 fn expectDefaultSafetySettings(request_json: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"safetySettings\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
@@ -695,6 +736,31 @@ test "buildCountTokensRequest wraps edit generate content request" {
         "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",",
     ));
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_data\"") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
+}
+
+test "buildCountTokensRequest wraps edit request-level controls" {
+    const gpa = std.testing.allocator;
+    const request = try buildCountTokensRequest(gpa, .{
+        .prompt = live_prompt,
+        .request_options = .{
+            .system_instruction = "Preserve the subject identity.",
+            .service_tier = .standard,
+            .store = false,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"generateContentRequest\":{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"systemInstruction\":{\"parts\":[{\"text\":\"Preserve the subject identity.\"}]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"serviceTier\":\"standard\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"store\":false") != null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();

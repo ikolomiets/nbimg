@@ -12,6 +12,8 @@ The current implementation is intentionally narrow:
 - configure one Gemini safety threshold across all emitted safety categories
 - configure advanced Gemini generation controls such as sampling, seed,
   output-token budget, stop sequences, and logprob diagnostics
+- configure request-level controls such as system instructions, cached
+  content, service tier, and request storage
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print sanitized response traffic by default, with optional request traffic
@@ -130,6 +132,26 @@ Use `--response-logprobs` for token-level diagnostics on chosen response
 tokens. Add `--logprobs INT` with a value from `1` through `20` to request
 top-token alternatives at each step; `--logprobs` requires
 `--response-logprobs`. These diagnostics are not image confidence scores.
+
+Request-level controls are available on both `gen` and `edit`. They are
+top-level Gemini `GenerateContentRequest` fields and are omitted unless
+explicitly set.
+
+Use `--system TEXT` to send a text-only Gemini `systemInstruction` alongside
+the user prompt. The value must be non-empty.
+
+Use `--cached-content cachedContents/ID` to attach an existing Gemini cached
+content resource. `nbimg` requires the canonical `cachedContents/...` form and
+rejects raw cache IDs.
+
+Use `--service-tier flex|standard|priority` to request a Gemini service tier.
+If omitted, `nbimg` leaves the field unset so Gemini uses the project and
+model default. If `priority` is requested and the response reports
+`usageMetadata.serviceTier` as `standard`, `nbimg` prints a warning but still
+handles the response normally.
+
+Use `--store` to send `store:true`, or `--no-store` to send `store:false`.
+Omit both flags to use the project-level logging configuration.
 
 Use `--thinking-level minimal|high` with `gen` or `edit` to control Gemini's
 thinking effort. Omit it to use Gemini's default. Use `--include-thoughts` to
@@ -250,6 +272,11 @@ Useful edit flags:
 --stop TEXT
 --response-logprobs
 --logprobs INT
+--system TEXT
+--cached-content cachedContents/ID
+--service-tier flex|standard|priority
+--store
+--no-store
 --grounding none|web|image|web,image
 --thinking-level minimal|high
 --include-thoughts
@@ -315,8 +342,10 @@ zig build test-live-api-files-delete
 `edit` use `countTokens` as a lower-cost validation endpoint instead of
 generating content. The `gen` and `edit` request-shape live tests include
 `web,image` grounding, `thinkingConfig`, and representative advanced
-generation controls to validate the tool-bearing, Thinking, and
-`generationConfig` request shape. The edit request-shape live test uploads
-`sample_images/good_night.jpeg` through the Files API, validates the edit
-request with the uploaded `files/...` name, and deletes the uploaded file after
-validation.
+generation and request-level controls to validate the tool-bearing, Thinking,
+`generationConfig`, `systemInstruction`, `serviceTier`, and `store` request
+shape. Cached-content live validation requires an existing
+`cachedContents/...` resource and is not part of the default live tests. The
+edit request-shape live test uploads `sample_images/good_night.jpeg` through
+the Files API, validates the edit request with the uploaded `files/...` name,
+and deletes the uploaded file after validation.

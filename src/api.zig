@@ -6,6 +6,7 @@ const assert = std.debug.assert;
 pub const max_response_bytes = 64 * 1024 * 1024;
 pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
+pub const canonical_cached_content_name_prefix = "cachedContents/";
 
 pub const ApiKeyError = error{
     MissingApiKey,
@@ -45,6 +46,53 @@ pub const ResponseModality = enum {
 };
 
 pub const default_response_modalities = [_]ResponseModality{ .text, .image };
+
+pub const TextPart = struct {
+    text: []const u8,
+};
+
+pub const TextContent = struct {
+    parts: []const TextPart,
+};
+
+pub const ServiceTier = enum {
+    flex,
+    standard,
+    priority,
+
+    pub fn fromName(name: []const u8) ?ServiceTier {
+        if (std.mem.eql(u8, name, "flex")) return .flex;
+        if (std.mem.eql(u8, name, "standard")) return .standard;
+        if (std.mem.eql(u8, name, "priority")) return .priority;
+        return null;
+    }
+
+    pub fn apiName(service_tier: ServiceTier) []const u8 {
+        return switch (service_tier) {
+            .flex => "flex",
+            .standard => "standard",
+            .priority => "priority",
+        };
+    }
+
+    pub fn jsonStringify(service_tier: ServiceTier, writer: anytype) !void {
+        try writer.write(service_tier.apiName());
+    }
+};
+
+pub const RequestOptions = struct {
+    system_instruction: ?[]const u8 = null,
+    cached_content: ?[]const u8 = null,
+    service_tier: ?ServiceTier = null,
+    store: ?bool = null,
+
+    pub fn hasAny(options: RequestOptions) bool {
+        return options.system_instruction != null or
+            options.cached_content != null or
+            options.service_tier != null or
+            options.store != null;
+    }
+};
 
 pub const ImageAspectRatio = enum {
     r1_1,
@@ -328,6 +376,16 @@ pub fn assertValidGenerationOptions(options: GenerationOptions) void {
         for (stops[index + 1 ..]) |other| {
             assert(!std.mem.eql(u8, stop, other));
         }
+    }
+}
+
+pub fn assertValidRequestOptions(options: RequestOptions) void {
+    if (options.system_instruction) |system_instruction| {
+        assert(system_instruction.len > 0);
+    }
+
+    if (options.cached_content) |cached_content| {
+        assert(isCanonicalCachedContentName(cached_content));
     }
 }
 
@@ -688,6 +746,11 @@ pub fn isCanonicalFileName(name: []const u8) bool {
     return name.len > canonical_file_name_prefix.len;
 }
 
+pub fn isCanonicalCachedContentName(name: []const u8) bool {
+    if (!std.mem.startsWith(u8, name, canonical_cached_content_name_prefix)) return false;
+    return name.len > canonical_cached_content_name_prefix.len;
+}
+
 pub fn buildCountTokensRequestFromGenerateContentJson(
     gpa: std.mem.Allocator,
     model: Model,
@@ -726,6 +789,25 @@ pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const 
         .total_tokens = parsed.value.totalTokens orelse return error.MissingTotalTokens,
         .cached_content_token_count = parsed.value.cachedContentTokenCount,
     };
+}
+
+pub fn decodeResponseServiceTier(gpa: std.mem.Allocator, response_json: []const u8) !?ServiceTier {
+    const Response = struct {
+        usageMetadata: ?UsageMetadata = null,
+
+        const UsageMetadata = struct {
+            serviceTier: ?[]const u8 = null,
+        };
+    };
+
+    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const usage_metadata = parsed.value.usageMetadata orelse return null;
+    const service_tier_name = usage_metadata.serviceTier orelse return null;
+    return ServiceTier.fromName(service_tier_name);
 }
 
 pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !GeneratedFiles {
@@ -855,6 +937,23 @@ test "isCanonicalFileName requires files prefix and id" {
     try std.testing.expect(!isCanonicalFileName("abc123"));
     try std.testing.expect(!isCanonicalFileName("files/"));
     try std.testing.expect(!isCanonicalFileName(""));
+}
+
+test "isCanonicalCachedContentName requires cached contents prefix and id" {
+    try std.testing.expect(isCanonicalCachedContentName("cachedContents/abc123"));
+    try std.testing.expect(!isCanonicalCachedContentName("abc123"));
+    try std.testing.expect(!isCanonicalCachedContentName("cachedContents/"));
+    try std.testing.expect(!isCanonicalCachedContentName(""));
+}
+
+test "ServiceTier parses and serializes exposed request tiers" {
+    try std.testing.expectEqual(ServiceTier.flex, ServiceTier.fromName("flex").?);
+    try std.testing.expectEqual(ServiceTier.standard, ServiceTier.fromName("standard").?);
+    try std.testing.expectEqual(ServiceTier.priority, ServiceTier.fromName("priority").?);
+    try std.testing.expectEqual(@as(?ServiceTier, null), ServiceTier.fromName("unspecified"));
+    try std.testing.expectEqualStrings("flex", ServiceTier.flex.apiName());
+    try std.testing.expectEqualStrings("standard", ServiceTier.standard.apiName());
+    try std.testing.expectEqualStrings("priority", ServiceTier.priority.apiName());
 }
 
 test "buildCountTokensRequestFromGenerateContentJson wraps generate content request" {
@@ -1180,6 +1279,24 @@ test "decodeCountTokensResponse rejects missing total token count" {
         error.MissingTotalTokens,
         decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
     );
+}
+
+test "decodeResponseServiceTier decodes usage metadata service tier" {
+    const result = try decodeResponseServiceTier(
+        std.testing.allocator,
+        "{\"usageMetadata\":{\"serviceTier\":\"standard\"}}",
+    );
+
+    try std.testing.expectEqual(ServiceTier.standard, result.?);
+}
+
+test "decodeResponseServiceTier returns null when usage metadata omits service tier" {
+    const result = try decodeResponseServiceTier(
+        std.testing.allocator,
+        "{\"usageMetadata\":{\"totalTokenCount\":7}}",
+    );
+
+    try std.testing.expectEqual(@as(?ServiceTier, null), result);
 }
 
 fn expectImageResponseAspectRatio(aspect_ratio: ImageAspectRatio, expected_json: []const u8) !void {

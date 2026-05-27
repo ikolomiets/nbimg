@@ -33,15 +33,3 @@ specific migration need.
   `delivery` or `mimeType` fields, validate against billable `generateContent`
   or a non-billable endpoint proven to match it, because `countTokens` accepted
   explicit `delivery` values that `generateContent` rejected.
-
-## 2. Request-Level Controls
-
-- Current gap: request-level fields such as `systemInstruction`,
-  `cachedContent`, `serviceTier`, and `store` are not exposed.
-- Likely CLI/API surface: add narrowly scoped flags when a concrete workflow
-  needs them, such as `--system`, `--cached-content`, `--service-tier`, and
-  `--store`.
-- Implementation notes: separate request-level fields from generation config
-  fields in internal structs so ownership and validation stay visible.
-- Testing: add request-shape tests and live validation for any field whose
-  accepted values or image-model compatibility are uncertain.

@@ -25,6 +25,7 @@ pub const GenCommand = struct {
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
     generation_options: api.GenerationOptions = .{},
+    request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
 };
 
@@ -37,6 +38,7 @@ pub const EditCommand = struct {
     thinking_options: api.ThinkingOptions = .{},
     safety_options: api.SafetyOptions = .{},
     generation_options: api.GenerationOptions = .{},
+    request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
@@ -182,6 +184,18 @@ pub const ParseError = error{
     DuplicateLogprobs,
     InvalidLogprobs,
     LogprobsRequiresResponseLogprobs,
+    MissingSystem,
+    EmptySystem,
+    DuplicateSystem,
+    MissingCachedContent,
+    EmptyCachedContent,
+    DuplicateCachedContent,
+    InvalidCachedContent,
+    MissingServiceTier,
+    EmptyServiceTier,
+    DuplicateServiceTier,
+    InvalidServiceTier,
+    DuplicateStore,
     UnknownFlag,
     UnexpectedArgument,
     MissingOutDir,
@@ -296,6 +310,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         command.thinking_options,
         command.safety_options,
         command.generation_options,
+        command.request_options,
     ) catch |err| {
         std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
         return exit_failure;
@@ -309,6 +324,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         );
         return exit_failure;
     }
+    warnIfPriorityDowngraded(gpa, command.request_options, response.body);
 
     var files = api.decodeGeneratedFiles(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
@@ -332,6 +348,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         .thinking_options = command.thinking_options,
         .safety_options = command.safety_options,
         .generation_options = command.generation_options,
+        .request_options = command.request_options,
         .base = command.base,
         .base_role = command.base_role,
         .references = command.referenceSlice(),
@@ -352,6 +369,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         );
         return exit_failure;
     }
+    warnIfPriorityDowngraded(gpa, command.request_options, response.body);
 
     var files = api.decodeGeneratedFiles(gpa, response.body) catch |err| {
         std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
@@ -365,6 +383,24 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     };
 
     return exit_success;
+}
+
+fn warnIfPriorityDowngraded(
+    gpa: std.mem.Allocator,
+    request_options: api.RequestOptions,
+    response_body: []const u8,
+) void {
+    const requested_service_tier = request_options.service_tier orelse return;
+    if (requested_service_tier != .priority) return;
+
+    const actual_service_tier = api.decodeResponseServiceTier(gpa, response_body) catch return;
+    const reported_service_tier = actual_service_tier orelse return;
+    if (reported_service_tier != .standard) return;
+
+    std.debug.print(
+        "warning: requested Gemini service tier priority, but the response reports standard\n",
+        .{},
+    );
 }
 
 fn shouldReadPromptFromStdin(args: []const [:0]const u8, parse_error: ParseError) bool {
@@ -653,6 +689,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var thinking_options: api.ThinkingOptions = .{};
     var safety_options: api.SafetyOptions = .{};
     var generation_options: api.GenerationOptions = .{};
+    var request_options: api.RequestOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
     var safety_seen = false;
@@ -683,6 +720,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--safety")) {
             try parseSafetyOption(command_args, &safety_options, &safety_seen);
+        } else if (try parseRequestOption(command_args, arg, &request_options)) {
+            continue;
         } else if (try parseGenerationOption(command_args, arg, &generation_options, &response_logprobs_seen)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
@@ -705,6 +744,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
         .thinking_options = thinking_options,
         .safety_options = safety_options,
         .generation_options = generation_options,
+        .request_options = request_options,
         .out_dir = out_dir,
     };
 }
@@ -716,6 +756,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var thinking_options: api.ThinkingOptions = .{};
     var safety_options: api.SafetyOptions = .{};
     var generation_options: api.GenerationOptions = .{};
+    var request_options: api.RequestOptions = .{};
     var grounding_seen = false;
     var include_thoughts_seen = false;
     var safety_seen = false;
@@ -754,6 +795,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             try parseIncludeThoughtsOption(&thinking_options, &include_thoughts_seen);
         } else if (std.mem.eql(u8, arg, "--safety")) {
             try parseSafetyOption(command_args, &safety_options, &safety_seen);
+        } else if (try parseRequestOption(command_args, arg, &request_options)) {
+            continue;
         } else if (try parseGenerationOption(command_args, arg, &generation_options, &response_logprobs_seen)) {
             continue;
         } else if (std.mem.eql(u8, arg, "--prompt")) {
@@ -797,6 +840,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .thinking_options = thinking_options,
         .safety_options = safety_options,
         .generation_options = generation_options,
+        .request_options = request_options,
         .out_dir = out_dir,
         .base = parsed_base,
         .base_role = base_role,
@@ -870,6 +914,56 @@ fn parseSafetyOption(
     if (value.len == 0) return error.EmptySafety;
     safety_options.* = api.SafetyOptions.fromName(value) orelse return error.InvalidSafety;
     safety_seen.* = true;
+}
+
+fn parseRequestOption(
+    command_args: *CommandArgs,
+    arg: []const u8,
+    request_options: *api.RequestOptions,
+) ParseError!bool {
+    if (std.mem.eql(u8, arg, "--system")) {
+        if (request_options.system_instruction != null) return error.DuplicateSystem;
+
+        const value = try command_args.nextValue(error.MissingSystem);
+        if (value.len == 0) return error.EmptySystem;
+        request_options.system_instruction = value;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--cached-content")) {
+        if (request_options.cached_content != null) return error.DuplicateCachedContent;
+
+        const value = try command_args.nextValue(error.MissingCachedContent);
+        if (value.len == 0) return error.EmptyCachedContent;
+        if (!api.isCanonicalCachedContentName(value)) return error.InvalidCachedContent;
+        request_options.cached_content = value;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--service-tier")) {
+        if (request_options.service_tier != null) return error.DuplicateServiceTier;
+
+        const value = try command_args.nextValue(error.MissingServiceTier);
+        if (value.len == 0) return error.EmptyServiceTier;
+        request_options.service_tier = api.ServiceTier.fromName(value) orelse return error.InvalidServiceTier;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--store")) {
+        if (request_options.store != null) return error.DuplicateStore;
+
+        request_options.store = true;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--no-store")) {
+        if (request_options.store != null) return error.DuplicateStore;
+
+        request_options.store = false;
+        return true;
+    }
+
+    return false;
 }
 
 fn parseGenerationOption(
@@ -1716,6 +1810,18 @@ fn printUsageError(err: ParseError) void {
         error.DuplicateLogprobs => std.debug.print("error: logprobs count specified more than once\n", .{}),
         error.InvalidLogprobs => std.debug.print("error: logprobs count must be an integer from 1 to 20\n", .{}),
         error.LogprobsRequiresResponseLogprobs => std.debug.print("error: --logprobs requires --response-logprobs\n", .{}),
+        error.MissingSystem => std.debug.print("error: missing system instruction\n", .{}),
+        error.EmptySystem => std.debug.print("error: system instruction must not be empty\n", .{}),
+        error.DuplicateSystem => std.debug.print("error: system instruction specified more than once\n", .{}),
+        error.MissingCachedContent => std.debug.print("error: missing cached content name\n", .{}),
+        error.EmptyCachedContent => std.debug.print("error: cached content name must not be empty\n", .{}),
+        error.DuplicateCachedContent => std.debug.print("error: cached content specified more than once\n", .{}),
+        error.InvalidCachedContent => std.debug.print("error: cached content name must use canonical cachedContents/... form\n", .{}),
+        error.MissingServiceTier => std.debug.print("error: missing service tier\n", .{}),
+        error.EmptyServiceTier => std.debug.print("error: service tier must not be empty\n", .{}),
+        error.DuplicateServiceTier => std.debug.print("error: service tier specified more than once\n", .{}),
+        error.InvalidServiceTier => std.debug.print("error: service tier must be flex, standard, or priority\n", .{}),
+        error.DuplicateStore => std.debug.print("error: store option specified more than once\n", .{}),
         error.UnknownFlag => std.debug.print("error: unknown flag\n", .{}),
         error.UnexpectedArgument => std.debug.print("error: unexpected positional argument\n", .{}),
         error.MissingOutDir => std.debug.print("error: missing output directory\n", .{}),
@@ -1727,8 +1833,8 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1755,6 +1861,12 @@ fn usageText() []const u8 {
         "       --response-logprobs enables chosen-token log probability diagnostics\n" ++
         "       --logprobs accepts 1 to 20 and requires --response-logprobs\n" ++
         "\n" ++
+        "request-level options:\n" ++
+        "       --system sends a text-only Gemini systemInstruction\n" ++
+        "       --cached-content requires canonical cachedContents/ID form\n" ++
+        "       --service-tier accepts flex, standard, or priority\n" ++
+        "       --store sends store:true; --no-store sends store:false; omit both to use project defaults\n" ++
+        "\n" ++
         "grounding options:\n" ++
         "       --grounding accepts none, web, image, or web,image\n" ++
         "\n" ++
@@ -1771,6 +1883,10 @@ test "usageText documents edit reference roles and defaults" {
     const expected = [_][]const u8{
         "--aspect-ratio RATIO",
         "--image-size SIZE",
+        "--system TEXT",
+        "--cached-content cachedContents/ID",
+        "--service-tier TIER",
+        "--store|--no-store",
         "--temperature FLOAT",
         "--top-p FLOAT",
         "--seed INT",
@@ -1809,6 +1925,11 @@ test "usageText documents edit reference roles and defaults" {
         "up to 5 non-empty unique stop sequences",
         "chosen-token log probability diagnostics",
         "1 to 20 and requires --response-logprobs",
+        "text-only Gemini systemInstruction",
+        "canonical cachedContents/ID form",
+        "flex, standard, or priority",
+        "store:true",
+        "store:false",
         "none, web, image, or web,image",
         "minimal or high",
         "thought images are saved beside final outputs",
@@ -1832,6 +1953,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(!gen.thinking_options.hasAny());
     try std.testing.expectEqual(api.HarmBlockThreshold.block_none, gen.safety_options.threshold);
     try std.testing.expect(!gen.generation_options.hasAny());
+    try std.testing.expect(!gen.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
 }
 
@@ -2172,6 +2294,75 @@ test "parseArgs accepts response logprobs without top candidate logprobs" {
     try std.testing.expectEqual(@as(?u8, null), gen.generation_options.logprobs);
 }
 
+test "parseArgs accepts gen request-level controls" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--system",
+        "Use editorial lighting.",
+        "--cached-content",
+        "cachedContents/brand",
+        "--service-tier",
+        "priority",
+        "--no-store",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+    const options = gen.request_options;
+
+    try std.testing.expectEqualStrings("Use editorial lighting.", options.system_instruction.?);
+    try std.testing.expectEqualStrings("cachedContents/brand", options.cached_content.?);
+    try std.testing.expectEqual(api.ServiceTier.priority, options.service_tier.?);
+    try std.testing.expectEqual(false, options.store.?);
+}
+
+test "parseArgs accepts edit request-level controls" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--system",
+        "Preserve subject identity.",
+        "--cached-content",
+        "cachedContents/edit-context",
+        "--service-tier",
+        "flex",
+        "--store",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+    const options = edit.request_options;
+
+    try std.testing.expectEqualStrings("Preserve subject identity.", options.system_instruction.?);
+    try std.testing.expectEqualStrings("cachedContents/edit-context", options.cached_content.?);
+    try std.testing.expectEqual(api.ServiceTier.flex, options.service_tier.?);
+    try std.testing.expectEqual(true, options.store.?);
+}
+
+test "parseArgs rejects invalid request-level controls" {
+    try std.testing.expectError(error.MissingSystem, parseArgs(&.{ "nbimg", "gen", "--system" }));
+    try std.testing.expectError(error.MissingSystem, parseArgs(&.{ "nbimg", "gen", "--system", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.EmptySystem, parseArgs(&.{ "nbimg", "gen", "--system", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateSystem, parseArgs(&.{ "nbimg", "gen", "--system", "one", "--system", "two", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content" }));
+    try std.testing.expectError(error.EmptyCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content", "brand", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content", "cachedContents/", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content", "cachedContents/one", "--cached-content", "cachedContents/two", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.MissingServiceTier, parseArgs(&.{ "nbimg", "gen", "--service-tier" }));
+    try std.testing.expectError(error.EmptyServiceTier, parseArgs(&.{ "nbimg", "gen", "--service-tier", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidServiceTier, parseArgs(&.{ "nbimg", "gen", "--service-tier", "unspecified", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateServiceTier, parseArgs(&.{ "nbimg", "gen", "--service-tier", "standard", "--service-tier", "priority", "--prompt", "My fair lady" }));
+
+    try std.testing.expectError(error.DuplicateStore, parseArgs(&.{ "nbimg", "gen", "--store", "--store", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.DuplicateStore, parseArgs(&.{ "nbimg", "gen", "--store", "--no-store", "--prompt", "My fair lady" }));
+}
+
 test "parseArgs accepts advanced generation options in any order" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -2270,6 +2461,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expect(!edit.thinking_options.hasAny());
     try std.testing.expectEqual(api.HarmBlockThreshold.block_none, edit.safety_options.threshold);
     try std.testing.expect(!edit.generation_options.hasAny());
+    try std.testing.expect(!edit.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
 }
 
@@ -3915,6 +4107,42 @@ test "parseArgs rejects advanced generation options for files commands" {
     }));
 }
 
+test "parseArgs rejects request-level controls for files commands" {
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "upload",
+        "--path",
+        "sample_images/good_night.jpeg",
+        "--system",
+        "Use editorial lighting.",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--cached-content",
+        "cachedContents/brand",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "get",
+        "--name",
+        "files/abc123",
+        "--service-tier",
+        "standard",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "files",
+        "delete",
+        "--name",
+        "files/abc123",
+        "--store",
+    }));
+}
+
 test "parseArgs rejects flags" {
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{ "nbimg", "gen", "--out", "image.png" }));
 }
@@ -4003,6 +4231,11 @@ test "live API edit request shape is valid" {
                 .threshold = .block_only_high,
             },
             .generation_options = generation_options,
+            .request_options = .{
+                .system_instruction = "Follow the edit request exactly.",
+                .service_tier = .standard,
+                .store = false,
+            },
             .base = .{
                 .name = uploaded_file.name,
                 .mime = upload_mime,
