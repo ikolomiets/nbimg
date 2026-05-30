@@ -48,13 +48,13 @@ The code is split into seven source files:
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, image MIME parsing and serialization,
-  Thinking/output/generation/grounding wire helpers, generated response
-  decoding and output naming, and response log
-  sanitization.
-- `src/gen.zig` owns `gen`-specific API behavior: generateContent and
-  countTokens request construction.
+  Thinking/output/generation/grounding wire helpers, shared generateContent
+  request envelope assembly, generated response decoding and output naming,
+  and response log sanitization.
+- `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
+  for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
-  request construction, edit manifest text, File API URI derivation, and
+  content construction, edit manifest text, File API URI derivation, and
   countTokens wrapping.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
   construction, upload/list/get response decoding, and
@@ -94,8 +94,9 @@ copied into command modules. Command modules should remain narrow so duplicate
 internal enums and conversion helpers do not accumulate.
 
 `src/gen.zig` owns Gemini native image generation semantics for the fixed
-`nano2` model. It builds the `GenerateContentRequest` JSON, wraps that shape
-for `countTokens`, and sends generation and token-count requests.
+`nano2` model. It builds the prompt content for the shared
+`GenerateContentRequest` JSON, wraps that shape for `countTokens`, and sends
+generation and token-count requests.
 
 `src/edit.zig` owns Gemini native image editing semantics for the fixed `nano2`
 model. It accepts uploaded File API resource names plus MIME types, derives
@@ -111,11 +112,12 @@ uploaded/listed/fetched File metadata.
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
 generateContent/countTokens endpoint URLs, countTokens
-request envelope construction, countTokens response decoding, shared response
-modality values, image MIME parsing/serialization for edit references and
-file uploads, generation config helpers, request-level control wire helpers,
-grounding tool wire structures, generated response decoding, generated file
-metadata, output naming, safety setting helpers, and logging.
+request envelope construction, countTokens response decoding, shared
+generateContent request envelope construction, shared response modality values,
+image MIME parsing/serialization for edit references and file uploads,
+generation config helpers, request-level control wire helpers, grounding tool
+wire structures, generated response decoding, generated file metadata, output
+naming, safety setting helpers, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
 ownership type, `Model` constants, and global traffic logging switch. Headers

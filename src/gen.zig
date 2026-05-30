@@ -85,61 +85,16 @@ pub fn buildGenerateRequest(
     assert(prompt.len > 0);
     api.assertValidRequestOptions(request_options);
 
-    const Content = struct {
-        parts: []const api.TextPart,
-    };
-    const GenerateContentRequest = struct {
-        contents: []const Content,
-        tools: ?[]const api.Tool = null,
-        generationConfig: api.GenerationConfig,
-        safetySettings: ?[]const api.SafetySetting = null,
-        systemInstruction: ?api.TextContent = null,
-        cachedContent: ?[]const u8 = null,
-        serviceTier: ?api.ServiceTier = null,
-        store: ?bool = null,
-    };
-
-    const parts = [_]api.TextPart{.{ .text = prompt }};
-    const contents = [_]Content{.{ .parts = &parts }};
-    var system_instruction_parts_buffer: [1]api.TextPart = undefined;
-    const system_instruction: ?api.TextContent = if (request_options.system_instruction) |text| system_instruction: {
-        system_instruction_parts_buffer[0] = .{ .text = text };
-        break :system_instruction .{ .parts = system_instruction_parts_buffer[0..1] };
-    } else null;
-    const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(grounding_options);
-    var tools_buffer: [1]api.Tool = undefined;
-    const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
-        tools_buffer[0] = tool;
-        break :tools tools_buffer[0..1];
-    } else null;
-    var safety_settings_buffer: [api.supported_harm_categories.len]api.SafetySetting = undefined;
-    const safety_settings: ?[]const api.SafetySetting = if (safety_options) |options| safety_settings: {
-        safety_settings_buffer = api.safetySettingsFromOptions(options);
-        break :safety_settings safety_settings_buffer[0..];
-    } else null;
-    const request = GenerateContentRequest{
-        .contents = &contents,
-        .tools = tools,
-        .generationConfig = api.generationConfigFromOptions(
-            output_options,
-            thinking_options,
-            &generation_options,
-        ),
-        .safetySettings = safety_settings,
-        .systemInstruction = system_instruction,
-        .cachedContent = request_options.cached_content,
-        .serviceTier = request_options.service_tier,
-        .store = request_options.store,
-    };
-
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    try std.json.Stringify.value(request, .{ .emit_null_optional_fields = false }, &output.writer);
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    const parts = [_]api.GeneratePart{.{ .text = prompt }};
+    const contents = [_]api.GenerateContent{.{ .parts = &parts }};
+    return api.buildGenerateContentRequestJson(gpa, &contents, .{
+        .output_options = output_options,
+        .grounding_options = grounding_options,
+        .thinking_options = thinking_options,
+        .safety_options = safety_options,
+        .generation_options = generation_options,
+        .request_options = request_options,
+    });
 }
 
 pub fn buildCountTokensRequest(

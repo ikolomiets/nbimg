@@ -55,6 +55,20 @@ pub const TextContent = struct {
     parts: []const TextPart,
 };
 
+pub const GenerateFileData = struct {
+    mime_type: []const u8,
+    file_uri: []const u8,
+};
+
+pub const GeneratePart = struct {
+    text: ?[]const u8 = null,
+    file_data: ?GenerateFileData = null,
+};
+
+pub const GenerateContent = struct {
+    parts: []const GeneratePart,
+};
+
 pub const ServiceTier = enum {
     flex,
     standard,
@@ -421,6 +435,96 @@ pub fn googleSearchToolFromGroundingOptions(options: GroundingOptions) ?Tool {
             },
         },
     };
+}
+
+pub const GenerateContentRequestOptions = struct {
+    output_options: ImageOutputOptions = .{},
+    grounding_options: GroundingOptions = .{},
+    thinking_options: ThinkingOptions = .{},
+    safety_options: ?SafetyOptions = null,
+    generation_options: GenerationOptions = .{},
+    request_options: RequestOptions = .{},
+};
+
+const GenerateContentRequest = struct {
+    contents: []const GenerateContent,
+    tools: ?[]const Tool = null,
+    generationConfig: GenerationConfig,
+    safetySettings: ?[]const SafetySetting = null,
+    systemInstruction: ?TextContent = null,
+    cachedContent: ?[]const u8 = null,
+    serviceTier: ?ServiceTier = null,
+    store: ?bool = null,
+};
+
+pub fn buildGenerateContentRequestJson(
+    gpa: std.mem.Allocator,
+    contents: []const GenerateContent,
+    options: GenerateContentRequestOptions,
+) ![]u8 {
+    assertValidGenerateContents(contents);
+    assertValidRequestOptions(options.request_options);
+
+    var system_instruction_parts_buffer: [1]TextPart = undefined;
+    const system_instruction: ?TextContent = if (options.request_options.system_instruction) |text| system_instruction: {
+        system_instruction_parts_buffer[0] = .{ .text = text };
+        break :system_instruction .{ .parts = system_instruction_parts_buffer[0..1] };
+    } else null;
+    const maybe_grounding_tool = googleSearchToolFromGroundingOptions(options.grounding_options);
+    var tools_buffer: [1]Tool = undefined;
+    const tools: ?[]const Tool = if (maybe_grounding_tool) |tool| tools: {
+        tools_buffer[0] = tool;
+        break :tools tools_buffer[0..1];
+    } else null;
+    var safety_settings_buffer: [supported_harm_categories.len]SafetySetting = undefined;
+    const safety_settings: ?[]const SafetySetting = if (options.safety_options) |safety_options| safety_settings: {
+        safety_settings_buffer = safetySettingsFromOptions(safety_options);
+        break :safety_settings safety_settings_buffer[0..];
+    } else null;
+    const request = GenerateContentRequest{
+        .contents = contents,
+        .tools = tools,
+        .generationConfig = generationConfigFromOptions(
+            options.output_options,
+            options.thinking_options,
+            &options.generation_options,
+        ),
+        .safetySettings = safety_settings,
+        .systemInstruction = system_instruction,
+        .cachedContent = options.request_options.cached_content,
+        .serviceTier = options.request_options.service_tier,
+        .store = options.request_options.store,
+    };
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+
+    try std.json.Stringify.value(request, .{ .emit_null_optional_fields = false }, &output.writer);
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+fn assertValidGenerateContents(contents: []const GenerateContent) void {
+    assert(contents.len > 0);
+
+    for (contents) |content| {
+        assert(content.parts.len > 0);
+
+        for (content.parts) |part| {
+            assert((part.text != null) != (part.file_data != null));
+
+            if (part.text) |text| {
+                assert(text.len > 0);
+            }
+
+            if (part.file_data) |file_data| {
+                assert(file_data.mime_type.len > 0);
+                assert(file_data.file_uri.len > 0);
+            }
+        }
+    }
 }
 
 pub const ResponseFormatConfig = struct {
@@ -957,6 +1061,49 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
         "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
         request,
     );
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
+}
+
+test "buildGenerateContentRequestJson serializes shared text request" {
+    const gpa = std.testing.allocator;
+    const parts = [_]GeneratePart{.{ .text = "My fair lady" }};
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+    const request = try buildGenerateContentRequestJson(gpa, &contents, .{});
+    defer gpa.free(request);
+
+    try std.testing.expectEqualStrings(
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}",
+        request,
+    );
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
+    defer parsed.deinit();
+}
+
+test "buildGenerateContentRequestJson serializes shared request controls" {
+    const gpa = std.testing.allocator;
+    const parts = [_]GeneratePart{.{ .text = "My fair lady" }};
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+    const request = try buildGenerateContentRequestJson(gpa, &contents, .{
+        .grounding_options = .{ .web = true },
+        .safety_options = .{ .threshold = .block_none },
+        .request_options = .{
+            .system_instruction = "Use a precise editorial style.",
+            .cached_content = "cachedContents/brand",
+            .service_tier = .standard,
+            .store = true,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{}}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"safetySettings\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"systemInstruction\":{\"parts\":[{\"text\":\"Use a precise editorial style.\"}]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"cachedContent\":\"cachedContents/brand\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"serviceTier\":\"standard\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"store\":true") != null);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();

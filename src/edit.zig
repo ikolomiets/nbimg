@@ -65,31 +65,6 @@ pub const EditRequest = struct {
     do_nots: []const []const u8 = &.{},
 };
 
-const GenerateFileData = struct {
-    mime_type: []const u8,
-    file_uri: []const u8,
-};
-
-const GeneratePart = struct {
-    text: ?[]const u8 = null,
-    file_data: ?GenerateFileData = null,
-};
-
-const GenerateContent = struct {
-    parts: []const GeneratePart,
-};
-
-const GenerateContentRequest = struct {
-    contents: []const GenerateContent,
-    tools: ?[]const api.Tool = null,
-    generationConfig: api.GenerationConfig,
-    safetySettings: ?[]const api.SafetySetting = null,
-    systemInstruction: ?api.TextContent = null,
-    cachedContent: ?[]const u8 = null,
-    serviceTier: ?api.ServiceTier = null,
-    store: ?bool = null,
-};
-
 pub fn generateContent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -128,7 +103,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     const arena = arena_state.allocator();
 
     const part_count = 2 + request.references.len * 2 + 1;
-    const parts = try arena.alloc(GeneratePart, part_count);
+    const parts = try arena.alloc(api.GeneratePart, part_count);
     var part_index: usize = 0;
 
     parts[part_index] = .{ .text = try buildBaseAnchor(arena, request.base_role) };
@@ -147,46 +122,15 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     part_index += 1;
     assert(part_index == parts.len);
 
-    const contents = [_]GenerateContent{.{ .parts = parts }};
-    var system_instruction_parts_buffer: [1]api.TextPart = undefined;
-    const system_instruction: ?api.TextContent = if (request.request_options.system_instruction) |text| system_instruction: {
-        system_instruction_parts_buffer[0] = .{ .text = text };
-        break :system_instruction .{ .parts = system_instruction_parts_buffer[0..1] };
-    } else null;
-    const maybe_grounding_tool = api.googleSearchToolFromGroundingOptions(request.grounding_options);
-    var tools_buffer: [1]api.Tool = undefined;
-    const tools: ?[]const api.Tool = if (maybe_grounding_tool) |tool| tools: {
-        tools_buffer[0] = tool;
-        break :tools tools_buffer[0..1];
-    } else null;
-    var safety_settings_buffer: [api.supported_harm_categories.len]api.SafetySetting = undefined;
-    const safety_settings: ?[]const api.SafetySetting = if (request.safety_options) |options| safety_settings: {
-        safety_settings_buffer = api.safetySettingsFromOptions(options);
-        break :safety_settings safety_settings_buffer[0..];
-    } else null;
-    const generate_request = GenerateContentRequest{
-        .contents = &contents,
-        .tools = tools,
-        .generationConfig = api.generationConfigFromOptions(
-            request.output_options,
-            request.thinking_options,
-            &request.generation_options,
-        ),
-        .safetySettings = safety_settings,
-        .systemInstruction = system_instruction,
-        .cachedContent = request.request_options.cached_content,
-        .serviceTier = request.request_options.service_tier,
-        .store = request.request_options.store,
-    };
-
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    try std.json.Stringify.value(generate_request, .{ .emit_null_optional_fields = false }, &output.writer);
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    const contents = [_]api.GenerateContent{.{ .parts = parts }};
+    return api.buildGenerateContentRequestJson(gpa, &contents, .{
+        .output_options = request.output_options,
+        .grounding_options = request.grounding_options,
+        .thinking_options = request.thinking_options,
+        .safety_options = request.safety_options,
+        .generation_options = request.generation_options,
+        .request_options = request.request_options,
+    });
 }
 
 pub fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
@@ -278,10 +222,10 @@ fn buildReferenceAnchor(gpa: std.mem.Allocator, reference: Reference) ![]u8 {
     );
 }
 
-fn buildFileData(gpa: std.mem.Allocator, image: UploadedImage) !GenerateFileData {
+fn buildFileData(gpa: std.mem.Allocator, image: UploadedImage) !api.GenerateFileData {
     assert(api.isCanonicalFileName(image.name));
 
-    return GenerateFileData{
+    return api.GenerateFileData{
         .mime_type = image.mime.apiName(),
         .file_uri = try buildFileUri(gpa, image.name),
     };
