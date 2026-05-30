@@ -1583,55 +1583,6 @@ test "writeGeneratedFiles writes generated images under relative output director
     try std.testing.expectEqualSlices(u8, &.{1}, written);
 }
 
-test "writeGeneratedFiles writes thought images under same output directory" {
-    const gpa = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
-    defer gpa.free(out_dir);
-
-    var items = [_]api.GeneratedFile{
-        .{
-            .candidate_index = 0,
-            .part_index = 0,
-            .mime = .jpeg,
-            .bytes = @constCast(&[_]u8{1}),
-            .thought = true,
-        },
-        .{
-            .candidate_index = 0,
-            .part_index = 1,
-            .mime = .png,
-            .bytes = @constCast(&[_]u8{2}),
-        },
-    };
-    const files = api.GeneratedFiles{
-        .response_id = @constCast("test-response"),
-        .items = &items,
-    };
-
-    try writeGeneratedFiles(std.testing.io, out_dir, files);
-
-    const thought = try tmp_dir.dir.readFileAlloc(
-        std.testing.io,
-        "test-response-0-thought-0.jpg",
-        gpa,
-        .limited(1024),
-    );
-    defer gpa.free(thought);
-    try std.testing.expectEqualSlices(u8, &.{1}, thought);
-
-    const final = try tmp_dir.dir.readFileAlloc(
-        std.testing.io,
-        "test-response-0-1.png",
-        gpa,
-        .limited(1024),
-    );
-    defer gpa.free(final);
-    try std.testing.expectEqualSlices(u8, &.{2}, final);
-}
-
 fn writeStdoutLine(io: std.Io, line: []const u8) !void {
     const stdout = std.Io.File.stdout();
     try stdout.writeStreamingAll(io, line);
@@ -1872,7 +1823,7 @@ fn usageText() []const u8 {
         "\n" ++
         "thinking options:\n" ++
         "       --thinking-level accepts minimal or high\n" ++
-        "       --include-thoughts requests returned thought parts; thought images are saved beside final outputs\n" ++
+        "       --include-thoughts requests returned thought parts; thought parts stay in the response log only\n" ++
         "\n" ++
         "safety options:\n" ++
         "       --safety accepts none, off, permissive, balanced, or strict\n";
@@ -1932,7 +1883,7 @@ test "usageText documents edit reference roles and defaults" {
         "store:false",
         "none, web, image, or web,image",
         "minimal or high",
-        "thought images are saved beside final outputs",
+        "thought parts stay in the response log only",
         "none, off, permissive, balanced, or strict",
     };
 

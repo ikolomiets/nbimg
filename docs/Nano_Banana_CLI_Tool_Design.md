@@ -353,8 +353,7 @@ The chat state must also preserve **thought signatures** exactly when present. G
 
 For one-shot generation and edit commands, thought output should not have a
 separate destination flag. Returned thought text stays visible in the raw
-response log, and returned thought images are saved beside final images in the
-normal output directory with a `thought` marker in the filename.
+response log, and returned thought images are not written as sidecar files.
 
 ---
 
@@ -567,7 +566,7 @@ For each part:
 | ---------------------------- | -------------------------------------------------------------- |
 | `text`                       | Print to stdout or save as `.txt`                              |
 | `inlineData`                 | Base64-decode and write image file                             |
-| thought part                 | Save thought images only when `--include-thoughts` is set; leave thought text in response logs |
+| thought part                 | Do not write sidecar files; leave thought parts in response logs |
 | grounding metadata           | Save JSON and optional attribution HTML                        |
 | safety / finish metadata     | Save in response metadata JSON                                 |
 | thought signatures           | Store in chat state exactly                                    |
@@ -579,7 +578,6 @@ out/
   candidate-0-part-0.png
   candidate-0-part-1.txt
   candidate-0-grounding.json
-  candidate-0-thought-0.png
   response.json
 ```
 

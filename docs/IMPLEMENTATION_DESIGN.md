@@ -232,8 +232,8 @@ Argument rules are intentionally narrow:
 - `--include-thoughts` is optional and accepted at most once for `gen` and
   `edit`. It requests returned thought parts by setting
   `generationConfig.thinkingConfig.includeThoughts` to `true`. Thought text is
-  only visible in the existing stderr response log. Thought image parts are
-  saved beside final output files and use `thought` in the filename.
+  only visible in the existing stderr response log. Thought image parts are not
+  written as sidecar files.
 - For `gen` and `edit`, `--safety LEVEL` is optional and accepted at most
   once. Valid levels are `none`, `off`, `permissive`, `balanced`, and
   `strict`. If omitted, `nbimg` preserves its current explicit `BLOCK_NONE`
@@ -344,7 +344,7 @@ grounding options:
 
 thinking options:
        --thinking-level accepts minimal or high
-       --include-thoughts requests returned thought parts; thought images are saved beside final outputs
+       --include-thoughts requests returned thought parts; thought parts stay in the response log only
 
 safety options:
        --safety accepts none, off, permissive, balanced, or strict
@@ -833,16 +833,15 @@ responseId
 candidates[].content.parts[]
 ```
 
-Supported final parts and thought image parts are converted into
-`GeneratedFile` values:
+Supported final image parts are converted into `GeneratedFile` values:
 
 - Text parts are skipped for file output and remain visible only in the raw
   stderr response log.
 - Inline image parts are base64-decoded and become image files.
 - Parts with `thought: true` are treated as thought parts. Thought text is
   skipped for file output and remains visible only in the raw stderr response
-  log. Thought inline image parts are decoded, marked as thoughts, and written
-  beside final output files.
+  log. Thought inline image parts are skipped and are not written as sidecar
+  files.
 - The root `responseId` is copied once into `GeneratedFiles` for output
   naming.
 
@@ -881,17 +880,10 @@ from the root response ID and response position:
 {responseId}-{candidate_index}-{part_index}.{extension}
 ```
 
-Thought image filenames add a `thought` marker:
-
-```text
-{responseId}-{candidate_index}-thought-{part_index}.{extension}
-```
-
 For example:
 
 ```text
 PMMIapvKNtLj_uMPq8a8oQs-0-0.jpg
-PMMIapvKNtLj_uMPq8a8oQs-0-thought-2.jpg
 ```
 
 Writes are exclusive. If a target file already exists, the write fails instead

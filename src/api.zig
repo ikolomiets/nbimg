@@ -681,7 +681,6 @@ pub const GeneratedFile = struct {
     part_index: usize,
     mime: OutputMime,
     bytes: []u8,
-    thought: bool = false,
 
     pub fn deinit(file: *GeneratedFile, gpa: std.mem.Allocator) void {
         gpa.free(file.bytes);
@@ -862,7 +861,6 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     errdefer gpa.free(owned_response_id);
 
     var files: std.ArrayList(GeneratedFile) = .empty;
-    var final_part_count: usize = 0;
     errdefer {
         for (files.items) |*file| file.deinit(gpa);
         files.deinit(gpa);
@@ -871,16 +869,17 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     for (parsed.value.candidates, 0..) |candidate, candidate_index| {
         const content = candidate.content orelse continue;
         for (content.parts, 0..) |part, part_index| {
+            if (part.thought) continue;
+
             var file = (try decodeGeneratedPart(gpa, candidate_index, part_index, part)) orelse continue;
             files.append(gpa, file) catch |err| {
                 file.deinit(gpa);
                 return err;
             };
-            if (!file.thought) final_part_count += 1;
         }
     }
 
-    if (final_part_count == 0) return error.NoGeneratedParts;
+    if (files.items.len == 0) return error.NoGeneratedParts;
 
     return .{
         .response_id = owned_response_id,
@@ -912,19 +911,10 @@ fn decodeGeneratedPart(
         .part_index = part_index,
         .mime = mime,
         .bytes = decoded,
-        .thought = part.thought,
     };
 }
 
 pub fn generatedFileName(buffer: []u8, response_id: []const u8, file: GeneratedFile) ![]const u8 {
-    if (file.thought) {
-        return std.fmt.bufPrint(
-            buffer,
-            "{s}-{d}-thought-{d}.{s}",
-            .{ response_id, file.candidate_index, file.part_index, file.mime.extension() },
-        );
-    }
-
     return std.fmt.bufPrint(
         buffer,
         "{s}-{d}-{d}.{s}",
@@ -1972,7 +1962,7 @@ test "decodeGeneratedFiles rejects text-only response" {
     try std.testing.expectError(error.NoGeneratedParts, decodeGeneratedFiles(gpa, json));
 }
 
-test "decodeGeneratedFiles decodes thought images and skips thought text" {
+test "decodeGeneratedFiles skips thought parts and decodes final images" {
     const gpa = std.testing.allocator;
     const json =
         \\{
@@ -1981,7 +1971,7 @@ test "decodeGeneratedFiles decodes thought images and skips thought text" {
         \\    "content": {
         \\      "parts": [
         \\        {"text": "planning", "thought": true},
-        \\        {"inlineData": {"mimeType": "image/jpeg", "data": "AQID"}, "thought": true},
+        \\        {"inlineData": {}, "thought": true},
         \\        {"inlineData": {"mimeType": "image/png", "data": "BAUG"}}
         \\      ]
         \\    }
@@ -1992,13 +1982,9 @@ test "decodeGeneratedFiles decodes thought images and skips thought text" {
     var files = try decodeGeneratedFiles(gpa, json);
     defer files.deinit(gpa);
 
-    try std.testing.expectEqual(@as(usize, 2), files.items.len);
-    try std.testing.expect(files.items[0].thought);
-    try std.testing.expectEqual(OutputMime.jpeg, files.items[0].mime);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, files.items[0].bytes);
-    try std.testing.expect(!files.items[1].thought);
-    try std.testing.expectEqual(OutputMime.png, files.items[1].mime);
-    try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, files.items[1].bytes);
+    try std.testing.expectEqual(@as(usize, 1), files.items.len);
+    try std.testing.expectEqual(OutputMime.png, files.items[0].mime);
+    try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, files.items[0].bytes);
 }
 
 test "decodeGeneratedFiles rejects response with only thought parts" {
@@ -2135,17 +2121,4 @@ test "generatedFileName uses response id candidate part template" {
     var buffer: [64]u8 = undefined;
     const name = try generatedFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs", file);
     try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs-12-3.webp", name);
-}
-
-test "generatedFileName marks thought images" {
-    const file = GeneratedFile{
-        .candidate_index = 0,
-        .part_index = 4,
-        .mime = .jpeg,
-        .bytes = @constCast("x"),
-        .thought = true,
-    };
-    var buffer: [64]u8 = undefined;
-    const name = try generatedFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs", file);
-    try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs-0-thought-4.jpg", name);
 }

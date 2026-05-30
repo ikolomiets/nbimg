@@ -181,9 +181,8 @@ logging configuration.
 Use `--thinking-level minimal|high` with `gen` or `edit` to control Gemini's
 thinking effort. Omit it to use Gemini's default. Use `--include-thoughts` to
 ask Gemini to return thought parts in the response. Response traffic is already
-logged to stderr by default, so thought text is visible there when returned.
-Thought image parts are written beside final outputs, using filenames such as
-`RESPONSE-0-thought-0.jpg`.
+logged to stderr by default, so returned thought parts remain visible there.
+Thought image parts are not written as sidecar files.
 
 Use `--safety none|off|permissive|balanced|strict` with `gen` or `edit` to
 choose one Gemini safety threshold for every safety category that `nbimg`
