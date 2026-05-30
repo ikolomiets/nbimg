@@ -842,6 +842,32 @@ pub fn countTokensUrl(model: Model) []const u8 {
     };
 }
 
+pub fn postGenerateContentJson(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    model: Model,
+    request_json: []const u8,
+) !HttpResponse {
+    assert(api_key.len > 0);
+    assert(request_json.len > 0);
+
+    return postJson(gpa, io, api_key, generateContentUrl(model), request_json);
+}
+
+pub fn postCountTokensJson(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    model: Model,
+    request_json: []const u8,
+) !HttpResponse {
+    assert(api_key.len > 0);
+    assert(request_json.len > 0);
+
+    return postJson(gpa, io, api_key, countTokensUrl(model), request_json);
+}
+
 pub fn isCanonicalFileName(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, canonical_file_name_prefix)) return false;
     return name.len > canonical_file_name_prefix.len;

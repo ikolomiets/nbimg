@@ -77,7 +77,7 @@ pub fn generateContent(
     const request_json = try buildGenerateRequest(gpa, request);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, api.generateContentUrl(.nano2), request_json);
+    return api.postGenerateContentJson(gpa, io, api_key, .nano2, request_json);
 }
 
 pub fn countGenerateContentRequestTokens(
@@ -92,7 +92,7 @@ pub fn countGenerateContentRequestTokens(
     const request_json = try buildCountTokensRequest(gpa, request);
     defer gpa.free(request_json);
 
-    return api.postJson(gpa, io, api_key, api.countTokensUrl(.nano2), request_json);
+    return api.postCountTokensJson(gpa, io, api_key, .nano2, request_json);
 }
 
 pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
