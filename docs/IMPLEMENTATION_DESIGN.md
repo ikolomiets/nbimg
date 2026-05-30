@@ -236,11 +236,10 @@ Argument rules are intentionally narrow:
   written as sidecar files.
 - For `gen` and `edit`, `--safety LEVEL` is optional and accepted at most
   once. Valid levels are `none`, `off`, `permissive`, `balanced`, and
-  `strict`. If omitted, `nbimg` preserves its current explicit `BLOCK_NONE`
-  request shape. The levels serialize as `BLOCK_NONE`, `OFF`,
-  `BLOCK_ONLY_HIGH`, `BLOCK_MEDIUM_AND_ABOVE`, and `BLOCK_LOW_AND_ABOVE`
-  respectively, and the selected threshold is applied to every safety category
-  that `nbimg` emits.
+  `strict`. If omitted, `nbimg` does not send `safetySettings`. The levels
+  serialize as `BLOCK_NONE`, `OFF`, `BLOCK_ONLY_HIGH`,
+  `BLOCK_MEDIUM_AND_ABOVE`, and `BLOCK_LOW_AND_ABOVE` respectively, and the
+  selected threshold is applied to every safety category that `nbimg` emits.
 - `--safety` controls only Gemini's adjustable request-level
   `safetySettings`. Google's Gemini safety documentation describes additional
   built-in protections that are not controlled by client safety settings and
@@ -388,13 +387,7 @@ has this shape:
   ],
   "generationConfig": {
     "responseModalities": ["TEXT", "IMAGE"]
-  },
-  "safetySettings": [
-    { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
-  ]
+  }
 }
 ```
 
@@ -524,9 +517,10 @@ When `--thinking-level`, `--include-thoughts`, or both are provided, `gen` and
 currently exposes only `minimal` and `high`.
 
 `api.safetySettingsFromOptions` supplies the top-level `safetySettings` array
-for all `generateContent` requests. It configures harassment, hate speech,
-sexually explicit, and dangerous content categories with the single threshold
-chosen by `--safety`. The default is `BLOCK_NONE`.
+when `--safety` is present. It configures harassment, hate speech, sexually
+explicit, and dangerous content categories with the single threshold chosen by
+`--safety`. If `--safety` is omitted, `safetySettings` is omitted from the
+request.
 
 ```json
 {
@@ -573,13 +567,7 @@ role text followed by a `file_data` part. For example:
   ],
   "generationConfig": {
     "responseModalities": ["TEXT", "IMAGE"]
-  },
-  "safetySettings": [
-    { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
-    { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
-  ]
+  }
 }
 ```
 
@@ -797,13 +785,7 @@ to add the model field that Google requires inside nested
     ],
     "generationConfig": {
       "responseModalities": ["TEXT", "IMAGE"]
-    },
-    "safetySettings": [
-      { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
-      { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
-      { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
-      { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
-    ]
+    }
   }
 }
 ```

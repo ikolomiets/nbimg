@@ -23,7 +23,7 @@ pub const GenCommand = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
-    safety_options: api.SafetyOptions = .{},
+    safety_options: ?api.SafetyOptions = null,
     generation_options: api.GenerationOptions = .{},
     request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
@@ -36,7 +36,7 @@ pub const EditCommand = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
-    safety_options: api.SafetyOptions = .{},
+    safety_options: ?api.SafetyOptions = null,
     generation_options: api.GenerationOptions = .{},
     request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
@@ -687,7 +687,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
-    var safety_options: api.SafetyOptions = .{};
+    var safety_options: ?api.SafetyOptions = null;
     var generation_options: api.GenerationOptions = .{};
     var request_options: api.RequestOptions = .{};
     var grounding_seen = false;
@@ -754,7 +754,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var output_options: api.ImageOutputOptions = .{};
     var grounding_options: api.GroundingOptions = .{};
     var thinking_options: api.ThinkingOptions = .{};
-    var safety_options: api.SafetyOptions = .{};
+    var safety_options: ?api.SafetyOptions = null;
     var generation_options: api.GenerationOptions = .{};
     var request_options: api.RequestOptions = .{};
     var grounding_seen = false;
@@ -905,7 +905,7 @@ fn parseIncludeThoughtsOption(
 
 fn parseSafetyOption(
     command_args: *CommandArgs,
-    safety_options: *api.SafetyOptions,
+    safety_options: *?api.SafetyOptions,
     safety_seen: *bool,
 ) ParseError!void {
     if (safety_seen.*) return error.DuplicateSafety;
@@ -1902,7 +1902,7 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqual(@as(?api.ImageSize, null), gen.output_options.image_size);
     try std.testing.expect(!gen.grounding_options.hasAny());
     try std.testing.expect(!gen.thinking_options.hasAny());
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, gen.safety_options.threshold);
+    try std.testing.expectEqual(@as(?api.SafetyOptions, null), gen.safety_options);
     try std.testing.expect(!gen.generation_options.hasAny());
     try std.testing.expect(!gen.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
@@ -2049,19 +2049,19 @@ test "parseArgs accepts gen thinking options" {
 
 test "parseArgs accepts gen safety options" {
     const none_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "none", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, expectGenCommand(none_command).safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, expectGenCommand(none_command).safety_options.?.threshold);
 
     const off_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "off", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.off, expectGenCommand(off_command).safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.off, expectGenCommand(off_command).safety_options.?.threshold);
 
     const permissive_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "permissive", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_only_high, expectGenCommand(permissive_command).safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_only_high, expectGenCommand(permissive_command).safety_options.?.threshold);
 
     const balanced_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "balanced", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_medium_and_above, expectGenCommand(balanced_command).safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_medium_and_above, expectGenCommand(balanced_command).safety_options.?.threshold);
 
     const strict_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "strict", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, expectGenCommand(strict_command).safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, expectGenCommand(strict_command).safety_options.?.threshold);
 }
 
 test "parseArgs accepts print request flag in any order" {
@@ -2413,7 +2413,7 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expectEqual(@as(?api.ImageSize, null), edit.output_options.image_size);
     try std.testing.expect(!edit.grounding_options.hasAny());
     try std.testing.expect(!edit.thinking_options.hasAny());
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_none, edit.safety_options.threshold);
+    try std.testing.expectEqual(@as(?api.SafetyOptions, null), edit.safety_options);
     try std.testing.expect(!edit.generation_options.hasAny());
     try std.testing.expect(!edit.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
@@ -2502,7 +2502,7 @@ test "parseArgs accepts edit safety options" {
     });
     const edit = expectEditCommand(parsed_command);
 
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, edit.safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, edit.safety_options.?.threshold);
 }
 
 test "parseArgs accepts edit advanced generation options" {
@@ -4180,9 +4180,6 @@ test "live API edit request shape is valid" {
             .thinking_options = .{
                 .level = .high,
                 .include_thoughts = true,
-            },
-            .safety_options = .{
-                .threshold = .block_only_high,
             },
             .generation_options = generation_options,
             .request_options = .{

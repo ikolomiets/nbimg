@@ -186,9 +186,9 @@ Thought image parts are not written as sidecar files.
 
 Use `--safety none|off|permissive|balanced|strict` with `gen` or `edit` to
 choose one Gemini safety threshold for every safety category that `nbimg`
-sends. The default is `none`, which preserves the existing `BLOCK_NONE`
-request shape. The levels serialize as `BLOCK_NONE`, `OFF`,
-`BLOCK_ONLY_HIGH`, `BLOCK_MEDIUM_AND_ABOVE`, or `BLOCK_LOW_AND_ABOVE`.
+sends. If omitted, `nbimg` does not send `safetySettings`; explicit levels
+serialize as `BLOCK_NONE`, `OFF`, `BLOCK_ONLY_HIGH`,
+`BLOCK_MEDIUM_AND_ABOVE`, or `BLOCK_LOW_AND_ABOVE`.
 
 `--safety` controls only Gemini's adjustable request-level `safetySettings`.
 Google's Gemini safety documentation describes additional built-in protections

@@ -18,7 +18,7 @@ pub fn generateContent(
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
-    safety_options: api.SafetyOptions,
+    safety_options: ?api.SafetyOptions,
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) !api.HttpResponse {
@@ -49,7 +49,7 @@ pub fn countGenerateContentRequestTokens(
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
-    safety_options: api.SafetyOptions,
+    safety_options: ?api.SafetyOptions,
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) !api.HttpResponse {
@@ -78,7 +78,7 @@ pub fn buildGenerateRequest(
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
-    safety_options: api.SafetyOptions,
+    safety_options: ?api.SafetyOptions,
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) ![]u8 {
@@ -92,7 +92,7 @@ pub fn buildGenerateRequest(
         contents: []const Content,
         tools: ?[]const api.Tool = null,
         generationConfig: api.GenerationConfig,
-        safetySettings: []const api.SafetySetting,
+        safetySettings: ?[]const api.SafetySetting = null,
         systemInstruction: ?api.TextContent = null,
         cachedContent: ?[]const u8 = null,
         serviceTier: ?api.ServiceTier = null,
@@ -112,7 +112,11 @@ pub fn buildGenerateRequest(
         tools_buffer[0] = tool;
         break :tools tools_buffer[0..1];
     } else null;
-    const safety_settings = api.safetySettingsFromOptions(safety_options);
+    var safety_settings_buffer: [api.supported_harm_categories.len]api.SafetySetting = undefined;
+    const safety_settings: ?[]const api.SafetySetting = if (safety_options) |options| safety_settings: {
+        safety_settings_buffer = api.safetySettingsFromOptions(options);
+        break :safety_settings safety_settings_buffer[0..];
+    } else null;
     const request = GenerateContentRequest{
         .contents = &contents,
         .tools = tools,
@@ -121,7 +125,7 @@ pub fn buildGenerateRequest(
             thinking_options,
             &generation_options,
         ),
-        .safetySettings = &safety_settings,
+        .safetySettings = safety_settings,
         .systemInstruction = system_instruction,
         .cachedContent = request_options.cached_content,
         .serviceTier = request_options.service_tier,
@@ -144,7 +148,7 @@ pub fn buildCountTokensRequest(
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
     thinking_options: api.ThinkingOptions,
-    safety_options: api.SafetyOptions,
+    safety_options: ?api.SafetyOptions,
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) ![]u8 {
@@ -166,16 +170,16 @@ pub fn buildCountTokensRequest(
     return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
-const expected_safety_settings_json =
+const expected_block_none_safety_settings_json =
     "\"safetySettings\":[{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"},{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}]";
 
 test "buildGenerateRequest uses fixed Nano Banana 2 image request" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{}, .{});
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}",
         request,
     );
 }
@@ -185,11 +189,11 @@ test "buildGenerateRequest includes image output options" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r16_9,
         .image_size = .k2,
-    }, .{}, .{}, .{}, .{}, .{});
+    }, .{}, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"],\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"],\"responseFormat\":{\"image\":{\"aspectRatio\":\"ASPECT_RATIO_SIXTEEN_BY_NINE\",\"imageSize\":\"IMAGE_SIZE_TWO_K\"}}}}",
         request,
     );
 }
@@ -198,7 +202,7 @@ test "buildGenerateRequest includes partial image output options" {
     const gpa = std.testing.allocator;
     const aspect_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .aspect_ratio = .r9_16,
-    }, .{}, .{}, .{}, .{}, .{});
+    }, .{}, .{}, null, .{}, .{});
     defer gpa.free(aspect_request);
 
     try std.testing.expect(std.mem.indexOf(u8, aspect_request, "\"aspectRatio\":\"ASPECT_RATIO_NINE_BY_SIXTEEN\"") != null);
@@ -206,7 +210,7 @@ test "buildGenerateRequest includes partial image output options" {
 
     const size_request = try buildGenerateRequest(gpa, "My fair lady", .{
         .image_size = .px512,
-    }, .{}, .{}, .{}, .{}, .{});
+    }, .{}, .{}, null, .{}, .{});
     defer gpa.free(size_request);
 
     try std.testing.expect(std.mem.indexOf(u8, size_request, "\"imageSize\":\"IMAGE_SIZE_FIVE_TWELVE\"") != null);
@@ -217,11 +221,11 @@ test "buildGenerateRequest includes web grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
-    }, .{}, .{}, .{}, .{});
+    }, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"tools\":[{\"google_search\":{}}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"tools\":[{\"google_search\":{}}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}",
         request,
     );
 }
@@ -230,7 +234,7 @@ test "buildGenerateRequest includes image grounding tool" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .image = true,
-    }, .{}, .{}, .{}, .{});
+    }, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"imageSearch\":{}}}}]") != null);
@@ -242,7 +246,7 @@ test "buildGenerateRequest includes combined grounding tool" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{
         .web = true,
         .image = true,
-    }, .{}, .{}, .{}, .{});
+    }, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{\"searchTypes\":{\"webSearch\":{},\"imageSearch\":{}}}}]") != null);
@@ -253,7 +257,7 @@ test "buildGenerateRequest includes thinking config" {
     const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{
         .level = .high,
         .include_thoughts = true,
-    }, .{}, .{}, .{});
+    }, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"thinkingConfig\":{\"thinkingLevel\":\"high\",\"includeThoughts\":true}") != null);
@@ -274,7 +278,7 @@ test "buildGenerateRequest includes advanced generation options" {
     generation_options.appendStopSequence("END");
     generation_options.appendStopSequence("STOP");
 
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, generation_options, .{});
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, null, generation_options, .{});
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"maxOutputTokens\":4096") != null);
@@ -293,7 +297,7 @@ test "buildGenerateRequest includes advanced generation options" {
 
 test "buildGenerateRequest applies safety threshold to all categories" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, api.SafetyOptions{
         .threshold = .off,
     }, .{}, .{});
     defer gpa.free(request);
@@ -306,9 +310,19 @@ test "buildGenerateRequest applies safety threshold to all categories" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"threshold\":\"BLOCK_NONE\"") == null);
 }
 
+test "buildGenerateRequest emits block none safety settings when requested" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, api.SafetyOptions{
+        .threshold = .block_none,
+    }, .{}, .{});
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, expected_block_none_safety_settings_json) != null);
+}
+
 test "buildGenerateRequest includes request-level controls" {
     const gpa = std.testing.allocator;
-    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{}, .{
+    const request = try buildGenerateRequest(gpa, "My fair lady", .{}, .{}, .{}, null, .{}, .{
         .system_instruction = "Use a precise editorial style.",
         .cached_content = "cachedContents/brand",
         .service_tier = .priority,
@@ -327,11 +341,11 @@ test "buildGenerateRequest includes request-level controls" {
 
 test "buildCountTokensRequest wraps fixed generate content request" {
     const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{}, .{});
+    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, null, .{}, .{});
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}," ++ expected_safety_settings_json ++ "}}",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}}",
         request,
     );
 
@@ -341,7 +355,7 @@ test "buildCountTokensRequest wraps fixed generate content request" {
 
 test "buildCountTokensRequest wraps request-level controls inside generate content request" {
     const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, .{}, .{}, .{
+    const request = try buildCountTokensRequest(gpa, "My fair lady", .{}, .{}, .{}, null, .{}, .{
         .system_instruction = "Use a precise editorial style.",
         .service_tier = .standard,
         .store = true,
@@ -401,9 +415,7 @@ test "live API generateContent request shape is valid" {
             .level = .minimal,
             .include_thoughts = true,
         },
-        .{
-            .threshold = .block_only_high,
-        },
+        null,
         generation_options,
         .{
             .system_instruction = "Follow the user's visual request exactly.",

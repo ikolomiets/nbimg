@@ -55,7 +55,7 @@ pub const EditRequest = struct {
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
     thinking_options: api.ThinkingOptions = .{},
-    safety_options: api.SafetyOptions = .{},
+    safety_options: ?api.SafetyOptions = null,
     generation_options: api.GenerationOptions = .{},
     request_options: api.RequestOptions = .{},
     base: UploadedImage,
@@ -83,7 +83,7 @@ const GenerateContentRequest = struct {
     contents: []const GenerateContent,
     tools: ?[]const api.Tool = null,
     generationConfig: api.GenerationConfig,
-    safetySettings: []const api.SafetySetting,
+    safetySettings: ?[]const api.SafetySetting = null,
     systemInstruction: ?api.TextContent = null,
     cachedContent: ?[]const u8 = null,
     serviceTier: ?api.ServiceTier = null,
@@ -159,7 +159,11 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         tools_buffer[0] = tool;
         break :tools tools_buffer[0..1];
     } else null;
-    const safety_settings = api.safetySettingsFromOptions(request.safety_options);
+    var safety_settings_buffer: [api.supported_harm_categories.len]api.SafetySetting = undefined;
+    const safety_settings: ?[]const api.SafetySetting = if (request.safety_options) |options| safety_settings: {
+        safety_settings_buffer = api.safetySettingsFromOptions(options);
+        break :safety_settings safety_settings_buffer[0..];
+    } else null;
     const generate_request = GenerateContentRequest{
         .contents = &contents,
         .tools = tools,
@@ -168,7 +172,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
             request.thinking_options,
             &request.generation_options,
         ),
-        .safetySettings = &safety_settings,
+        .safetySettings = safety_settings,
         .systemInstruction = system_instruction,
         .cachedContent = request.request_options.cached_content,
         .serviceTier = request.request_options.service_tier,
@@ -415,7 +419,7 @@ test "buildGenerateRequest builds edit request with base file data" {
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseFormat\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"imageConfig\"") == null);
-    try expectDefaultSafetySettings(request);
+    try expectNoSafetySettings(request);
     try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
 
@@ -481,7 +485,7 @@ test "buildGenerateRequest includes edit web grounding tool" {
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"tools\":[{\"google_search\":{}}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"responseModalities\":[\"TEXT\",\"IMAGE\"]") != null);
-    try expectDefaultSafetySettings(request);
+    try expectNoSafetySettings(request);
 }
 
 test "buildGenerateRequest includes edit image grounding tool" {
@@ -581,7 +585,7 @@ test "buildGenerateRequest applies edit safety threshold to all categories" {
     const gpa = std.testing.allocator;
     const request = try buildGenerateRequest(gpa, .{
         .prompt = live_prompt,
-        .safety_options = .{
+        .safety_options = api.SafetyOptions{
             .threshold = .block_low_and_above,
         },
         .base = .{
@@ -597,6 +601,27 @@ test "buildGenerateRequest applies edit safety threshold to all categories" {
     try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_LOW_AND_ABOVE\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"threshold\":\"BLOCK_NONE\"") == null);
+}
+
+test "buildGenerateRequest emits edit block none safety settings when requested" {
+    const gpa = std.testing.allocator;
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .safety_options = api.SafetyOptions{
+            .threshold = .block_none,
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+    });
+    defer gpa.free(request);
+
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"safetySettings\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
 }
 
 test "buildGenerateRequest includes edit request-level controls" {
@@ -625,12 +650,8 @@ test "buildGenerateRequest includes edit request-level controls" {
     defer parsed.deinit();
 }
 
-fn expectDefaultSafetySettings(request_json: []const u8) !void {
-    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"safetySettings\":[") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_HARASSMENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_HATE_SPEECH\",\"threshold\":\"BLOCK_NONE\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_SEXUALLY_EXPLICIT\",\"threshold\":\"BLOCK_NONE\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request_json, "{\"category\":\"HARM_CATEGORY_DANGEROUS_CONTENT\",\"threshold\":\"BLOCK_NONE\"}") != null);
+fn expectNoSafetySettings(request_json: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"safetySettings\"") == null);
 }
 
 test "buildGenerateRequest renders only explicit edit constraints" {

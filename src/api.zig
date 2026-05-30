@@ -618,8 +618,6 @@ pub fn safetySettingsFromOptions(options: SafetyOptions) [supported_harm_categor
     return settings;
 }
 
-pub const default_safety_settings = safetySettingsFromOptions(.{});
-
 pub const CountTokensResult = struct {
     total_tokens: u64,
     cached_content_token_count: ?u64 = null,
@@ -964,12 +962,12 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
     defer parsed.deinit();
 }
 
-test "default safety settings serialize all supported harm categories as block none" {
+test "explicit block none safety settings serialize all supported harm categories" {
     const gpa = std.testing.allocator;
     var output: std.Io.Writer.Allocating = .init(gpa);
     defer output.deinit();
 
-    try std.json.Stringify.value(default_safety_settings, .{}, &output.writer);
+    try std.json.Stringify.value(safetySettingsFromOptions(.{ .threshold = .block_none }), .{}, &output.writer);
     const json = output.written();
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"HARM_CATEGORY_HARASSMENT\"") != null);
