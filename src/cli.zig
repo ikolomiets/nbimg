@@ -1775,7 +1775,7 @@ fn printUsageError(err: ParseError) void {
         error.MissingSafety => std.debug.print("error: missing safety level\n", .{}),
         error.EmptySafety => std.debug.print("error: safety level must not be empty\n", .{}),
         error.DuplicateSafety => std.debug.print("error: safety level specified more than once\n", .{}),
-        error.InvalidSafety => std.debug.print("error: safety level must be none, off, high, medium, or low\n", .{}),
+        error.InvalidSafety => std.debug.print("error: safety level must be none, off, permissive, balanced, or strict\n", .{}),
         error.MissingTemperature => std.debug.print("error: missing temperature\n", .{}),
         error.EmptyTemperature => std.debug.print("error: temperature must not be empty\n", .{}),
         error.DuplicateTemperature => std.debug.print("error: temperature specified more than once\n", .{}),
@@ -1875,7 +1875,7 @@ fn usageText() []const u8 {
         "       --include-thoughts requests returned thought parts; thought images are saved beside final outputs\n" ++
         "\n" ++
         "safety options:\n" ++
-        "       --safety accepts none, off, high, medium, or low\n";
+        "       --safety accepts none, off, permissive, balanced, or strict\n";
 }
 
 test "usageText documents edit reference roles and defaults" {
@@ -1933,7 +1933,7 @@ test "usageText documents edit reference roles and defaults" {
         "none, web, image, or web,image",
         "minimal or high",
         "thought images are saved beside final outputs",
-        "none, off, high, medium, or low",
+        "none, off, permissive, balanced, or strict",
     };
 
     for (expected) |needle| {
@@ -2103,14 +2103,14 @@ test "parseArgs accepts gen safety options" {
     const off_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "off", "--prompt", "My fair lady" });
     try std.testing.expectEqual(api.HarmBlockThreshold.off, expectGenCommand(off_command).safety_options.threshold);
 
-    const high_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "high", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_only_high, expectGenCommand(high_command).safety_options.threshold);
+    const permissive_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "permissive", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_only_high, expectGenCommand(permissive_command).safety_options.threshold);
 
-    const medium_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "medium", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_medium_and_above, expectGenCommand(medium_command).safety_options.threshold);
+    const balanced_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "balanced", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_medium_and_above, expectGenCommand(balanced_command).safety_options.threshold);
 
-    const low_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "low", "--prompt", "My fair lady" });
-    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, expectGenCommand(low_command).safety_options.threshold);
+    const strict_command = try parseArgs(&.{ "nbimg", "gen", "--safety", "strict", "--prompt", "My fair lady" });
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, expectGenCommand(strict_command).safety_options.threshold);
 }
 
 test "parseArgs accepts print request flag in any order" {
@@ -2231,11 +2231,14 @@ test "parseArgs rejects invalid gen safety arguments" {
         "--safety",
         "none",
         "--safety",
-        "high",
+        "strict",
         "--prompt",
         "My fair lady",
     }));
     try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "block-none", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "high", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "medium", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.InvalidSafety, parseArgs(&.{ "nbimg", "gen", "--safety", "low", "--prompt", "My fair lady" }));
 }
 
 test "parseArgs accepts gen advanced generation options" {
@@ -2540,7 +2543,7 @@ test "parseArgs accepts edit safety options" {
         "nbimg",
         "edit",
         "--safety",
-        "off",
+        "strict",
         "--ref",
         "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
@@ -2548,7 +2551,7 @@ test "parseArgs accepts edit safety options" {
     });
     const edit = expectEditCommand(parsed_command);
 
-    try std.testing.expectEqual(api.HarmBlockThreshold.off, edit.safety_options.threshold);
+    try std.testing.expectEqual(api.HarmBlockThreshold.block_low_and_above, edit.safety_options.threshold);
 }
 
 test "parseArgs accepts edit advanced generation options" {
@@ -2663,7 +2666,7 @@ test "parseArgs rejects invalid edit safety arguments" {
         "nbimg",
         "edit",
         "--safety",
-        "strict",
+        "high",
         "--ref",
         "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
@@ -2673,9 +2676,9 @@ test "parseArgs rejects invalid edit safety arguments" {
         "nbimg",
         "edit",
         "--safety",
-        "medium",
+        "balanced",
         "--safety",
-        "low",
+        "strict",
         "--ref",
         "scene=files/tjtj5me9i96c,image/jpeg",
         "--prompt",
@@ -4058,7 +4061,7 @@ test "parseArgs rejects safety options for files commands" {
         "--name",
         "files/abc123",
         "--safety",
-        "high",
+        "permissive",
     }));
     try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
         "nbimg",
@@ -4067,7 +4070,7 @@ test "parseArgs rejects safety options for files commands" {
         "--name",
         "files/abc123",
         "--safety",
-        "low",
+        "strict",
     }));
 }
 

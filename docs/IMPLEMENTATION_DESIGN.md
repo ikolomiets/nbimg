@@ -235,11 +235,12 @@ Argument rules are intentionally narrow:
   only visible in the existing stderr response log. Thought image parts are
   saved beside final output files and use `thought` in the filename.
 - For `gen` and `edit`, `--safety LEVEL` is optional and accepted at most
-  once. Valid levels are `none`, `off`, `high`, `medium`, and `low`. If
-  omitted, `nbimg` preserves its current explicit `BLOCK_NONE` request shape.
-  The levels serialize as `BLOCK_NONE`, `OFF`, `BLOCK_ONLY_HIGH`,
-  `BLOCK_MEDIUM_AND_ABOVE`, and `BLOCK_LOW_AND_ABOVE` respectively, and the
-  selected threshold is applied to every safety category that `nbimg` emits.
+  once. Valid levels are `none`, `off`, `permissive`, `balanced`, and
+  `strict`. If omitted, `nbimg` preserves its current explicit `BLOCK_NONE`
+  request shape. The levels serialize as `BLOCK_NONE`, `OFF`,
+  `BLOCK_ONLY_HIGH`, `BLOCK_MEDIUM_AND_ABOVE`, and `BLOCK_LOW_AND_ABOVE`
+  respectively, and the selected threshold is applied to every safety category
+  that `nbimg` emits.
 - `--safety` controls only Gemini's adjustable request-level
   `safetySettings`. Google's Gemini safety documentation describes additional
   built-in protections that are not controlled by client safety settings and
@@ -346,7 +347,7 @@ thinking options:
        --include-thoughts requests returned thought parts; thought images are saved beside final outputs
 
 safety options:
-       --safety accepts none, off, high, medium, or low
+       --safety accepts none, off, permissive, balanced, or strict
 ```
 
 ## Authentication

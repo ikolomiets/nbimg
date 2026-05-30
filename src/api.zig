@@ -591,9 +591,9 @@ pub const SafetyOptions = struct {
     pub fn fromName(name: []const u8) ?SafetyOptions {
         if (std.mem.eql(u8, name, "none")) return .{ .threshold = .block_none };
         if (std.mem.eql(u8, name, "off")) return .{ .threshold = .off };
-        if (std.mem.eql(u8, name, "high")) return .{ .threshold = .block_only_high };
-        if (std.mem.eql(u8, name, "medium")) return .{ .threshold = .block_medium_and_above };
-        if (std.mem.eql(u8, name, "low")) return .{ .threshold = .block_low_and_above };
+        if (std.mem.eql(u8, name, "permissive")) return .{ .threshold = .block_only_high };
+        if (std.mem.eql(u8, name, "balanced")) return .{ .threshold = .block_medium_and_above };
+        if (std.mem.eql(u8, name, "strict")) return .{ .threshold = .block_low_and_above };
         return null;
     }
 };
@@ -992,10 +992,13 @@ test "default safety settings serialize all supported harm categories as block n
 test "SafetyOptions parses supported CLI names" {
     try std.testing.expectEqual(HarmBlockThreshold.block_none, SafetyOptions.fromName("none").?.threshold);
     try std.testing.expectEqual(HarmBlockThreshold.off, SafetyOptions.fromName("off").?.threshold);
-    try std.testing.expectEqual(HarmBlockThreshold.block_only_high, SafetyOptions.fromName("high").?.threshold);
-    try std.testing.expectEqual(HarmBlockThreshold.block_medium_and_above, SafetyOptions.fromName("medium").?.threshold);
-    try std.testing.expectEqual(HarmBlockThreshold.block_low_and_above, SafetyOptions.fromName("low").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_only_high, SafetyOptions.fromName("permissive").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_medium_and_above, SafetyOptions.fromName("balanced").?.threshold);
+    try std.testing.expectEqual(HarmBlockThreshold.block_low_and_above, SafetyOptions.fromName("strict").?.threshold);
     try std.testing.expect(SafetyOptions.fromName("block-none") == null);
+    try std.testing.expect(SafetyOptions.fromName("high") == null);
+    try std.testing.expect(SafetyOptions.fromName("medium") == null);
+    try std.testing.expect(SafetyOptions.fromName("low") == null);
 }
 
 test "safetySettingsFromOptions applies one threshold to all supported categories" {
