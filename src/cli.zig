@@ -312,7 +312,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         command.generation_options,
         command.request_options,
     ) catch |err| {
-        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        printApiRequestError(err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -357,7 +357,7 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     };
 
     var response = api_edit.generateContent(gpa, init.io, api_key, edit_request) catch |err| {
-        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        printApiRequestError(err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -401,6 +401,18 @@ fn warnIfPriorityDowngraded(
         "warning: requested Gemini service tier priority, but the response reports standard\n",
         .{},
     );
+}
+
+fn printApiRequestError(err: anyerror) void {
+    if (err == error.Timeout) {
+        std.debug.print(
+            "error: API request timed out after {d} seconds\n",
+            .{api.http_request_timeout_seconds},
+        );
+        return;
+    }
+
+    std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
 }
 
 fn shouldReadPromptFromStdin(args: []const [:0]const u8, parse_error: ParseError) bool {
@@ -464,7 +476,7 @@ fn runFilesUpload(
         .bytes = bytes,
         .display_name = command.display_name,
     }) catch |err| {
-        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        printApiRequestError(err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -509,7 +521,7 @@ fn runFilesList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const
 
     while (true) {
         var response = api_files.listFilesPage(gpa, init.io, api_key, page_token) catch |err| {
-            std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+            printApiRequestError(err);
             return exit_failure;
         };
         defer response.deinit(gpa);
@@ -558,7 +570,7 @@ fn runFilesList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const
 
 fn runFilesGet(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: FilesGetCommand) u8 {
     var response = api_files.getFile(gpa, init.io, api_key, command.name) catch |err| {
-        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        printApiRequestError(err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -593,7 +605,7 @@ fn runFilesGet(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const 
 
 fn runFilesDelete(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: FilesDeleteCommand) u8 {
     var response = api_files.deleteFile(gpa, init.io, api_key, command.name) catch |err| {
-        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        printApiRequestError(err);
         return exit_failure;
     };
     defer response.deinit(gpa);

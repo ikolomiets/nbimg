@@ -615,6 +615,11 @@ The full response body is buffered in memory. The current hard limit is:
 
 That limit is represented by `api.max_response_bytes`.
 
+Each Gemini HTTP transaction has a hardcoded 180 second timeout, represented by
+`api.http_request_timeout_seconds`. The timeout covers the network request and
+response body read. If no complete response is available before the deadline,
+transport helpers return `error.Timeout`.
+
 `api.traffic_log_options` is a mutable global switch for API traffic logging.
 The CLI enables response logging by default and request logging from
 `--print-request`; API module defaults stay quiet for direct API callers and
@@ -628,14 +633,16 @@ body:
 {...}
 
 --- nbimg api response ---
+response_time_seconds: 1
 status: 200
 body:
 {...}
 ```
 
-Only the endpoint URL and JSON bodies are logged. Headers are not logged, so the
-`x-goog-api-key` value is not printed. Request JSON is printed exactly. Response
-JSON is parsed for logging and known Gemini base64 payload fields are redacted:
+Only the endpoint URL, whole-second response time, and JSON bodies are logged.
+Headers are not logged, so the `x-goog-api-key` value is not printed. Request
+JSON is printed exactly. Response JSON is parsed for logging and known Gemini
+base64 payload fields are redacted:
 
 ```text
 candidates[].content.parts[].inlineData.data

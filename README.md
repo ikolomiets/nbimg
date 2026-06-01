@@ -16,7 +16,8 @@ The current implementation is intentionally narrow:
   content, service tier, and request storage
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
-- print sanitized response traffic by default, with optional request traffic
+- print whole-second response timing and sanitized response traffic by default,
+  with optional request traffic
 
 See [docs/IMPLEMENTATION_DESIGN.md](docs/IMPLEMENTATION_DESIGN.md) for the
 current implementation details.
@@ -359,6 +360,8 @@ zig-out/bin/nbimg gen \
 Response traffic logs go to stderr by default. Use `--print-request` to also
 log request traffic. `--print-request` is accepted by all commands; for
 `files`, place it after the `upload`, `list`, `get`, or `delete` subcommand.
+Response logs include `response_time_seconds` before HTTP status and body.
+Gemini HTTP transactions time out after 180 seconds.
 Command results, such as generated filenames, Files API metadata JSON, or
 delete `OK`, go to stdout.
 

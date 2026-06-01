@@ -4,6 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const max_response_bytes = 64 * 1024 * 1024;
+pub const http_request_timeout_seconds: i64 = 180;
 pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
 pub const canonical_cached_content_name_prefix = "cachedContents/";
@@ -815,6 +816,12 @@ pub const HttpResponse = struct {
 pub const HttpResponseWithUploadUrl = struct {
     response: HttpResponse,
     upload_url: ?[]u8 = null,
+
+    pub fn deinit(response: *HttpResponseWithUploadUrl, gpa: std.mem.Allocator) void {
+        response.response.deinit(gpa);
+        if (response.upload_url) |upload_url| gpa.free(upload_url);
+        response.* = undefined;
+    }
 };
 
 pub const TrafficLogOptions = struct {
@@ -1561,6 +1568,32 @@ pub fn postJson(
     url: []const u8,
     request_json: []const u8,
 ) !HttpResponse {
+    var timed_response = try runRequestWithTimeout(
+        gpa,
+        io,
+        httpRequestTimeoutDuration(),
+        postJsonRaw,
+        .{ gpa, io, api_key, url, request_json },
+    );
+    errdefer timed_response.response.deinit(gpa);
+
+    try logResponseBody(
+        gpa,
+        io,
+        timed_response.response_time_seconds,
+        timed_response.response.status,
+        timed_response.response.body,
+    );
+    return timed_response.response;
+}
+
+fn postJsonRaw(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+    request_json: []const u8,
+) !TimedHttpResponse {
     assert(api_key.len > 0);
     assert(url.len > 0);
     assert(request_json.len > 0);
@@ -1580,6 +1613,7 @@ pub fn postJson(
 
     try logRequest(io, url, .{ .text = request_json });
 
+    const started = responseTimerStart(io);
     var response_writer: std.Io.Writer = .fixed(response_buffer);
     const result = try client.fetch(.{
         .location = .{ .url = url },
@@ -1594,11 +1628,13 @@ pub fn postJson(
     });
 
     const response_body = response_writer.buffered();
-    try logResponseBody(gpa, io, result.status, response_body);
-
+    const response_time_seconds = roundedResponseTimeSeconds(io, started);
     return .{
-        .status = result.status,
-        .body = try gpa.dupe(u8, response_body),
+        .response = .{
+            .status = result.status,
+            .body = try gpa.dupe(u8, response_body),
+        },
+        .response_time_seconds = response_time_seconds,
     };
 }
 
@@ -1627,6 +1663,32 @@ fn requestJsonWithoutBody(
     url: []const u8,
     method: std.http.Method,
 ) !HttpResponse {
+    var timed_response = try runRequestWithTimeout(
+        gpa,
+        io,
+        httpRequestTimeoutDuration(),
+        requestJsonWithoutBodyRaw,
+        .{ gpa, io, api_key, url, method },
+    );
+    errdefer timed_response.response.deinit(gpa);
+
+    try logResponseBody(
+        gpa,
+        io,
+        timed_response.response_time_seconds,
+        timed_response.response.status,
+        timed_response.response.body,
+    );
+    return timed_response.response;
+}
+
+fn requestJsonWithoutBodyRaw(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+    method: std.http.Method,
+) !TimedHttpResponse {
     assert(api_key.len > 0);
     assert(url.len > 0);
 
@@ -1645,6 +1707,7 @@ fn requestJsonWithoutBody(
 
     try logRequest(io, url, .empty);
 
+    const started = responseTimerStart(io);
     var response_writer: std.Io.Writer = .fixed(response_buffer);
     const result = try client.fetch(.{
         .location = .{ .url = url },
@@ -1657,11 +1720,13 @@ fn requestJsonWithoutBody(
     });
 
     const response_body = response_writer.buffered();
-    try logResponseBody(gpa, io, result.status, response_body);
-
+    const response_time_seconds = roundedResponseTimeSeconds(io, started);
     return .{
-        .status = result.status,
-        .body = try gpa.dupe(u8, response_body),
+        .response = .{
+            .status = result.status,
+            .body = try gpa.dupe(u8, response_body),
+        },
+        .response_time_seconds = response_time_seconds,
     };
 }
 
@@ -1675,6 +1740,35 @@ pub fn requestWithBody(
     body: []const u8,
     options: RequestWithBodyOptions,
 ) !HttpResponseWithUploadUrl {
+    var timed_response = try runRequestWithTimeout(
+        gpa,
+        client.io,
+        httpRequestTimeoutDuration(),
+        requestWithBodyRaw,
+        .{ gpa, client, method, url, content_type, extra_headers, body, options },
+    );
+    errdefer timed_response.response.deinit(gpa);
+
+    try logResponseBody(
+        gpa,
+        client.io,
+        timed_response.response_time_seconds,
+        timed_response.response.response.status,
+        timed_response.response.response.body,
+    );
+    return timed_response.response;
+}
+
+fn requestWithBodyRaw(
+    gpa: std.mem.Allocator,
+    client: *std.http.Client,
+    method: std.http.Method,
+    url: []const u8,
+    content_type: []const u8,
+    extra_headers: []const std.http.Header,
+    body: []const u8,
+    options: RequestWithBodyOptions,
+) !TimedHttpResponseWithUploadUrl {
     assert(url.len > 0);
     assert(content_type.len > 0);
     assert(body.len > 0);
@@ -1693,6 +1787,7 @@ pub fn requestWithBody(
 
     try logRequest(client.io, url, options.request_body_log);
 
+    const started = responseTimerStart(client.io);
     req.transfer_encoding = .{ .content_length = body.len };
     var body_writer = try req.sendBodyUnflushed(&.{});
     try body_writer.writer.writeAll(body);
@@ -1719,15 +1814,125 @@ pub fn requestWithBody(
     const response_body = try readHttpBody(gpa, &response);
     errdefer gpa.free(response_body);
 
-    try logResponseBody(gpa, client.io, status, response_body);
-
+    const response_time_seconds = roundedResponseTimeSeconds(client.io, started);
     return .{
         .response = .{
-            .status = status,
-            .body = response_body,
+            .response = .{
+                .status = status,
+                .body = response_body,
+            },
+            .upload_url = upload_url,
         },
-        .upload_url = upload_url,
+        .response_time_seconds = response_time_seconds,
     };
+}
+
+const TimedHttpResponse = struct {
+    response: HttpResponse,
+    response_time_seconds: u64,
+
+    fn deinit(response: *TimedHttpResponse, gpa: std.mem.Allocator) void {
+        response.response.deinit(gpa);
+        response.* = undefined;
+    }
+};
+
+const TimedHttpResponseWithUploadUrl = struct {
+    response: HttpResponseWithUploadUrl,
+    response_time_seconds: u64,
+
+    fn deinit(response: *TimedHttpResponseWithUploadUrl, gpa: std.mem.Allocator) void {
+        response.response.deinit(gpa);
+        response.* = undefined;
+    }
+};
+
+fn httpRequestTimeoutDuration() std.Io.Duration {
+    return .fromSeconds(http_request_timeout_seconds);
+}
+
+fn httpTimeoutTask(io: std.Io, timeout: std.Io.Duration) anyerror!void {
+    try std.Io.sleep(io, timeout, .awake);
+    return error.Timeout;
+}
+
+fn runRequestWithTimeout(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    timeout: std.Io.Duration,
+    comptime request_fn: anytype,
+    args: std.meta.ArgsTuple(@TypeOf(request_fn)),
+) !@typeInfo(@typeInfo(@TypeOf(request_fn)).@"fn".return_type.?).error_union.payload {
+    const RequestResult = @typeInfo(@TypeOf(request_fn)).@"fn".return_type.?;
+    const TimeoutResult = anyerror!void;
+    const SelectResult = union(enum) {
+        request: RequestResult,
+        timeout: TimeoutResult,
+    };
+
+    var select_buffer: [2]SelectResult = undefined;
+    var select: std.Io.Select(SelectResult) = .init(io, &select_buffer);
+
+    try select.concurrent(.request, request_fn, args);
+    select.concurrent(.timeout, httpTimeoutTask, .{ io, timeout }) catch |err| {
+        cancelTimedRequest(gpa, &select);
+        return err;
+    };
+
+    const first = select.await() catch |err| {
+        cancelTimedRequest(gpa, &select);
+        return err;
+    };
+
+    switch (first) {
+        .request => |request_result| {
+            const response = request_result catch |err| {
+                cancelTimedRequest(gpa, &select);
+                return err;
+            };
+            cancelTimedRequest(gpa, &select);
+            return response;
+        },
+        .timeout => |timeout_result| {
+            timeout_result catch |err| {
+                cancelTimedRequest(gpa, &select);
+                return err;
+            };
+            unreachable;
+        },
+    }
+}
+
+fn cancelTimedRequest(gpa: std.mem.Allocator, select: anytype) void {
+    while (select.cancel()) |result| {
+        switch (result) {
+            .request => |request_result| {
+                if (request_result) |response| {
+                    var mutable_response = response;
+                    mutable_response.deinit(gpa);
+                } else |_| {}
+            },
+            .timeout => {},
+        }
+    }
+}
+
+fn responseTimerStart(io: std.Io) std.Io.Clock.Timestamp {
+    return .now(io, .awake);
+}
+
+fn roundedResponseTimeSeconds(io: std.Io, started: std.Io.Clock.Timestamp) u64 {
+    const elapsed = started.untilNow(io).raw;
+    return roundDurationToSeconds(elapsed);
+}
+
+fn roundDurationToSeconds(duration: std.Io.Duration) u64 {
+    const half_second_ns: i96 = std.time.ns_per_s / 2;
+    const duration_ns = @max(@as(i96, 0), duration.nanoseconds);
+    const whole_seconds = @divTrunc(duration_ns, std.time.ns_per_s);
+    const remainder_ns = @rem(duration_ns, std.time.ns_per_s);
+    const rounded_seconds = whole_seconds + @intFromBool(remainder_ns >= half_second_ns);
+    return std.math.cast(u64, rounded_seconds) orelse std.math.maxInt(u64);
 }
 
 fn readHttpBody(gpa: std.mem.Allocator, response: *std.http.Client.Response) ![]u8 {
@@ -1768,16 +1973,14 @@ fn logRequest(io: std.Io, url: []const u8, body: RequestBodyLog) !void {
 fn logResponseBody(
     gpa: std.mem.Allocator,
     io: std.Io,
+    response_time_seconds: u64,
     status: std.http.Status,
     response_body: []const u8,
 ) !void {
     if (!traffic_log_options.print_response) return;
 
-    try writeStderrFormat(
-        io,
-        "--- nbimg api response ---\nstatus: {d}\nbody:\n",
-        .{@intFromEnum(status)},
-    );
+    var response_log_header_buffer: [128]u8 = undefined;
+    try writeStderr(io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
     if (response_body.len == 0) {
         try writeStderr(io, "<empty>\n");
         return;
@@ -1794,6 +1997,18 @@ fn logResponseBody(
     defer gpa.free(log_body);
     try writeStderr(io, log_body);
     try writeStderr(io, "\n");
+}
+
+fn responseLogHeader(
+    buffer: []u8,
+    response_time_seconds: u64,
+    status: std.http.Status,
+) []const u8 {
+    return std.fmt.bufPrint(
+        buffer,
+        "--- nbimg api response ---\nresponse_time_seconds: {d}\nstatus: {d}\nbody:\n",
+        .{ response_time_seconds, @intFromEnum(status) },
+    ) catch unreachable;
 }
 
 fn writeStderr(io: std.Io, bytes: []const u8) !void {
@@ -1948,6 +2163,198 @@ test "apiKeyFromMap rejects empty API key" {
     try environ_map.put(api_key_env_name, "");
 
     try std.testing.expectError(error.EmptyApiKey, apiKeyFromMap(&environ_map));
+}
+
+test "responseLogHeader prints response time before status" {
+    var buffer: [128]u8 = undefined;
+    const header = responseLogHeader(&buffer, 12, .ok);
+
+    try std.testing.expectEqualStrings(
+        "--- nbimg api response ---\nresponse_time_seconds: 12\nstatus: 200\nbody:\n",
+        header,
+    );
+}
+
+test "roundDurationToSeconds rounds to nearest whole second" {
+    try std.testing.expectEqual(@as(u64, 0), roundDurationToSeconds(.fromMilliseconds(499)));
+    try std.testing.expectEqual(@as(u64, 1), roundDurationToSeconds(.fromMilliseconds(500)));
+    try std.testing.expectEqual(@as(u64, 1), roundDurationToSeconds(.fromMilliseconds(1499)));
+    try std.testing.expectEqual(@as(u64, 2), roundDurationToSeconds(.fromMilliseconds(1500)));
+}
+
+fn testImmediateTimedResponse(gpa: std.mem.Allocator) !TimedHttpResponse {
+    return .{
+        .response = .{
+            .status = .ok,
+            .body = try gpa.dupe(u8, "{}"),
+        },
+        .response_time_seconds = 0,
+    };
+}
+
+fn testSleepingTimedResponse(gpa: std.mem.Allocator, io: std.Io) !TimedHttpResponse {
+    try std.Io.sleep(io, .fromSeconds(60), .awake);
+    return .{
+        .response = .{
+            .status = .ok,
+            .body = try gpa.dupe(u8, "{}"),
+        },
+        .response_time_seconds = 60,
+    };
+}
+
+fn testLateTimedResponse(gpa: std.mem.Allocator, io: std.Io) !TimedHttpResponse {
+    const started = responseTimerStart(io);
+    while (started.untilNow(io).raw.nanoseconds < 20 * std.time.ns_per_ms) {}
+
+    return .{
+        .response = .{
+            .status = .ok,
+            .body = try gpa.dupe(u8, "{}"),
+        },
+        .response_time_seconds = 0,
+    };
+}
+
+test "runRequestWithTimeout returns response before timeout" {
+    const gpa = std.testing.allocator;
+    var response = try runRequestWithTimeout(
+        gpa,
+        std.testing.io,
+        .fromSeconds(1),
+        testImmediateTimedResponse,
+        .{gpa},
+    );
+    defer response.deinit(gpa);
+
+    try std.testing.expectEqual(std.http.Status.ok, response.response.status);
+    try std.testing.expectEqualStrings("{}", response.response.body);
+}
+
+test "runRequestWithTimeout returns timeout before response" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        error.Timeout,
+        runRequestWithTimeout(
+            gpa,
+            std.testing.io,
+            .fromMilliseconds(1),
+            testSleepingTimedResponse,
+            .{ gpa, std.testing.io },
+        ),
+    );
+}
+
+test "runRequestWithTimeout deinitializes late response" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        error.Timeout,
+        runRequestWithTimeout(
+            gpa,
+            std.testing.io,
+            .fromMilliseconds(1),
+            testLateTimedResponse,
+            .{ gpa, std.testing.io },
+        ),
+    );
+}
+
+fn listenLocalHttp(io: std.Io) !std.Io.net.Server {
+    const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    return address.listen(io, .{
+        .kernel_backlog = 1,
+        .reuse_address = true,
+    });
+}
+
+fn localHttpUrl(buffer: []u8, server: *const std.Io.net.Server) ![]const u8 {
+    return std.fmt.bufPrint(
+        buffer,
+        "http://127.0.0.1:{d}/test",
+        .{server.socket.address.getPort()},
+    );
+}
+
+fn acceptAndWriteHttpResponse(io: std.Io, server: *std.Io.net.Server) !void {
+    var stream = try server.accept(io);
+    defer stream.close(io);
+
+    var write_buffer: [256]u8 = undefined;
+    var writer = stream.writer(io, &write_buffer);
+    try writer.interface.writeAll(
+        "HTTP/1.1 200 OK\r\n" ++
+            "content-length: 2\r\n" ++
+            "connection: close\r\n" ++
+            "\r\n" ++
+            "{}",
+    );
+    try writer.interface.flush();
+}
+
+fn acceptAndStaySilent(io: std.Io, server: *std.Io.net.Server) !void {
+    var stream = try server.accept(io);
+    defer stream.close(io);
+
+    try std.Io.sleep(io, .fromSeconds(4), .awake);
+}
+
+fn cancelServerFuture(io: std.Io, future: anytype) void {
+    future.cancel(io) catch |err| switch (err) {
+        error.Canceled => {},
+        else => {},
+    };
+}
+
+test "runRequestWithTimeout completes against local HTTP response" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try listenLocalHttp(io);
+    defer server.deinit(io);
+
+    var server_future = try io.concurrent(acceptAndWriteHttpResponse, .{ io, &server });
+    defer cancelServerFuture(io, &server_future);
+
+    var url_buffer: [128]u8 = undefined;
+    const url = try localHttpUrl(&url_buffer, &server);
+
+    var response = try runRequestWithTimeout(
+        gpa,
+        io,
+        .fromSeconds(2),
+        postJsonRaw,
+        .{ gpa, io, "test-key", url, "{}" },
+    );
+    defer response.deinit(gpa);
+
+    try server_future.await(io);
+    try std.testing.expectEqual(std.http.Status.ok, response.response.status);
+    try std.testing.expectEqualStrings("{}", response.response.body);
+}
+
+test "runRequestWithTimeout times out against silent local HTTP connection" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try listenLocalHttp(io);
+    defer server.deinit(io);
+
+    var server_future = try io.concurrent(acceptAndStaySilent, .{ io, &server });
+    defer cancelServerFuture(io, &server_future);
+
+    var url_buffer: [128]u8 = undefined;
+    const url = try localHttpUrl(&url_buffer, &server);
+
+    try std.testing.expectError(
+        error.Timeout,
+        runRequestWithTimeout(
+            gpa,
+            io,
+            .fromSeconds(2),
+            postJsonRaw,
+            .{ gpa, io, "test-key", url, "{}" },
+        ),
+    );
 }
 
 test "sanitizeResponseLogBody redacts inlineData data" {
