@@ -698,7 +698,7 @@ test "buildCountTokensRequest wraps edit generate content request" {
     try std.testing.expect(std.mem.startsWith(
         u8,
         request,
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image\",",
     ));
     try std.testing.expect(std.mem.indexOf(u8, request, "\"file_data\"") != null);
 

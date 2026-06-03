@@ -300,7 +300,7 @@ test "buildCountTokensRequest wraps fixed generate content request" {
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}}",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}}",
         request,
     );
 
@@ -318,7 +318,7 @@ test "buildCountTokensRequest wraps request-level controls inside generate conte
     defer gpa.free(request);
 
     try std.testing.expect(std.mem.indexOf(u8, request, "\"generateContentRequest\":{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"model\":\"models/gemini-3.1-flash-image-preview\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request, "\"model\":\"models/gemini-3.1-flash-image\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"systemInstruction\":{\"parts\":[{\"text\":\"Use a precise editorial style.\"}]}") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"serviceTier\":\"standard\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "\"store\":true") != null);

@@ -9,7 +9,7 @@ I’d design the tool around Google’s Gemini native image generation API, wher
 | CLI alias | API model ID                     | Best use                                                                 |
 | --------- | -------------------------------- | ------------------------------------------------------------------------ |
 | `nano`    | `gemini-2.5-flash-image`         | Fast, low-latency image generation/editing                               |
-| `nano2`   | `gemini-3.1-flash-image-preview` | High-volume generation with newer Gemini 3 image features                |
+| `nano2`   | `gemini-3.1-flash-image`         | High-volume generation with newer Gemini 3 image features                |
 | `pro`     | `gemini-3-pro-image-preview`     | Professional asset generation, better text rendering, stronger reasoning |
 
 Google’s docs describe Nano Banana as Gemini native image generation, list these three models, and state that generated images include SynthID watermarking. ([Google AI for Developers][1])
@@ -120,7 +120,7 @@ A practical matrix:
 
 | Feature                       |                            `nano` / 2.5 Flash Image |                                         `nano2` / 3.1 Flash Image |                                      `pro` / 3 Pro Image |
 | ----------------------------- | --------------------------------------------------: | ----------------------------------------------------------------: | -------------------------------------------------------: |
-| Model ID                      |                            `gemini-2.5-flash-image` |                                  `gemini-3.1-flash-image-preview` |                             `gemini-3-pro-image-preview` |
+| Model ID                      |                            `gemini-2.5-flash-image` |                                          `gemini-3.1-flash-image` |                             `gemini-3-pro-image-preview` |
 | Image sizes                   |                               Fixed 1K-style output |                                           `512`, `1K`, `2K`, `4K` |                                         `1K`, `2K`, `4K` |
 | Aspect ratios                 | Common ratios such as `1:1`, `16:9`, `9:16`, `21:9` | Common ratios plus extreme ratios like `1:4`, `4:1`, `1:8`, `8:1` |     Common ratios, excluding the extreme 3.1-only ratios |
 | Google Search grounding       |                                                  No |                                                               Yes |                                                          |
@@ -136,7 +136,7 @@ The CLI should support both friendly aliases and exact model names:
 --model nano
 --model nano2
 --model pro
---model gemini-3.1-flash-image-preview
+--model gemini-3.1-flash-image
 ```
 
 ---
@@ -691,7 +691,7 @@ State file:
 
 ```json
 {
-  "model": "gemini-3.1-flash-image-preview",
+  "model": "gemini-3.1-flash-image",
   "generation_config": {
     "responseModalities": ["TEXT", "IMAGE"],
     "responseFormat": {
@@ -852,7 +852,7 @@ fn parseMediaPartSpec(s: []const u8) !InputPartSpec;
 Use excellent diagnostics:
 
 ```text
-error: --size 512 is only supported by gemini-3.1-flash-image-preview
+error: --size 512 is only supported by gemini-3.1-flash-image
 
 selected model:
   pro -> gemini-3-pro-image-preview

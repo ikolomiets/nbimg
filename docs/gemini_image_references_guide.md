@@ -10,10 +10,10 @@ The first `--ref` is always the image to edit and is labeled `BASE_IMAGE` by
 `CHARACTER_HERO`, `OBJECT_BAG`, or `STYLE_POSTER`, and the final prompt should
 refer to those symbolic labels instead of local filenames.
 
-Google's current docs describe `gemini-3.1-flash-image-preview` as Nano Banana
-2 / Gemini 3.1 Flash Image, with image generation and editing support and up to
-14 reference images, including up to 10 object images and up to 4 character
-references for Gemini 3.1 Flash Image Preview. ([Google AI for Developers][1])
+Google's current docs describe `gemini-3.1-flash-image` as Nano Banana 2 /
+Gemini 3.1 Flash Image, with image generation and editing support and up to 14
+reference images, including up to 10 object images and up to 4 character
+references for Gemini 3.1 Flash Image. ([Google AI for Developers][1])
 
 ---
 

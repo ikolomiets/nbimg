@@ -591,14 +591,14 @@ or MIME type is stale or wrong.
 Only one model is currently wired:
 
 ```text
-gemini-3.1-flash-image-preview
+gemini-3.1-flash-image
 ```
 
 The internal model enum names it `nano2`. `gen.generateContent` and
 `edit.generateContent` send `POST` requests to:
 
 ```text
-https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent
+https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent
 ```
 
 The HTTP request uses:
@@ -771,7 +771,7 @@ and stdout for metadata JSON or delete `OK`.
 shape to Gemini's `countTokens` endpoint:
 
 ```text
-https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens
+https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:countTokens
 ```
 
 The command-level request body is built by `gen.buildCountTokensRequest` or
@@ -783,7 +783,7 @@ to add the model field that Google requires inside nested
 ```json
 {
   "generateContentRequest": {
-    "model": "models/gemini-3.1-flash-image-preview",
+    "model": "models/gemini-3.1-flash-image",
     "contents": [
       {
         "parts": [

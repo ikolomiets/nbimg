@@ -19,13 +19,13 @@ pub const Model = enum {
 
     pub fn apiName(model: Model) []const u8 {
         return switch (model) {
-            .nano2 => "gemini-3.1-flash-image-preview",
+            .nano2 => "gemini-3.1-flash-image",
         };
     }
 
     pub fn resourceName(model: Model) []const u8 {
         return switch (model) {
-            .nano2 => "models/gemini-3.1-flash-image-preview",
+            .nano2 => "models/gemini-3.1-flash-image",
         };
     }
 };
@@ -839,13 +839,13 @@ pub fn apiKeyFromMap(environ_map: *const std.process.Environ.Map) ApiKeyError![]
 
 pub fn generateContentUrl(model: Model) []const u8 {
     return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent",
+        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent",
     };
 }
 
 pub fn countTokensUrl(model: Model) []const u8 {
     return switch (model) {
-        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:countTokens",
+        .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:countTokens",
     };
 }
 
@@ -1091,7 +1091,7 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
     defer gpa.free(request);
 
     try std.testing.expectEqualStrings(
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image-preview\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image\",\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
         request,
     );
 
