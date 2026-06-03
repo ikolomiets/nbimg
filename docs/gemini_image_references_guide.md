@@ -351,6 +351,14 @@ If a reference fails, first verify:
 3. The file still exists in Gemini Files API storage.
 4. The first `--ref` has no custom label.
 
+If Gemini returns HTTP 403 with `PERMISSION_DENIED`, such as
+`{"error":{"code":403,...,"status":"PERMISSION_DENIED"}}`, treat the referenced
+`files/ID` as inaccessible. For previously valid references, this usually means
+the upload expired or was deleted, though it can also mean the file belongs to a
+different API key/project. Check `expirationTime` in upload/list/get metadata,
+run `nbimg files list` or `nbimg files get --name files/ID`, and re-upload the
+local image before retrying `edit`.
+
 These are invalid reference forms:
 
 ```sh
@@ -393,6 +401,7 @@ Invalid because `POSE_MAIN` is parsed as the role. Use
 | Using `--display-name` just to label references | Display names are metadata, not prompt labels | Omit `--display-name`; label references with `--ref role:LABEL=...` |
 | Referring to first/second/third image | Brittle with many references | Use `BASE_IMAGE`, `CHARACTER_A`, `OBJECT_A`, or explicit labels |
 | Labeling the first reference | The first reference is always `BASE_IMAGE` | Use `--ref scene=files/base,image/jpeg` |
+| Reusing an expired upload | Gemini may return HTTP 403 `PERMISSION_DENIED` for inaccessible `files/ID` values | Check `expirationTime`; re-upload and replace the `files/ID` |
 | Not saying what to ignore | Background, pose, or lighting may leak | Add repeatable `--do-not` boundaries |
 | Mixing style and content | Style image subject may appear in output | Use `--ref style:STYLE_NAME=...` and exclude subject/layout |
 | Too many unrelated references | Reference binding weakens | Use only references that contribute to the output |
@@ -409,16 +418,18 @@ Before running `nbimg edit`, verify:
    name to remain the local filename.
 3. Every edit reference uses `files/ID,MIME` copied from upload/list/get
    metadata.
-4. The first `--ref` is the intended edit target and has no custom label.
-5. Later references use the most specific role: `character`, `object`,
+4. Every reused upload is still before its `expirationTime`; if not, upload the
+   local image again and update the `files/ID`.
+5. The first `--ref` is the intended edit target and has no custom label.
+6. Later references use the most specific role: `character`, `object`,
    `style`, `pose`, `composition`, `background`, `texture`, or `image`.
-6. The prompt references symbolic labels, not local filenames.
-7. `--preserve` captures what must remain from `BASE_IMAGE`.
-8. `--do-not` captures unwanted context from later references.
-9. The request stays within current limits: 14 total images, 4 character
+7. The prompt references symbolic labels, not local filenames.
+8. `--preserve` captures what must remain from `BASE_IMAGE`.
+9. `--do-not` captures unwanted context from later references.
+10. The request stays within current limits: 14 total images, 4 character
    references including a character base, and 10 object references including an
    object base.
-10. Output controls such as `--aspect-ratio`, `--image-size`, and `--out-dir`
+11. Output controls such as `--aspect-ratio`, `--image-size`, and `--out-dir`
     are set when the result needs a specific shape, resolution tier, or
     destination.
 

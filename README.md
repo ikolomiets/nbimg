@@ -244,7 +244,10 @@ and is always labeled `BASE_IMAGE`; omit a custom label on that first reference.
 Resource names must use canonical `files/...` form, and bare file IDs are
 rejected. Supported MIME values are `image/jpeg`, `image/png`, and `image/webp`.
 The command derives the Gemini File API URI from the `files/...` name and does
-not call `files get` before generation.
+not call `files get` before generation. If a referenced upload is expired,
+deleted, missing, or belongs to a different API key/project, Gemini may return
+HTTP 403 with `PERMISSION_DENIED`; re-upload the local image and replace the
+stale `files/ID` reference.
 
 Generic edit references use this syntax:
 
@@ -348,6 +351,12 @@ command-specific options.
 
 The upload, list, and get commands print JSON metadata to stdout.
 The delete command prints `OK` on success.
+
+Files API uploads are temporary. Treat `expirationTime` in upload/list/get
+metadata as the deadline for reusing a `files/ID` reference. A response like
+`{"error":{"code":403,...,"status":"PERMISSION_DENIED"}}` from `files get`,
+`files delete`, or `edit` is a strong signal that the file is no longer
+accessible; check current uploads with `files list` or upload the image again.
 
 Debug traffic:
 

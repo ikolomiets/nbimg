@@ -257,6 +257,10 @@ Argument rules are intentionally narrow:
 - `edit` does not call `files get` before generation. The CLI derives
   `file_uri` by appending the canonical resource name to
   `https://generativelanguage.googleapis.com/v1beta/`.
+- Expired, deleted, missing, or cross-project `files/...` references are not
+  detected locally. Gemini commonly reports inaccessible file resources as HTTP
+  403 with `PERMISSION_DENIED`; callers should check `expirationTime` and
+  re-upload stale references.
 - `edit` accepts repeatable generic references with
   `--ref ROLE[:LABEL]=files/ID,MIME`, where `ROLE` is `scene`, `character`,
   `object`, `style`, `pose`, `composition`, `background`, `texture`, or
@@ -741,6 +745,13 @@ ID path segment is percent-encoded. A successful response is decoded as one
 File metadata object and printed to stdout as a pretty-printed JSON object with
 the same camelCase field names returned by Gemini.
 
+Non-OK responses are not parsed as File metadata. They are surfaced as normal
+API failures with the HTTP status and raw response body, and the CLI exits with
+failure. For inaccessible file resources, Gemini may return HTTP 403
+`PERMISSION_DENIED`; this is a likely indication that a previously uploaded
+reference has expired or been deleted, but it can also indicate a missing file
+or a file from another API key/project.
+
 Deleting one file sends:
 
 ```text
@@ -754,7 +765,8 @@ live delete test asserts that Gemini currently returns an empty JSON object,
 observed as `{}` plus trailing whitespace. Missing or already-deleted files are
 surfaced as normal non-OK API failures, preserving the response body in
 diagnostics; live validation currently observes HTTP 403 `PERMISSION_DENIED`
-for those cases.
+for those cases. The same status is expected for expired uploads that are no
+longer usable as edit references.
 
 Files API traffic logging uses the same global logging switch as `gen`.
 Headers are not logged. JSON request and response bodies are logged to stderr

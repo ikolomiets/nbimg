@@ -67,7 +67,7 @@ Use generation controls only when they serve the task:
 
 ## Files Workflow
 
-Gemini Files is temporary storage for image references. Uploaded files are available only for a few days; use `expirationTime` from upload/list/get output to decide whether a reference must be re-uploaded. If `nbimg edit` refers to a file that no longer exists, the Gemini Image API may report it as a `"permission denied"` error.
+Gemini Files is temporary storage for image references. Uploaded files are available only for a few days; use `expirationTime` from upload/list/get output to decide whether a reference must be re-uploaded. If `nbimg edit`, `files get`, or `files delete` returns HTTP 403 with `PERMISSION_DENIED` for a `files/ID`, treat it as a strong signal that the upload is inaccessible, commonly because it expired or was deleted. It can also mean the file belongs to a different API key/project. Check current uploads, then re-upload the local image and replace the stale `files/ID`.
 
 Check existing uploads before adding a new one:
 
@@ -262,7 +262,7 @@ Check stdout for command results and stderr for request/response diagnostics. If
 
 - The reference uses canonical `files/ID` form, not a local path or bare ID.
 - The MIME is exactly `image/jpeg`, `image/png`, or `image/webp`.
-- The file still exists in Gemini Files API storage; expired or deleted files may trigger a Gemini Image API `"permission denied"` error.
+- The file still exists in Gemini Files API storage; HTTP 403 `PERMISSION_DENIED` usually means the `files/ID` is inaccessible, often expired or deleted.
 - The first `--ref` has no custom label.
 - Custom labels start with an ASCII uppercase letter and contain only ASCII uppercase letters, digits, and underscores.
 - Role and label are not swapped; use `pose:POSE_MAIN=files/a,image/jpeg`, not `POSE_MAIN=files/a,image/jpeg`.
