@@ -13,6 +13,7 @@ const exit_failure = 1;
 const exit_usage = 2;
 const exit_response_parse = 3;
 const max_prompt_bytes = 16 * 1024;
+const max_batch_entry_bytes = 4 * 1024 * 1024;
 const live_edit_sample_image_path = "sample_images/good_night.jpeg";
 const live_edit_upload_display_name = "nbimg live edit request validity";
 const live_edit_prompt = "change visual style to Broadway musical";
@@ -27,6 +28,8 @@ pub const GenCommand = struct {
     generation_options: api.GenerationOptions = .{},
     request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
+    batch_file: ?[]const u8 = null,
+    batch_key: ?[]const u8 = null,
 };
 
 pub const max_edit_constraints = 16;
@@ -40,6 +43,8 @@ pub const EditCommand = struct {
     generation_options: api.GenerationOptions = .{},
     request_options: api.RequestOptions = .{},
     out_dir: ?[]const u8 = null,
+    batch_file: ?[]const u8 = null,
+    batch_key: ?[]const u8 = null,
     base: api_edit.UploadedImage,
     base_role: api_edit.ReferenceRole = .scene,
     references: [api_edit.max_references]api_edit.Reference = undefined,
@@ -202,6 +207,14 @@ pub const ParseError = error{
     EmptyOutDir,
     DuplicateOutDir,
     OutDirUnsupported,
+    MissingBatchFile,
+    EmptyBatchFile,
+    DuplicateBatchFile,
+    MissingBatchKey,
+    EmptyBatchKey,
+    DuplicateBatchKey,
+    BatchKeyRequiresBatchFile,
+    BatchFileConflictsOutDir,
 };
 
 const max_display_name_codepoints = 512;
@@ -300,6 +313,32 @@ pub fn run(init: std.process.Init) u8 {
 }
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
+    if (command.batch_file) |batch_file| {
+        const generate_request_json = api_gen.buildGenerateRequest(
+            gpa,
+            command.prompt,
+            command.output_options,
+            command.grounding_options,
+            command.thinking_options,
+            command.safety_options,
+            command.generation_options,
+            command.request_options,
+        ) catch |err| {
+            std.debug.print("error: failed to build generation request: {s}\n", .{@errorName(err)});
+            return exit_failure;
+        };
+        defer gpa.free(generate_request_json);
+
+        return runBatchRequest(
+            init,
+            gpa,
+            api_key,
+            batch_file,
+            command.batch_key,
+            generate_request_json,
+        );
+    }
+
     var response = api_gen.generateContent(
         gpa,
         init.io,
@@ -356,6 +395,23 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         .do_nots = command.doNotSlice(),
     };
 
+    if (command.batch_file) |batch_file| {
+        const generate_request_json = api_edit.buildGenerateRequest(gpa, edit_request) catch |err| {
+            std.debug.print("error: failed to build edit request: {s}\n", .{@errorName(err)});
+            return exit_failure;
+        };
+        defer gpa.free(generate_request_json);
+
+        return runBatchRequest(
+            init,
+            gpa,
+            api_key,
+            batch_file,
+            command.batch_key,
+            generate_request_json,
+        );
+    }
+
     var response = api_edit.generateContent(gpa, init.io, api_key, edit_request) catch |err| {
         printApiRequestError(err);
         return exit_failure;
@@ -383,6 +439,443 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
     };
 
     return exit_success;
+}
+
+const BatchAppendResult = struct {
+    key: []u8,
+
+    fn deinit(result: *BatchAppendResult, gpa: std.mem.Allocator) void {
+        gpa.free(result.key);
+        result.* = undefined;
+    }
+};
+
+fn runBatchRequest(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    api_key: []const u8,
+    batch_file: []const u8,
+    batch_key: ?[]const u8,
+    generate_request_json: []const u8,
+) u8 {
+    const count_tokens_json = api.buildCountTokensRequestFromGenerateContentJson(
+        gpa,
+        .nano2,
+        generate_request_json,
+    ) catch |err| {
+        std.debug.print("error: failed to build countTokens request: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer gpa.free(count_tokens_json);
+
+    var response = api.postCountTokensJson(
+        gpa,
+        init.io,
+        api_key,
+        .nano2,
+        count_tokens_json,
+    ) catch |err| {
+        printApiRequestError(err);
+        return exit_failure;
+    };
+    defer response.deinit(gpa);
+
+    if (response.status != .ok) {
+        std.debug.print(
+            "error: countTokens validation failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(response.status), response.body },
+        );
+        return exit_failure;
+    }
+
+    const token_result = api.decodeCountTokensResponse(gpa, response.body) catch |err| {
+        std.debug.print(
+            "error: failed to parse countTokens response: {s}\n{s}\n",
+            .{ @errorName(err), response.body },
+        );
+        return exit_response_parse;
+    };
+
+    var append_result = appendBatchRequest(
+        gpa,
+        init.io,
+        batch_file,
+        batch_key,
+        generate_request_json,
+    ) catch |err| {
+        switch (err) {
+            error.DuplicateBatchKey => std.debug.print(
+                "error: batch key already exists in {s}\n",
+                .{batch_file},
+            ),
+            error.InvalidBatchFile => std.debug.print(
+                "error: existing batch file is not valid Batch API JSONL: {s}\n",
+                .{batch_file},
+            ),
+            error.BatchEntryTooLong => std.debug.print(
+                "error: batch entry exceeds {d} bytes: {s}\n",
+                .{ max_batch_entry_bytes, batch_file },
+            ),
+            else => std.debug.print(
+                "error: failed to append batch request to {s}: {s}\n",
+                .{ batch_file, @errorName(err) },
+            ),
+        }
+        return exit_failure;
+    };
+    defer append_result.deinit(gpa);
+
+    const receipt = batchReceiptJson(
+        gpa,
+        append_result.key,
+        token_result.total_tokens,
+        batch_file,
+    ) catch |err| {
+        std.debug.print("error: failed to format batch receipt: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer gpa.free(receipt);
+
+    writeStdoutLine(init.io, receipt) catch |err| {
+        std.debug.print("error: failed to print batch receipt: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+
+    return exit_success;
+}
+
+fn appendBatchRequest(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    batch_file: []const u8,
+    requested_key: ?[]const u8,
+    generate_request_json: []const u8,
+) !BatchAppendResult {
+    assert(batch_file.len > 0);
+    assert(generate_request_json.len > 0);
+    if (requested_key) |key| assert(key.len > 0);
+
+    var file = if (std.fs.path.isAbsolute(batch_file))
+        try std.Io.Dir.createFileAbsolute(io, batch_file, .{
+            .read = true,
+            .truncate = false,
+            .lock = .exclusive,
+        })
+    else
+        try std.Io.Dir.cwd().createFile(io, batch_file, .{
+            .read = true,
+            .truncate = false,
+            .lock = .exclusive,
+        });
+    defer file.close(io);
+
+    const original_length = try file.length(io);
+    var needs_separator = false;
+    if (original_length > 0) {
+        var last_byte: [1]u8 = undefined;
+        const read_count = try file.readPositionalAll(io, &last_byte, original_length - 1);
+        if (read_count != 1) return error.BatchFileReadFailed;
+        needs_separator = last_byte[0] != '\n';
+    }
+
+    const entry_offset = std.math.add(
+        u64,
+        original_length,
+        @intFromBool(needs_separator),
+    ) catch return error.FileTooBig;
+
+    const effective_key = if (requested_key) |key|
+        try gpa.dupe(u8, key)
+    else
+        try std.fmt.allocPrint(gpa, "nbimg-{d}", .{entry_offset});
+    errdefer gpa.free(effective_key);
+
+    try ensureBatchKeyUnique(gpa, io, file, effective_key);
+
+    const entry_json = try api.buildBatchEntryJson(gpa, effective_key, generate_request_json);
+    defer gpa.free(entry_json);
+    if (entry_json.len > max_batch_entry_bytes) return error.BatchEntryTooLong;
+
+    var append_output: std.Io.Writer.Allocating = .init(gpa);
+    defer append_output.deinit();
+    if (needs_separator) try append_output.writer.writeByte('\n');
+    try append_output.writer.writeAll(entry_json);
+    try append_output.writer.writeByte('\n');
+
+    errdefer file.setLength(io, original_length) catch {};
+    try file.writePositionalAll(io, append_output.written(), original_length);
+
+    return .{ .key = effective_key };
+}
+
+fn ensureBatchKeyUnique(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    key: []const u8,
+) !void {
+    assert(key.len > 0);
+
+    var read_buffer: [16 * 1024]u8 = undefined;
+    var file_reader = file.reader(io, &read_buffer);
+    var line_output: std.Io.Writer.Allocating = .init(gpa);
+    defer line_output.deinit();
+
+    while (true) {
+        line_output.clearRetainingCapacity();
+        _ = file_reader.interface.streamDelimiterLimit(
+            &line_output.writer,
+            '\n',
+            .limited(max_batch_entry_bytes + 1),
+        ) catch |err| switch (err) {
+            error.StreamTooLong => return error.BatchEntryTooLong,
+            error.WriteFailed => return error.OutOfMemory,
+            error.ReadFailed => return error.BatchFileReadFailed,
+        };
+
+        const buffered = file_reader.interface.buffered();
+        const has_delimiter = buffered.len > 0;
+        if (has_delimiter) assert(buffered[0] == '\n');
+
+        const line = line_output.written();
+        if (line.len > max_batch_entry_bytes) return error.BatchEntryTooLong;
+        if (line.len == 0) {
+            if (!has_delimiter) return;
+            return error.InvalidBatchFile;
+        }
+
+        const ExistingBatchEntry = struct {
+            key: []const u8,
+            request: std.json.Value,
+        };
+        var parsed = std.json.parseFromSlice(
+            ExistingBatchEntry,
+            gpa,
+            line,
+            .{ .ignore_unknown_fields = true },
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidBatchFile,
+        };
+        defer parsed.deinit();
+
+        if (parsed.value.key.len == 0) return error.InvalidBatchFile;
+        if (parsed.value.request != .object) return error.InvalidBatchFile;
+        if (std.mem.eql(u8, parsed.value.key, key)) return error.DuplicateBatchKey;
+
+        if (!has_delimiter) return;
+        file_reader.interface.toss(1);
+    }
+}
+
+fn batchReceiptJson(
+    gpa: std.mem.Allocator,
+    key: []const u8,
+    total_tokens: u64,
+    batch_file: []const u8,
+) ![]u8 {
+    assert(key.len > 0);
+    assert(batch_file.len > 0);
+
+    const BatchReceipt = struct {
+        key: []const u8,
+        totalTokens: u64,
+        batchFile: []const u8,
+    };
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    try std.json.Stringify.value(BatchReceipt{
+        .key = key,
+        .totalTokens = total_tokens,
+        .batchFile = batch_file,
+    }, .{}, &output.writer);
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+test "batchReceiptJson serializes scripting receipt" {
+    const gpa = std.testing.allocator;
+    const receipt = try batchReceiptJson(
+        gpa,
+        "hero-\"001",
+        123,
+        "batch/requests.jsonl",
+    );
+    defer gpa.free(receipt);
+
+    try std.testing.expectEqualStrings(
+        "{\"key\":\"hero-\\\"001\",\"totalTokens\":123,\"batchFile\":\"batch/requests.jsonl\"}",
+        receipt,
+    );
+}
+
+test "appendBatchRequest creates file and generates offset key" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    const request_json =
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}";
+    var result = try appendBatchRequest(
+        gpa,
+        std.testing.io,
+        batch_path,
+        null,
+        request_json,
+    );
+    defer result.deinit(gpa);
+
+    try std.testing.expectEqualStrings("nbimg-0", result.key);
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings(
+        "{\"key\":\"nbimg-0\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}],\"generationConfig\":{\"responseModalities\":[\"TEXT\",\"IMAGE\"]}}}\n",
+        written,
+    );
+}
+
+test "appendBatchRequest appends after missing separator newline" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const first_entry =
+        "{\"key\":\"first\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}";
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "requests.jsonl",
+        .data = first_entry,
+    });
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    const request_json = "{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}";
+    var result = try appendBatchRequest(
+        gpa,
+        std.testing.io,
+        batch_path,
+        null,
+        request_json,
+    );
+    defer result.deinit(gpa);
+
+    const expected_key = try std.fmt.allocPrint(gpa, "nbimg-{d}", .{first_entry.len + 1});
+    defer gpa.free(expected_key);
+    try std.testing.expectEqualStrings(expected_key, result.key);
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(2048),
+    );
+    defer gpa.free(written);
+    const expected = try std.fmt.allocPrint(
+        gpa,
+        "{s}\n{{\"key\":\"{s}\",\"request\":{s}}}\n",
+        .{ first_entry, expected_key, request_json },
+    );
+    defer gpa.free(expected);
+    try std.testing.expectEqualStrings(expected, written);
+}
+
+test "appendBatchRequest rejects duplicate key without modifying file" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const existing =
+        "{\"key\":\"hero-001\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\n";
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "requests.jsonl",
+        .data = existing,
+    });
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    try std.testing.expectError(
+        error.DuplicateBatchKey,
+        appendBatchRequest(
+            gpa,
+            std.testing.io,
+            batch_path,
+            "hero-001",
+            "{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}",
+        ),
+    );
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings(existing, written);
+}
+
+test "appendBatchRequest rejects malformed existing JSONL without modifying file" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const existing = "not-json\n";
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "requests.jsonl",
+        .data = existing,
+    });
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    try std.testing.expectError(
+        error.InvalidBatchFile,
+        appendBatchRequest(
+            gpa,
+            std.testing.io,
+            batch_path,
+            "hero-001",
+            "{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}",
+        ),
+    );
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings(existing, written);
 }
 
 fn warnIfPriorityDowngraded(
@@ -707,6 +1200,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var safety_seen = false;
     var response_logprobs_seen = false;
     var out_dir: ?[]const u8 = null;
+    var batch_file: ?[]const u8 = null;
+    var batch_key: ?[]const u8 = null;
 
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
@@ -720,6 +1215,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
             const value = try command_args.nextValue(error.MissingOutDir);
             if (value.len == 0) return error.EmptyOutDir;
             out_dir = value;
+        } else if (try parseBatchOption(command_args, arg, &batch_file, &batch_key)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "--aspect-ratio")) {
             try parseAspectRatioOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--image-size")) {
@@ -748,6 +1245,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     }
 
     try validateGenerationOptionDependencies(generation_options);
+    try validateBatchOptions(out_dir, batch_file, batch_key);
 
     return .{
         .prompt = prompt orelse try fallbackPrompt(stdin_prompt),
@@ -758,6 +1256,8 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
         .generation_options = generation_options,
         .request_options = request_options,
         .out_dir = out_dir,
+        .batch_file = batch_file,
+        .batch_key = batch_key,
     };
 }
 
@@ -774,6 +1274,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var safety_seen = false;
     var response_logprobs_seen = false;
     var out_dir: ?[]const u8 = null;
+    var batch_file: ?[]const u8 = null;
+    var batch_key: ?[]const u8 = null;
     var base: ?api_edit.UploadedImage = null;
     var base_role: api_edit.ReferenceRole = .scene;
     var references: [api_edit.max_references]api_edit.Reference = undefined;
@@ -795,6 +1297,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             const value = try command_args.nextValue(error.MissingOutDir);
             if (value.len == 0) return error.EmptyOutDir;
             out_dir = value;
+        } else if (try parseBatchOption(command_args, arg, &batch_file, &batch_key)) {
+            continue;
         } else if (std.mem.eql(u8, arg, "--aspect-ratio")) {
             try parseAspectRatioOption(command_args, &output_options);
         } else if (std.mem.eql(u8, arg, "--image-size")) {
@@ -842,6 +1346,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     const parsed_base = base orelse return error.MissingBase;
     try validateEditReferenceLimits(base_role, references[0..reference_count]);
     try validateGenerationOptionDependencies(generation_options);
+    try validateBatchOptions(out_dir, batch_file, batch_key);
 
     const parsed_prompt = prompt orelse try fallbackPrompt(stdin_prompt);
 
@@ -854,6 +1359,8 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .generation_options = generation_options,
         .request_options = request_options,
         .out_dir = out_dir,
+        .batch_file = batch_file,
+        .batch_key = batch_key,
         .base = parsed_base,
         .base_role = base_role,
         .references = references,
@@ -863,6 +1370,42 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
         .do_nots = do_nots,
         .do_not_count = do_not_count,
     };
+}
+
+fn parseBatchOption(
+    command_args: *CommandArgs,
+    arg: []const u8,
+    batch_file: *?[]const u8,
+    batch_key: *?[]const u8,
+) ParseError!bool {
+    if (std.mem.eql(u8, arg, "--batch-file")) {
+        if (batch_file.* != null) return error.DuplicateBatchFile;
+
+        const value = try command_args.nextValue(error.MissingBatchFile);
+        if (value.len == 0) return error.EmptyBatchFile;
+        batch_file.* = value;
+        return true;
+    }
+
+    if (std.mem.eql(u8, arg, "--batch-key")) {
+        if (batch_key.* != null) return error.DuplicateBatchKey;
+
+        const value = try command_args.nextValue(error.MissingBatchKey);
+        if (value.len == 0) return error.EmptyBatchKey;
+        batch_key.* = value;
+        return true;
+    }
+
+    return false;
+}
+
+fn validateBatchOptions(
+    out_dir: ?[]const u8,
+    batch_file: ?[]const u8,
+    batch_key: ?[]const u8,
+) ParseError!void {
+    if (batch_key != null and batch_file == null) return error.BatchKeyRequiresBatchFile;
+    if (batch_file != null and out_dir != null) return error.BatchFileConflictsOutDir;
 }
 
 fn parseAspectRatioOption(command_args: *CommandArgs, output_options: *api.ImageOutputOptions) ParseError!void {
@@ -1791,13 +2334,21 @@ fn printUsageError(err: ParseError) void {
         error.EmptyOutDir => std.debug.print("error: output directory must not be empty\n", .{}),
         error.DuplicateOutDir => std.debug.print("error: output directory specified more than once\n", .{}),
         error.OutDirUnsupported => std.debug.print("error: --out-dir is only supported for gen and edit\n", .{}),
+        error.MissingBatchFile => std.debug.print("error: missing batch file path\n", .{}),
+        error.EmptyBatchFile => std.debug.print("error: batch file path must not be empty\n", .{}),
+        error.DuplicateBatchFile => std.debug.print("error: batch file specified more than once\n", .{}),
+        error.MissingBatchKey => std.debug.print("error: missing batch key\n", .{}),
+        error.EmptyBatchKey => std.debug.print("error: batch key must not be empty\n", .{}),
+        error.DuplicateBatchKey => std.debug.print("error: batch key specified more than once\n", .{}),
+        error.BatchKeyRequiresBatchFile => std.debug.print("error: --batch-key requires --batch-file\n", .{}),
+        error.BatchFileConflictsOutDir => std.debug.print("error: --batch-file cannot be combined with --out-dir\n", .{}),
     }
     std.debug.print("{s}", .{usageText()});
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+    return "usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
         "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
@@ -1813,6 +2364,11 @@ fn usageText() []const u8 {
         "output image options:\n" ++
         "       --aspect-ratio accepts 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9\n" ++
         "       --image-size accepts 512, 1K, 2K, or 4K\n" ++
+        "\n" ++
+        "batch file options:\n" ++
+        "       --batch-file validates with countTokens, then appends a Batch API JSONL request instead of generating\n" ++
+        "       --batch-key sets the response-correlation key; otherwise nbimg derives one from the append offset\n" ++
+        "       batch keys must be unique within the file; --batch-file cannot be combined with --out-dir\n" ++
         "\n" ++
         "advanced generation options:\n" ++
         "       --temperature accepts 0.0 to 2.0\n" ++
@@ -1880,6 +2436,9 @@ test "usageText documents edit reference roles and defaults" {
         "image/jpeg, image/png, or image/webp",
         "1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, or 21:9",
         "512, 1K, 2K, or 4K",
+        "--batch-file validates with countTokens",
+        "--batch-key sets the response-correlation key",
+        "batch keys must be unique within the file",
         "0.0 to 2.0",
         "0.0 to 1.0",
         "signed 32-bit decimal integer",
@@ -1918,6 +2477,8 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expect(!gen.generation_options.hasAny());
     try std.testing.expect(!gen.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
+    try std.testing.expectEqual(@as(?[]const u8, null), gen.batch_file);
+    try std.testing.expectEqual(@as(?[]const u8, null), gen.batch_key);
 }
 
 test "parseArgs accepts stdin fallback prompt for gen" {
@@ -1949,6 +2510,105 @@ test "parseArgs accepts gen output directory" {
 
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expectEqualStrings("outputs", gen.out_dir.?);
+}
+
+test "parseArgs accepts gen batch file options" {
+    const automatic_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-file",
+        "requests.jsonl",
+        "--prompt",
+        "My fair lady",
+    });
+    const automatic = expectGenCommand(automatic_command);
+    try std.testing.expectEqualStrings("requests.jsonl", automatic.batch_file.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), automatic.batch_key);
+
+    const explicit_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-key",
+        "hero-001",
+        "--batch-file",
+        "requests.jsonl",
+        "--prompt",
+        "My fair lady",
+    });
+    const explicit = expectGenCommand(explicit_command);
+    try std.testing.expectEqualStrings("requests.jsonl", explicit.batch_file.?);
+    try std.testing.expectEqualStrings("hero-001", explicit.batch_key.?);
+}
+
+test "parseArgs rejects invalid gen batch file options" {
+    try std.testing.expectError(error.MissingBatchFile, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-file",
+    }));
+    try std.testing.expectError(error.EmptyBatchFile, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-file",
+        "",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.DuplicateBatchFile, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-file",
+        "one.jsonl",
+        "--batch-file",
+        "two.jsonl",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.MissingBatchKey, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-key",
+    }));
+    try std.testing.expectError(error.EmptyBatchKey, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-key",
+        "",
+        "--batch-file",
+        "requests.jsonl",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.DuplicateBatchKey, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-key",
+        "one",
+        "--batch-key",
+        "two",
+        "--batch-file",
+        "requests.jsonl",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.BatchKeyRequiresBatchFile, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-key",
+        "hero-001",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.BatchFileConflictsOutDir, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--batch-file",
+        "requests.jsonl",
+        "--out-dir",
+        "outputs",
+        "--prompt",
+        "My fair lady",
+    }));
 }
 
 test "parseArgs accepts gen image output options" {
@@ -2429,6 +3089,8 @@ test "parseArgs accepts minimal edit command" {
     try std.testing.expect(!edit.generation_options.hasAny());
     try std.testing.expect(!edit.request_options.hasAny());
     try std.testing.expectEqual(@as(?[]const u8, null), edit.out_dir);
+    try std.testing.expectEqual(@as(?[]const u8, null), edit.batch_file);
+    try std.testing.expectEqual(@as(?[]const u8, null), edit.batch_key);
 }
 
 test "parseArgs accepts edit output directory" {
@@ -2445,6 +3107,40 @@ test "parseArgs accepts edit output directory" {
     const edit = expectEditCommand(parsed_command);
 
     try std.testing.expectEqualStrings("outputs", edit.out_dir.?);
+}
+
+test "parseArgs accepts edit batch file options" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--batch-file",
+        "requests.jsonl",
+        "--batch-key",
+        "edit-001",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("requests.jsonl", edit.batch_file.?);
+    try std.testing.expectEqualStrings("edit-001", edit.batch_key.?);
+}
+
+test "parseArgs rejects edit batch file with output directory" {
+    try std.testing.expectError(error.BatchFileConflictsOutDir, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--out-dir",
+        "outputs",
+        "--batch-file",
+        "requests.jsonl",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    }));
 }
 
 test "parseArgs accepts edit image output options" {

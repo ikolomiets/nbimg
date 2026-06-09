@@ -908,6 +908,30 @@ pub fn buildCountTokensRequestFromGenerateContentJson(
     return list.toOwnedSlice(gpa);
 }
 
+pub fn buildBatchEntryJson(
+    gpa: std.mem.Allocator,
+    key: []const u8,
+    generate_request_json: []const u8,
+) ![]u8 {
+    assert(key.len > 0);
+    assert(generate_request_json.len >= 2);
+    assert(generate_request_json[0] == '{');
+    assert(generate_request_json[generate_request_json.len - 1] == '}');
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+
+    try output.writer.writeAll("{\"key\":");
+    try std.json.Stringify.value(key, .{}, &output.writer);
+    try output.writer.writeAll(",\"request\":");
+    try output.writer.writeAll(generate_request_json);
+    try output.writer.writeByte('}');
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
 pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const u8) !CountTokensResult {
     const Response = struct {
         totalTokens: ?u64 = null,
@@ -1097,6 +1121,29 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
+}
+
+test "buildBatchEntryJson wraps generate content request and escapes key" {
+    const gpa = std.testing.allocator;
+    const entry = try buildBatchEntryJson(
+        gpa,
+        "hero-\"001",
+        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}",
+    );
+    defer gpa.free(entry);
+
+    try std.testing.expectEqualStrings(
+        "{\"key\":\"hero-\\\"001\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
+        entry,
+    );
+
+    const Entry = struct {
+        key: []const u8,
+        request: std.json.Value,
+    };
+    var parsed = try std.json.parseFromSlice(Entry, gpa, entry, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("hero-\"001", parsed.value.key);
 }
 
 test "buildGenerateContentRequestJson serializes shared text request" {

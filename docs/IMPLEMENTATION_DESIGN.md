@@ -10,8 +10,8 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -29,11 +29,15 @@ emitted safety categories, or set advanced generation controls such as
 sampling, seed, output-token budget, stop sequences, and logprob diagnostics,
 or set request-level controls such as system instructions, cached content,
 service tier, and request storage.
+Instead of immediate generation, `gen` and `edit` can validate the same
+`GenerateContentRequest` through `countTokens` and append it to a Batch API
+JSONL input file.
 It can also upload image files to Gemini's Files API, list or get uploaded file
 metadata, and delete uploaded files.
 
 The current implementation does not yet support chat, model selection, output
-file naming controls, local image inputs for `edit`, or response snapshots.
+file naming controls, local image inputs for `edit`, response snapshots, or
+Batch API upload, submission, status, and result fetching.
 
 ## Module Layout
 
@@ -44,13 +48,15 @@ The code is split into seven source files:
 - `src/root.zig` exposes the package modules as `api`, `cli`, `gen`, `edit`,
   and `files`.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
-  lookup, request dispatch, response handling, and file writing.
+  lookup, request dispatch, response handling, generated file writing, and
+  locked Batch JSONL appends.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, image MIME parsing and serialization,
   Thinking/output/generation/grounding wire helpers, shared generateContent
-  request envelope assembly, generateContent/countTokens JSON posting,
-  generated response decoding and output naming, and response log sanitization.
+  request envelope assembly, generateContent/countTokens JSON posting, Batch
+  entry serialization, generated response decoding and output naming, and
+  response log sanitization.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
@@ -74,9 +80,10 @@ Shared controls such as `nbimg.api.traffic_log_options` remain directly under
 ### API Module Boundaries
 
 The CLI module owns user interaction and filesystem effects: reading upload
-files, writing generated files, printing uploaded file
-IDs, and translating parse or API errors into process exit codes. API modules
-own only request/response wire shapes and HTTP transport.
+files, writing generated files, appending Batch JSONL entries, printing
+receipts or uploaded file IDs, and translating parse or API errors into process
+exit codes. API modules own only request/response wire shapes and HTTP
+transport.
 
 Command-domain modules must not depend on each other. `src/gen.zig`,
 `src/edit.zig`, and `src/files.zig` may import only `api.zig`, `std`, and
@@ -114,7 +121,8 @@ validation, canonical cached content name validation, shared
 generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared
 generateContent request envelope construction, shared generateContent/countTokens
-JSON posting helpers, shared response modality values, image MIME
+JSON posting helpers, Batch API input-entry serialization, shared response
+modality values, image MIME
 parsing/serialization for edit references and file uploads, generation config
 helpers, request-level control wire helpers, grounding tool wire structures,
 generated response decoding, generated file metadata, output naming, safety
@@ -158,8 +166,8 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -217,6 +225,24 @@ Argument rules are intentionally narrow:
   `--store` serializes `store: true`; `--no-store` serializes `store: false`.
   If both are omitted, `nbimg` omits `store` and leaves project-level logging
   behavior unchanged.
+- `--batch-file PATH` is optional for `gen` and `edit`. It is accepted at most
+  once, cannot be combined with `--out-dir`, and changes execution from
+  immediate `generateContent` to `countTokens` validation followed by a JSONL
+  append.
+- `--batch-key KEY` is optional, non-empty, accepted at most once, and valid
+  only with `--batch-file`. Explicit keys must be unique within the target
+  file. If omitted, the key is `nbimg-<offset>`, where `offset` is the locked
+  byte position at which the JSON entry starts.
+- Batch appends create the file when absent and hold an exclusive advisory lock
+  while scanning existing entries and writing. Existing lines must be valid
+  objects with `key` and `request`, and each line is capped at `4 MiB` during
+  local validation.
+- The appended line is `{"key":"...","request":{...}}`, using the exact
+  `GenerateContentRequest` validated by `countTokens`. HTTP failure or an
+  invalid token-count response leaves the file untouched.
+- A successful append prints
+  `{"key":"...","totalTokens":N,"batchFile":"..."}` to stdout. In batch mode,
+  `--print-request` logs the `countTokens` envelope to stderr.
 - For `gen` and `edit`, `--grounding MODE` is optional and accepted at most
   once. Valid modes are `none`, `web`, `image`, and `web,image`. If omitted or
   set to `none`, `nbimg` omits request `tools`.
@@ -294,7 +320,8 @@ Argument rules are intentionally narrow:
   value is `false`.
 - `--out-dir DIR` is supported by `gen` and `edit`; file commands reject it.
   The directory path may be relative or absolute, must be non-empty, must be
-  specified at most once, and must already exist.
+  specified at most once, and must already exist. It is mutually exclusive with
+  `--batch-file`.
 - Flags may appear in any order.
 - Unknown flags and positional prompt arguments are rejected.
 
@@ -311,8 +338,8 @@ Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
 
 ```text
-usage: nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-       nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+       nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
        nbimg files upload [--print-request] [--display-name NAME] --path PATH
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
@@ -815,10 +842,21 @@ to add the model field that Google requires inside nested
 `api.decodeCountTokensResponse` extracts `totalTokens` and optional
 `cachedContentTokenCount` from successful responses.
 
-This helper is API-only. There is no user-facing CLI command for it yet. A
-successful `countTokens` response means Google accepted the request for
-tokenization; it does not prove that `generateContent` will produce an image or
-avoid safety, quota, billing, or output-shape failures.
+The live request-validity tests call these helpers directly. User-facing
+`--batch-file` mode instead builds the command's `GenerateContentRequest` once,
+wraps those exact bytes with
+`api.buildCountTokensRequestFromGenerateContentJson`, posts the validation
+request, and appends the original bytes with `api.buildBatchEntryJson` only
+after a successful, decodable response.
+
+A successful `countTokens` response means Google accepted the request for
+tokenization; it does not prove that later Batch API execution will produce an
+image or avoid safety, quota, billing, or output-shape failures.
+
+The Batch API key is supplied by `--batch-key` or derived from the locked append
+offset. It is a per-input-file correlation key, not a globally unique Gemini
+resource ID. `countTokens` does not return an identifier suitable for this
+purpose.
 
 This caveat applies directly to future `responseFormat.image` additions:
 `countTokens` accepted explicit `delivery` values that billable
@@ -897,6 +935,13 @@ of overwriting it.
 This assertion is paired with `api.decodeGeneratedFiles`, which rejects
 responses that produce zero generated files.
 
+Batch mode does not write generated output. `cli.appendBatchRequest` opens or
+creates the selected JSONL file with read/write access and an exclusive
+advisory lock, validates existing entries while checking key uniqueness, and
+writes the separator plus complete JSON line positionally at the locked file
+end. An `errdefer` truncates back to the original length if the append fails
+partway through.
+
 ## Memory And Ownership
 
 The executable receives `std.process.Init` and explicitly passes allocator and
@@ -932,6 +977,10 @@ Current tests cover:
 - Grounding tool serialization for web, image, and combined web/image modes.
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
+- Batch entry and receipt JSON serialization.
+- Batch option parsing, output-directory conflicts, automatic offset keys,
+  separator insertion, duplicate-key rejection, and malformed-file
+  preservation.
 - Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.

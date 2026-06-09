@@ -14,6 +14,8 @@ The current implementation is intentionally narrow:
   output-token budget, stop sequences, and logprob diagnostics
 - configure request-level controls such as system instructions, cached
   content, service tier, and request storage
+- validate generation and edit requests with `countTokens` and append them to
+  Gemini Batch API JSONL input files
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print whole-second response timing and sanitized response traffic by default,
@@ -52,8 +54,8 @@ separate Debug artifact from the build cache.
 The CLI accepts these command forms:
 
 ```sh
-nbimg gen [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--out-dir DIR] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
 nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
@@ -116,6 +118,38 @@ flag may be used at most once, and the directory must already exist. Gemini text
 response parts are not written as sidecar files; they remain visible in the raw
 response JSON logged to stderr. `gen` and `edit` request both text and image
 response parts by default; there is no flag for changing response modalities.
+
+Use `--batch-file PATH` with `gen` or `edit` to prepare a Gemini Batch API
+JSONL input file instead of generating immediately:
+
+```sh
+zig-out/bin/nbimg gen \
+  --batch-file requests.jsonl \
+  --batch-key hero-001 \
+  --aspect-ratio 16:9 \
+  --prompt "Create a cinematic product hero image"
+```
+
+Batch mode builds the normal `GenerateContentRequest`, sends that exact request
+to Gemini's non-generation `countTokens` endpoint, and appends it only after an
+HTTP success and a valid token-count response. Each line has the Batch API
+shape `{"key":"...","request":{...}}`. The file is created when absent and
+locked while existing keys are checked and the new line is appended.
+
+`--batch-key KEY` is optional and requires `--batch-file`. Explicit keys must
+be unique within that JSONL file. If omitted, `nbimg` derives a deterministic
+key such as `nbimg-0` from the locked byte offset where the entry begins.
+`--batch-file` and `--out-dir` are mutually exclusive.
+
+On success, stdout receives a compact receipt suitable for scripts:
+
+```json
+{"key":"hero-001","totalTokens":42,"batchFile":"requests.jsonl"}
+```
+
+`--print-request` remains independent and prints the `countTokens` validation
+request to stderr. This feature prepares input only; batch upload, submission,
+status, and result fetching are not implemented.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
