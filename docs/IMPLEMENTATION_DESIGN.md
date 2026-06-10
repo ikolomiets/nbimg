@@ -16,6 +16,8 @@ nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
+nbimg batch submit [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--print-request] --name batches/ID
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
@@ -33,20 +35,21 @@ Instead of immediate generation, `gen` and `edit` can validate the same
 `GenerateContentRequest` through `countTokens` and append it to a Batch API
 JSONL input file.
 It can also upload image files to Gemini's Files API, list or get uploaded file
-metadata, and delete uploaded files.
+metadata, delete uploaded files, validate and upload Batch JSONL, create one
+Batch job, and fetch one current Batch operation.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, response snapshots, or
-Batch API upload, submission, status, and result fetching.
+Batch result download, cancellation, listing, and streaming uploads.
 
 ## Module Layout
 
-The code is split into seven source files:
+The code is split into eight source files:
 
 - `src/main.zig` is the executable entrypoint. It calls `nbimg.cli.run(init)`
   and exits with the returned process status.
-- `src/root.zig` exposes the package modules as `api`, `cli`, `gen`, `edit`,
-  and `files`.
+- `src/root.zig` exposes the package modules as `api`, `batch`, `cli`, `gen`,
+  `edit`, and `files`.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -54,9 +57,13 @@ The code is split into seven source files:
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, image MIME parsing and serialization,
   Thinking/output/generation/grounding wire helpers, shared generateContent
-  request envelope assembly, generateContent/countTokens JSON posting, Batch
-  entry serialization, generated response decoding and output naming, and
-  response log sanitization.
+  request envelope assembly, generateContent/countTokens JSON posting,
+  generic resumable byte uploads, generated response decoding and output
+  naming, and response log sanitization.
+- `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
+  input upload configuration, create/status request construction, canonical
+  `batches/...` validation, response-name decoding, and full JSON
+  pretty-printing.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
@@ -72,6 +79,7 @@ The public API namespace is intentionally split by command domain:
 nbimg.gen.*
 nbimg.edit.*
 nbimg.files.*
+nbimg.batch.*
 ```
 
 Shared controls such as `nbimg.api.traffic_log_options` remain directly under
@@ -86,8 +94,9 @@ exit codes. API modules own only request/response wire shapes and HTTP
 transport.
 
 Command-domain modules must not depend on each other. `src/gen.zig`,
-`src/edit.zig`, and `src/files.zig` may import only `api.zig`, `std`, and
-`build_options` for project-local/shared functionality. Cross-command workflows
+`src/edit.zig`, `src/files.zig`, and `src/batch.zig` may import only
+`api.zig`, `std`, and `build_options` for project-local/shared functionality.
+Cross-command workflows
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
 
@@ -112,16 +121,23 @@ interleaves role anchor text and `file_data` parts, and wraps the same request
 shape for `countTokens`.
 
 `src/files.zig` owns Gemini Files API semantics. It receives shared image MIME
-types from `src/api.zig`, performs resumable upload start/finalize calls,
-builds paginated list URLs and file-resource get/delete URLs, and decodes
-uploaded/listed/fetched File metadata.
+types from `src/api.zig`, applies image extension and size policy, invokes the
+shared resumable byte-upload transport, builds paginated list URLs and
+file-resource get/delete URLs, and decodes uploaded/listed/fetched File
+metadata.
+
+`src/batch.zig` owns Gemini Batch API semantics. It validates complete JSONL
+input and unique keys, enforces the temporary 4 MiB per-entry and 64 MiB local
+file limits, uploads bytes as `application/jsonl`, submits the uploaded
+`files/...` name to the fixed image model, builds status URLs from canonical
+`batches/...` names, and validates/pretty-prints successful JSON responses.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
 generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared
 generateContent request envelope construction, shared generateContent/countTokens
-JSON posting helpers, Batch API input-entry serialization, shared response
+JSON posting helpers, generic resumable byte-upload transport, shared response
 modality values, image MIME
 parsing/serialization for edit references and file uploads, generation config
 helpers, request-level control wire helpers, grounding tool wire structures,
@@ -139,9 +155,9 @@ ReleaseSafe. The `run` step builds and executes a separate Debug executable from
 the build cache. The normal offline `test` step and dedicated live API test
 steps also compile Debug artifacts for faster feedback.
 
-The `test` step builds test roots from `src/api.zig`, `src/gen.zig`,
-`src/edit.zig`, `src/files.zig`, and `src/cli.zig` so tests stay close to
-their owning modules. Tests receive a generated `build_options` module with
+The `test` step builds test roots from `src/api.zig`, `src/batch.zig`,
+`src/gen.zig`, `src/edit.zig`, `src/files.zig`, and `src/cli.zig` so tests
+stay close to their owning modules. Tests receive a generated `build_options` module with
 `live_api_tests = false` by default. Passing `-Dlive-api-tests` enables live
 tests for a filtered test run.
 
@@ -172,13 +188,16 @@ nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
+nbimg batch submit [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--print-request] --name batches/ID
 ```
 
 Argument rules are intentionally narrow:
 
-- The command name must be `gen`, `edit`, or `files`.
+- The command name must be `gen`, `edit`, `files`, or `batch`.
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
+- The `batch` command requires a `submit` or `status` subcommand.
 - For `gen` and `edit`, `--prompt` is optional. If omitted, `cli.run` reads the
   prompt from stdin until EOF.
 - Stdin prompts are preserved exactly, including trailing newlines, and are
@@ -315,10 +334,16 @@ Argument rules are intentionally narrow:
   once.
 - File names for `files get` and `files delete` must use canonical `files/...`
   resource names; bare IDs are rejected.
+- For `batch submit`, `--path` is required exactly once and
+  `--display-name NAME` is optional at most once. The default is the complete
+  basename, including `.jsonl`.
+- For `batch status`, `--name` is required exactly once and must use canonical
+  `batches/...` form; bare IDs are rejected.
 - Response traffic is logged by default for all CLI commands.
 - `--print-request` is an optional boolean flag on all commands. Its default
   value is `false`.
-- `--out-dir DIR` is supported by `gen` and `edit`; file commands reject it.
+- `--out-dir DIR` is supported by `gen` and `edit`; files and batch commands
+  reject it.
   The directory path may be relative or absolute, must be non-empty, must be
   specified at most once, and must already exist. It is mutually exclusive with
   `--batch-file`.
@@ -332,7 +357,7 @@ Argument rules are intentionally narrow:
 - `2` for usage and configuration errors, such as bad arguments or a missing
   API key.
 - `3` for successful HTTP responses whose JSON body cannot be parsed for
-  generated files.
+  generated files, File metadata, or Batch operation JSON.
 
 Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
@@ -344,6 +369,8 @@ usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-
        nbimg files list [--print-request]
        nbimg files get [--print-request] --name files/ID
        nbimg files delete [--print-request] --name files/ID
+       nbimg batch submit [--print-request] [--display-name NAME] --path PATH
+       nbimg batch status [--print-request] --name batches/ID
 
 edit reference details:
        first --ref is the BASE_IMAGE and must omit LABEL
@@ -803,6 +830,67 @@ MIME type. For `files upload`, `files list`, `files get`, and `files delete`,
 traffic logs are separated from command results by using stderr for diagnostics
 and stdout for metadata JSON or delete `OK`.
 
+## Batch API
+
+`nbimg batch submit --path PATH` reads one complete local JSONL input into
+memory with a `64 MiB` limit. Before network IO, `batch.validateInputJsonl`
+requires at least one non-empty line, valid JSON on every line, a non-empty
+unique `key`, and an object-valued `request`. LF and CRLF separators are
+accepted. Empty lines are rejected. Each serialized entry is temporarily
+limited to `4 MiB`; `TODO.txt` records the work needed to replace this with a
+derived bound over variable request fields, JSON escaping, and fixed overhead.
+
+The validated bytes are uploaded through `api.uploadResumableBytes` with
+`application/jsonl`. The shared transport owns the resumable upload start and
+finalize requests. `files.zig` continues to own image extension/MIME validation
+and image upload size policy; `batch.zig` owns Batch input MIME and limits.
+
+By default, the complete `std.fs.path.basename(PATH)`, including `.jsonl`, is
+used as both the uploaded File `displayName` and Batch job `displayName`.
+`--display-name NAME` overrides both. Display-name UTF-8 and 512-code-point
+validation is shared with Files uploads.
+
+After a successful upload, submission sends exactly one request:
+
+```text
+POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:batchGenerateContent
+```
+
+with:
+
+```json
+{
+  "batch": {
+    "displayName": "requests.jsonl",
+    "inputConfig": {
+      "fileName": "files/..."
+    }
+  }
+}
+```
+
+Job creation is non-idempotent and has no retry loop. If transport fails after
+the input upload, the CLI reports the uploaded `files/...` name and warns that
+a job may have been created. A returned non-OK HTTP response is reported
+without the ambiguous-creation warning. The uploaded JSONL remains in Gemini
+Files storage in all cases.
+
+A successful create response must be valid JSON and contain a canonical
+`batches/...` name. The CLI then pretty-prints the complete response object
+without reducing it to a local metadata struct.
+
+`nbimg batch status --name batches/ID` validates the canonical resource name,
+percent-encodes the ID path segment, and performs one request:
+
+```text
+GET https://generativelanguage.googleapis.com/v1beta/batches/{id}
+```
+
+Status does not poll or retry. A successful response is validated as JSON and
+every returned field is printed as one pretty JSON document. Batch result
+download, cancellation, listing, and deletion of the uploaded input are not
+implemented.
+
 ## CountTokens Validation Helper
 
 `gen.countGenerateContentRequestTokens` and
@@ -846,17 +934,17 @@ The live request-validity tests call these helpers directly. User-facing
 `--batch-file` mode instead builds the command's `GenerateContentRequest` once,
 wraps those exact bytes with
 `api.buildCountTokensRequestFromGenerateContentJson`, posts the validation
-request, and appends the original bytes with `api.buildBatchEntryJson` only
+request, and appends the original bytes with `batch.buildEntryJson` only
 after a successful, decodable response.
 
 A successful `countTokens` response means Google accepted the request for
 tokenization; it does not prove that later Batch API execution will produce an
 image or avoid safety, quota, billing, or output-shape failures.
 
-The Batch API key is supplied by `--batch-key` or derived from the locked append
-offset. It is a per-input-file correlation key, not a globally unique Gemini
-resource ID. `countTokens` does not return an identifier suitable for this
-purpose.
+The Batch input correlation key is supplied by `--batch-key` or derived from
+the locked append offset. It is a per-input-file correlation key, not a
+globally unique Gemini resource ID. `countTokens` does not return an identifier
+suitable for this purpose.
 
 This caveat applies directly to future `responseFormat.image` additions:
 `countTokens` accepted explicit `delivery` values that billable
@@ -935,12 +1023,13 @@ of overwriting it.
 This assertion is paired with `api.decodeGeneratedFiles`, which rejects
 responses that produce zero generated files.
 
-Batch mode does not write generated output. `cli.appendBatchRequest` opens or
+Batch-file preparation does not write generated output. `cli.appendBatchRequest` opens or
 creates the selected JSONL file with read/write access and an exclusive
 advisory lock, validates existing entries while checking key uniqueness, and
 writes the separator plus complete JSON line positionally at the locked file
-end. An `errdefer` truncates back to the original length if the append fails
-partway through.
+end. Serialization and per-entry validation are owned by `batch.buildEntryJson`.
+An `errdefer` truncates back to the original length if the append fails partway
+through.
 
 ## Memory And Ownership
 
@@ -954,6 +1043,8 @@ Allocator ownership is explicit:
   response buffering, and the returned response body.
 - `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
+- `batch.uploadInput` receives already-read validated JSONL bytes; CLI
+  filesystem IO stays in `src/cli.zig`.
 - `files.decodeUploadedFile` returns owned File metadata for upload
   responses. The CLI uses this for upload stdout.
   `files.decodeUploadedFileName` remains as a helper that returns only an
@@ -981,6 +1072,9 @@ Current tests cover:
 - Batch option parsing, output-directory conflicts, automatic offset keys,
   separator insertion, duplicate-key rejection, and malformed-file
   preservation.
+- Batch submit/status parsing, canonical names, request JSON, endpoint URLs,
+  malformed and duplicate JSONL rejection, local size limits, complete
+  response pretty-printing, and ambiguous non-idempotent failure diagnostics.
 - Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
@@ -1028,11 +1122,18 @@ zig build test-live-api-edit-request-validity
 zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
+zig build test-live-api-batch-submit-status
 ```
 
 `GEMINI_API_KEY` is read from the inherited process environment through the
 same common borrowed-key validation helper, so an already-exported variable is
 enough.
+
+`test-live-api-batch-submit-status` is explicitly billable and non-idempotent.
+It builds two generation entries with `imageSize=512` and no `thinkingConfig`,
+uploads one JSONL input, creates exactly one Batch job, captures the returned
+canonical name, and performs one status GET. The remote uploaded File and job
+are intentionally retained.
 
 Live generation checks live in `src/gen.zig`. They send a
 `GenerateContentRequest` shape with `responseFormat.image` to `countTokens`
@@ -1085,7 +1186,9 @@ fields and delete response bodies returned by Gemini for the current API
 behavior. Live tests enable `api.traffic_log_options` for request and response
 logging, require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an
 uploaded file in the Gemini Files API until Google expires it if a delete test
-fails before cleanup, and can fail due to quota or remote API errors.
+fails before cleanup, intentionally retain Batch input uploads, and can fail
+due to quota or remote API errors. The Batch submit/status target also creates
+one billable non-idempotent job.
 
 ## Known Gaps
 
@@ -1098,6 +1201,8 @@ The following areas are intentionally not implemented yet:
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
 - Response snapshots.
+- Batch result download, cancellation, listing, streaming upload, and explicit
+  cleanup of uploaded JSONL input.
 - Timeout and retry policy.
 - Structured verbose output.
 - Response fixture tests for full API payloads.

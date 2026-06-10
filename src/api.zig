@@ -8,6 +8,7 @@ pub const http_request_timeout_seconds: i64 = 180;
 pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
 pub const canonical_cached_content_name_prefix = "cachedContents/";
+pub const max_display_name_codepoints = 512;
 
 pub const ApiKeyError = error{
     MissingApiKey,
@@ -824,6 +825,12 @@ pub const HttpResponseWithUploadUrl = struct {
     }
 };
 
+pub const ResumableUpload = struct {
+    content_type: []const u8,
+    bytes: []const u8,
+    display_name: ?[]const u8 = null,
+};
+
 pub const TrafficLogOptions = struct {
     print_request: bool = false,
     print_response: bool = false,
@@ -885,6 +892,12 @@ pub fn isCanonicalCachedContentName(name: []const u8) bool {
     return name.len > canonical_cached_content_name_prefix.len;
 }
 
+pub fn isValidDisplayName(display_name: []const u8) bool {
+    if (display_name.len == 0) return false;
+    const codepoints = std.unicode.utf8CountCodepoints(display_name) catch return false;
+    return codepoints <= max_display_name_codepoints;
+}
+
 pub fn buildCountTokensRequestFromGenerateContentJson(
     gpa: std.mem.Allocator,
     model: Model,
@@ -902,30 +915,6 @@ pub fn buildCountTokensRequestFromGenerateContentJson(
     try output.writer.writeAll("\",");
     try output.writer.writeAll(generate_request_json[1..]);
     try output.writer.writeAll("}");
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
-}
-
-pub fn buildBatchEntryJson(
-    gpa: std.mem.Allocator,
-    key: []const u8,
-    generate_request_json: []const u8,
-) ![]u8 {
-    assert(key.len > 0);
-    assert(generate_request_json.len >= 2);
-    assert(generate_request_json[0] == '{');
-    assert(generate_request_json[generate_request_json.len - 1] == '}');
-
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    try output.writer.writeAll("{\"key\":");
-    try std.json.Stringify.value(key, .{}, &output.writer);
-    try output.writer.writeAll(",\"request\":");
-    try output.writer.writeAll(generate_request_json);
-    try output.writer.writeByte('}');
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
@@ -1121,29 +1110,6 @@ test "buildCountTokensRequestFromGenerateContentJson wraps generate content requ
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
-}
-
-test "buildBatchEntryJson wraps generate content request and escapes key" {
-    const gpa = std.testing.allocator;
-    const entry = try buildBatchEntryJson(
-        gpa,
-        "hero-\"001",
-        "{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}",
-    );
-    defer gpa.free(entry);
-
-    try std.testing.expectEqualStrings(
-        "{\"key\":\"hero-\\\"001\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"My fair lady\"}]}]}}",
-        entry,
-    );
-
-    const Entry = struct {
-        key: []const u8,
-        request: std.json.Value,
-    };
-    var parsed = try std.json.parseFromSlice(Entry, gpa, entry, .{});
-    defer parsed.deinit();
-    try std.testing.expectEqualStrings("hero-\"001", parsed.value.key);
 }
 
 test "buildGenerateContentRequestJson serializes shared text request" {
@@ -1562,6 +1528,7 @@ test "command modules import only shared api module" {
     try expectAllowedCommandModuleImports("src/gen.zig");
     try expectAllowedCommandModuleImports("src/edit.zig");
     try expectAllowedCommandModuleImports("src/files.zig");
+    try expectAllowedCommandModuleImports("src/batch.zig");
 }
 
 fn expectAllowedCommandModuleImports(path: []const u8) !void {
@@ -1607,6 +1574,165 @@ pub const RequestWithBodyOptions = struct {
     capture_upload_url: bool = false,
     request_body_log: RequestBodyLog = .empty,
 };
+
+pub fn uploadResumableBytes(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    upload: ResumableUpload,
+) !HttpResponse {
+    assert(api_key.len > 0);
+    assert(upload.content_type.len > 0);
+    assert(upload.bytes.len > 0);
+    if (upload.display_name) |display_name| assert(isValidDisplayName(display_name));
+
+    var client: std.http.Client = .{
+        .allocator = gpa,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var start = try startResumableUpload(gpa, &client, api_key, upload);
+    if (start.response.status != .ok) {
+        if (start.upload_url) |upload_url| gpa.free(upload_url);
+        return start.response;
+    }
+    defer start.response.deinit(gpa);
+
+    const upload_url = start.upload_url orelse return error.MissingUploadUrl;
+    defer gpa.free(upload_url);
+
+    return finalizeResumableUpload(gpa, &client, api_key, upload_url, upload);
+}
+
+fn startResumableUpload(
+    gpa: std.mem.Allocator,
+    client: *std.http.Client,
+    api_key: []const u8,
+    upload: ResumableUpload,
+) !HttpResponseWithUploadUrl {
+    assert(api_key.len > 0);
+    assert(upload.content_type.len > 0);
+    assert(upload.bytes.len > 0);
+    if (upload.display_name) |display_name| assert(isValidDisplayName(display_name));
+
+    var content_length_buffer: [32]u8 = undefined;
+    const content_length = try std.fmt.bufPrint(&content_length_buffer, "{d}", .{upload.bytes.len});
+
+    const headers = [_]std.http.Header{
+        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "X-Goog-Upload-Protocol", .value = "resumable" },
+        .{ .name = "X-Goog-Upload-Command", .value = "start" },
+        .{ .name = "X-Goog-Upload-Header-Content-Length", .value = content_length },
+        .{ .name = "X-Goog-Upload-Header-Content-Type", .value = upload.content_type },
+    };
+
+    const metadata_json = try buildResumableUploadMetadata(gpa, upload.display_name);
+    defer gpa.free(metadata_json);
+
+    return requestWithBody(
+        gpa,
+        client,
+        .POST,
+        fileUploadStartUrl(),
+        "application/json",
+        &headers,
+        metadata_json,
+        .{
+            .capture_upload_url = true,
+            .request_body_log = .{ .text = metadata_json },
+        },
+    );
+}
+
+fn finalizeResumableUpload(
+    gpa: std.mem.Allocator,
+    client: *std.http.Client,
+    api_key: []const u8,
+    upload_url: []const u8,
+    upload: ResumableUpload,
+) !HttpResponse {
+    assert(api_key.len > 0);
+    assert(upload_url.len > 0);
+    assert(upload.content_type.len > 0);
+    assert(upload.bytes.len > 0);
+
+    const headers = [_]std.http.Header{
+        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "X-Goog-Upload-Offset", .value = "0" },
+        .{ .name = "X-Goog-Upload-Command", .value = "upload, finalize" },
+    };
+
+    const result = try requestWithBody(
+        gpa,
+        client,
+        .POST,
+        upload_url,
+        upload.content_type,
+        &headers,
+        upload.bytes,
+        .{
+            .request_body_log = .{
+                .binary = .{
+                    .byte_count = upload.bytes.len,
+                    .mime = upload.content_type,
+                },
+            },
+        },
+    );
+    assert(result.upload_url == null);
+    return result.response;
+}
+
+pub fn buildResumableUploadMetadata(
+    gpa: std.mem.Allocator,
+    display_name: ?[]const u8,
+) ![]u8 {
+    if (display_name) |name| assert(isValidDisplayName(name));
+
+    const FileMetadata = struct {
+        displayName: ?[]const u8 = null,
+    };
+    const UploadStartMetadata = struct {
+        file: FileMetadata,
+    };
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    try std.json.Stringify.value(UploadStartMetadata{
+        .file = .{
+            .displayName = display_name,
+        },
+    }, .{ .emit_null_optional_fields = false }, &output.writer);
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
+    const Response = struct {
+        file: ?ResponseFile = null,
+
+        const ResponseFile = struct {
+            name: ?[]const u8 = null,
+        };
+    };
+
+    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const file = parsed.value.file orelse return error.MissingFileName;
+    const name = file.name orelse return error.MissingFileName;
+    if (!isCanonicalFileName(name)) return error.MissingFileName;
+    return gpa.dupe(u8, name);
+}
+
+fn fileUploadStartUrl() []const u8 {
+    return "https://generativelanguage.googleapis.com/upload/v1beta/files";
+}
 
 pub fn postJson(
     gpa: std.mem.Allocator,

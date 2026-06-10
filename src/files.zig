@@ -6,7 +6,6 @@ const api = @import("api.zig");
 const build_options = @import("build_options");
 
 pub const max_upload_bytes = 64 * 1024 * 1024;
-const max_display_name_codepoints = 512;
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
 
@@ -82,23 +81,11 @@ pub fn uploadFile(
     assert(file.bytes.len > 0);
     if (file.display_name) |display_name| assert(isValidDisplayName(display_name));
 
-    var client: std.http.Client = .{
-        .allocator = gpa,
-        .io = io,
-    };
-    defer client.deinit();
-
-    var start = try startFileUpload(gpa, &client, api_key, file);
-    if (start.response.status != .ok) {
-        if (start.upload_url) |upload_url| gpa.free(upload_url);
-        return start.response;
-    }
-    defer start.response.deinit(gpa);
-
-    const upload_url = start.upload_url orelse return error.MissingUploadUrl;
-    defer gpa.free(upload_url);
-
-    return uploadFileBytes(gpa, &client, api_key, upload_url, file);
+    return api.uploadResumableBytes(gpa, io, api_key, .{
+        .content_type = file.mime.apiName(),
+        .bytes = file.bytes,
+        .display_name = file.display_name,
+    });
 }
 
 pub fn listFilesPage(
@@ -146,84 +133,8 @@ pub fn deleteFile(
     return api.deleteJson(gpa, io, api_key, url);
 }
 
-fn startFileUpload(
-    gpa: std.mem.Allocator,
-    client: *std.http.Client,
-    api_key: []const u8,
-    file: FileUpload,
-) !api.HttpResponseWithUploadUrl {
-    assert(api_key.len > 0);
-    assert(file.bytes.len > 0);
-    if (file.display_name) |display_name| assert(isValidDisplayName(display_name));
-
-    var content_length_buffer: [32]u8 = undefined;
-    const content_length = try std.fmt.bufPrint(&content_length_buffer, "{d}", .{file.bytes.len});
-
-    const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
-        .{ .name = "X-Goog-Upload-Protocol", .value = "resumable" },
-        .{ .name = "X-Goog-Upload-Command", .value = "start" },
-        .{ .name = "X-Goog-Upload-Header-Content-Length", .value = content_length },
-        .{ .name = "X-Goog-Upload-Header-Content-Type", .value = file.mime.apiName() },
-    };
-
-    const metadata_json = try buildFileUploadStartMetadata(gpa, file.display_name);
-    defer gpa.free(metadata_json);
-
-    return api.requestWithBody(gpa, client, .POST, fileUploadStartUrl(), "application/json", &headers, metadata_json, .{
-        .capture_upload_url = true,
-        .request_body_log = .{ .text = metadata_json },
-    });
-}
-
-fn uploadFileBytes(
-    gpa: std.mem.Allocator,
-    client: *std.http.Client,
-    api_key: []const u8,
-    upload_url: []const u8,
-    file: FileUpload,
-) !api.HttpResponse {
-    assert(api_key.len > 0);
-    assert(upload_url.len > 0);
-    assert(file.bytes.len > 0);
-    if (file.display_name) |display_name| assert(isValidDisplayName(display_name));
-
-    const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
-        .{ .name = "X-Goog-Upload-Offset", .value = "0" },
-        .{ .name = "X-Goog-Upload-Command", .value = "upload, finalize" },
-    };
-
-    const result = try api.requestWithBody(gpa, client, .POST, upload_url, file.mime.apiName(), &headers, file.bytes, .{
-        .request_body_log = .{
-            .binary = .{
-                .byte_count = file.bytes.len,
-                .mime = file.mime.apiName(),
-            },
-        },
-    });
-    assert(result.upload_url == null);
-    return result.response;
-}
-
 pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
-    const Response = struct {
-        file: ?ResponseFile = null,
-
-        const ResponseFile = struct {
-            name: ?[]const u8 = null,
-        };
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const file = parsed.value.file orelse return error.MissingFileName;
-    const name = file.name orelse return error.MissingFileName;
-    if (name.len == 0) return error.MissingFileName;
-    return gpa.dupe(u8, name);
+    return api.decodeUploadedFileName(gpa, response_json);
 }
 
 pub fn decodeUploadedFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
@@ -407,34 +318,11 @@ fn isFileIdPathSegmentChar(byte: u8) bool {
 }
 
 fn buildFileUploadStartMetadata(gpa: std.mem.Allocator, display_name: ?[]const u8) ![]u8 {
-    if (display_name) |name| assert(isValidDisplayName(name));
-
-    const FileMetadata = struct {
-        displayName: ?[]const u8 = null,
-    };
-    const UploadStartMetadata = struct {
-        file: FileMetadata,
-    };
-    const request = UploadStartMetadata{
-        .file = .{
-            .displayName = display_name,
-        },
-    };
-
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-
-    try std.json.Stringify.value(request, .{ .emit_null_optional_fields = false }, &output.writer);
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    return api.buildResumableUploadMetadata(gpa, display_name);
 }
 
 fn isValidDisplayName(display_name: []const u8) bool {
-    if (display_name.len == 0) return false;
-    const codepoints = std.unicode.utf8CountCodepoints(display_name) catch return false;
-    return codepoints <= max_display_name_codepoints;
+    return api.isValidDisplayName(display_name);
 }
 
 fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
@@ -443,10 +331,6 @@ fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
 
 fn freeOptional(gpa: std.mem.Allocator, value: ?[]u8) void {
     if (value) |bytes| gpa.free(bytes);
-}
-
-fn fileUploadStartUrl() []const u8 {
-    return "https://generativelanguage.googleapis.com/upload/v1beta/files";
 }
 
 fn filesListBaseUrl() []const u8 {

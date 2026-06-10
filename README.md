@@ -16,6 +16,8 @@ The current implementation is intentionally narrow:
   content, service tier, and request storage
 - validate generation and edit requests with `countTokens` and append them to
   Gemini Batch API JSONL input files
+- validate and upload Batch JSONL input, submit one Batch job, and fetch one
+  current Batch operation status
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print whole-second response timing and sanitized response traffic by default,
@@ -60,6 +62,8 @@ nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
+nbimg batch submit [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--print-request] --name batches/ID
 ```
 
 Generate an image from a prompt:
@@ -148,8 +152,40 @@ On success, stdout receives a compact receipt suitable for scripts:
 ```
 
 `--print-request` remains independent and prints the `countTokens` validation
-request to stderr. This feature prepares input only; batch upload, submission,
-status, and result fetching are not implemented.
+request to stderr.
+
+Submit a prepared JSONL input file:
+
+```sh
+zig-out/bin/nbimg batch submit --path requests.jsonl
+```
+
+`batch submit` validates every JSONL line before network IO. Each entry must
+contain a non-empty unique `key` and an object-valued `request`. Empty or
+malformed lines are rejected. The current temporary limits are `4 MiB` per
+entry and `64 MiB` for the complete local file.
+
+The command uploads the input through the Gemini Files API as
+`application/jsonl`, then creates exactly one job for
+`models/gemini-3.1-flash-image:batchGenerateContent`. By default, both the
+uploaded File and Batch job use the complete local basename, including the
+`.jsonl` extension, as `displayName`. `--display-name NAME` overrides both.
+
+Job creation is non-idempotent and is never retried. If its transport fails
+after upload, `nbimg` reports the uploaded `files/...` name and warns that a
+job may already have been created. The uploaded JSONL remains in Gemini Files
+storage after submission.
+
+Successful submission prints the complete Batch response as pretty JSON. Use
+the returned canonical name for a single status request:
+
+```sh
+zig-out/bin/nbimg batch status --name batches/123456789
+```
+
+`batch status` performs one GET without polling or retries and prints every
+returned response field as pretty JSON. Results download, cancellation, and
+listing are not implemented.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
@@ -405,8 +441,8 @@ log request traffic. `--print-request` is accepted by all commands; for
 `files`, place it after the `upload`, `list`, `get`, or `delete` subcommand.
 Response logs include `response_time_seconds` before HTTP status and body.
 Gemini HTTP transactions time out after 180 seconds.
-Command results, such as generated filenames, Files API metadata JSON, or
-delete `OK`, go to stdout.
+Command results, such as generated filenames, Files API metadata JSON, Batch
+operation JSON, or delete `OK`, go to stdout.
 
 ## Testing
 
@@ -425,6 +461,7 @@ zig build test-live-api-edit-request-validity
 zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
+zig build test-live-api-batch-submit-status
 ```
 
 `generateContent` is billable, so the request-shape live tests for `gen` and
@@ -438,3 +475,9 @@ shape. Cached-content live validation requires an existing
 edit request-shape live test uploads `sample_images/good_night.jpeg` through
 the Files API, validates the edit request with the uploaded `files/...` name,
 and deletes the uploaded file after validation.
+
+`test-live-api-batch-submit-status` is explicitly billable and
+non-idempotent. It builds two `512` image-generation JSONL entries without
+`thinkingConfig`, uploads the input, creates exactly one Batch job, captures
+the returned `batches/...` name, and performs one status GET. The uploaded
+JSONL File and Batch job are left in the remote service.

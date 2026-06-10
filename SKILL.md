@@ -1,6 +1,6 @@
 ---
 name: nbimg
-description: Use when Codex needs to operate the nbimg CLI for Gemini image generation, image editing, uploaded Gemini Files API image reference management, or command construction involving nbimg gen, nbimg edit, nbimg files upload/list/get/delete, --ref ROLE[:LABEL]=files/ID,MIME references, generation controls, edit constraints, or output handling. Assumes the nbimg executable is available on PATH.
+description: Use when Codex needs to operate the nbimg CLI for Gemini image generation, image editing, uploaded Gemini Files API image reference management, Batch JSONL submission/status, or command construction involving nbimg gen, nbimg edit, nbimg files upload/list/get/delete, nbimg batch submit/status, --ref ROLE[:LABEL]=files/ID,MIME references, generation controls, edit constraints, or output handling. Assumes the nbimg executable is available on PATH.
 ---
 
 # nbimg CLI
@@ -10,7 +10,7 @@ Use `nbimg` directly from `PATH` for Gemini native image generation, image editi
 ## Preconditions
 
 - Require `GEMINI_API_KEY` in the environment before live API calls.
-- Treat `gen`, `edit`, and `files` commands as external API operations. Upload/list/get/delete affect remote Gemini Files API state; generation/edit produce live model output.
+- Treat `gen`, `edit`, `files`, and `batch` commands as external API operations. Upload/list/get/delete affect remote Gemini Files API state; generation/edit produce live model output; Batch submission is billable and non-idempotent.
 - Use only the `nbimg` CLI interface. Do not infer behavior from anything outside the CLI contract.
 
 ## Command Forms
@@ -22,6 +22,8 @@ nbimg files upload [--print-request] [--display-name NAME] --path PATH
 nbimg files list [--print-request]
 nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
+nbimg batch submit [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--print-request] --name batches/ID
 ```
 
 `gen` creates new image output from text. `edit` edits a base uploaded image with optional additional uploaded references. `files` manages uploaded Gemini file resources used by `edit`.
@@ -36,6 +38,7 @@ nbimg files delete [--print-request] --name files/ID
 - Prompts must be non-empty and at most 16 KiB. Prompt text is not accepted as a positional argument.
 - `--print-request` logs sanitized request traffic for debugging. Response traffic is logged to stderr by default.
 - Command results go to stdout: generated filenames, file metadata JSON, or delete `OK`.
+- Batch submit/status results are complete pretty-printed API JSON documents on stdout.
 - Generated image parts are written to the current directory unless `--out-dir DIR` is supplied. `--out-dir` is supported only for `gen` and `edit`, must be used at most once, and must name an existing directory.
 - Text response parts are not written as separate files; inspect stderr response logs when text metadata matters.
 
@@ -98,6 +101,41 @@ Delete stale uploads:
 ```sh
 nbimg files delete --name files/abc123
 ```
+
+## Batch Workflow
+
+Prepare JSONL with `gen --batch-file` or `edit --batch-file`, then submit it:
+
+```sh
+nbimg gen \
+  --batch-file requests.jsonl \
+  --batch-key hero-001 \
+  --image-size 512 \
+  --prompt "Create a clean product hero image."
+
+nbimg batch submit --path requests.jsonl
+```
+
+`batch submit` validates the complete file before network IO. Entries require
+unique non-empty `key` values and object-valued `request` fields. Current local
+limits are 4 MiB per entry and 64 MiB per file.
+
+The complete basename, including `.jsonl`, is the default display name for
+both the uploaded File and Batch job. `--display-name` overrides both. The
+upload uses `application/jsonl` and remains in Gemini Files storage.
+
+Batch creation happens exactly once and is never retried. If transport fails
+after upload, report the printed `files/...` name and treat the job state as
+ambiguous because a job may have been created.
+
+Use the returned canonical name for one status request:
+
+```sh
+nbimg batch status --name batches/123456789
+```
+
+`batch status` performs one GET. It does not poll or retry. Results download,
+cancellation, and listing are outside the current CLI.
 
 ## Editing
 

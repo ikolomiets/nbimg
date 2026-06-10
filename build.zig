@@ -33,11 +33,21 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "api", "src/api.zig");
+    addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "batch", "src/batch.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "gen", "src/gen.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "edit", "src/edit.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "files", "src/files.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "cli", "src/cli.zig");
 
+    addLiveApiTestStep(
+        b,
+        target,
+        execution_optimize,
+        "test-live-api-batch-submit-status",
+        "BILLABLE and non-idempotent: submit one Gemini Batch job and fetch its status",
+        "src/batch.zig",
+        "live API batch submit and status succeeds",
+    );
     addLiveApiTestStep(
         b,
         target,

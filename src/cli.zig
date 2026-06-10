@@ -3,6 +3,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const api = @import("api.zig");
+const api_batch = @import("batch.zig");
 const api_edit = @import("edit.zig");
 const api_files = @import("files.zig");
 const api_gen = @import("gen.zig");
@@ -13,7 +14,6 @@ const exit_failure = 1;
 const exit_usage = 2;
 const exit_response_parse = 3;
 const max_prompt_bytes = 16 * 1024;
-const max_batch_entry_bytes = 4 * 1024 * 1024;
 const live_edit_sample_image_path = "sample_images/good_night.jpeg";
 const live_edit_upload_display_name = "nbimg live edit request validity";
 const live_edit_prompt = "change visual style to Broadway musical";
@@ -82,6 +82,15 @@ pub const FilesDeleteCommand = struct {
     name: []const u8,
 };
 
+pub const BatchSubmitCommand = struct {
+    path: []const u8,
+    display_name: []const u8,
+};
+
+pub const BatchStatusCommand = struct {
+    name: []const u8,
+};
+
 pub const Command = union(enum) {
     gen: GenCommand,
     edit: EditCommand,
@@ -89,6 +98,8 @@ pub const Command = union(enum) {
     files_list: FilesListCommand,
     files_get: FilesGetCommand,
     files_delete: FilesDeleteCommand,
+    batch_submit: BatchSubmitCommand,
+    batch_status: BatchStatusCommand,
 };
 
 pub const ParsedCommand = struct {
@@ -101,6 +112,8 @@ pub const ParseError = error{
     UnknownCommand,
     MissingFilesCommand,
     UnknownFilesCommand,
+    MissingBatchCommand,
+    UnknownBatchCommand,
     MissingPrompt,
     EmptyPrompt,
     PromptTooLong,
@@ -129,6 +142,7 @@ pub const ParseError = error{
     EmptyName,
     DuplicateName,
     InvalidName,
+    InvalidBatchName,
     MissingDisplayName,
     EmptyDisplayName,
     DuplicateDisplayName,
@@ -309,6 +323,8 @@ pub fn run(init: std.process.Init) u8 {
         .files_list => runFilesList(init, gpa, api_key),
         .files_get => |files_get| runFilesGet(init, gpa, api_key, files_get),
         .files_delete => |files_delete| runFilesDelete(init, gpa, api_key, files_delete),
+        .batch_submit => |batch_submit| runBatchSubmit(init, gpa, api_key, batch_submit),
+        .batch_status => |batch_status| runBatchStatus(init, gpa, api_key, batch_status),
     };
 }
 
@@ -514,7 +530,7 @@ fn runBatchRequest(
             ),
             error.BatchEntryTooLong => std.debug.print(
                 "error: batch entry exceeds {d} bytes: {s}\n",
-                .{ max_batch_entry_bytes, batch_file },
+                .{ api_batch.max_entry_bytes, batch_file },
             ),
             else => std.debug.print(
                 "error: failed to append batch request to {s}: {s}\n",
@@ -592,9 +608,9 @@ fn appendBatchRequest(
 
     try ensureBatchKeyUnique(gpa, io, file, effective_key);
 
-    const entry_json = try api.buildBatchEntryJson(gpa, effective_key, generate_request_json);
+    const entry_json = try api_batch.buildEntryJson(gpa, effective_key, generate_request_json);
     defer gpa.free(entry_json);
-    if (entry_json.len > max_batch_entry_bytes) return error.BatchEntryTooLong;
+    if (entry_json.len > api_batch.max_entry_bytes) return error.BatchEntryTooLong;
 
     var append_output: std.Io.Writer.Allocating = .init(gpa);
     defer append_output.deinit();
@@ -626,7 +642,7 @@ fn ensureBatchKeyUnique(
         _ = file_reader.interface.streamDelimiterLimit(
             &line_output.writer,
             '\n',
-            .limited(max_batch_entry_bytes + 1),
+            .limited(api_batch.max_entry_bytes + 1),
         ) catch |err| switch (err) {
             error.StreamTooLong => return error.BatchEntryTooLong,
             error.WriteFailed => return error.OutOfMemory,
@@ -638,7 +654,7 @@ fn ensureBatchKeyUnique(
         if (has_delimiter) assert(buffered[0] == '\n');
 
         const line = line_output.written();
-        if (line.len > max_batch_entry_bytes) return error.BatchEntryTooLong;
+        if (line.len > api_batch.max_entry_bytes) return error.BatchEntryTooLong;
         if (line.len == 0) {
             if (!has_delimiter) return;
             return error.InvalidBatchFile;
@@ -1119,6 +1135,164 @@ fn runFilesDelete(init: std.process.Init, gpa: std.mem.Allocator, api_key: []con
     return exit_success;
 }
 
+fn runBatchSubmit(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    api_key: []const u8,
+    command: BatchSubmitCommand,
+) u8 {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        init.io,
+        command.path,
+        gpa,
+        .limited(api_batch.max_input_bytes + 1),
+    ) catch |err| {
+        if (err == error.StreamTooLong) {
+            std.debug.print(
+                "error: batch input file exceeds {d} bytes\n",
+                .{api_batch.max_input_bytes},
+            );
+            return exit_usage;
+        }
+        std.debug.print("error: failed to read batch input file: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer gpa.free(bytes);
+
+    api_batch.validateInputJsonl(gpa, bytes) catch |err| {
+        switch (err) {
+            error.EmptyBatchInput => std.debug.print("error: batch input file must not be empty\n", .{}),
+            error.BatchInputTooLong => std.debug.print(
+                "error: batch input file exceeds {d} bytes\n",
+                .{api_batch.max_input_bytes},
+            ),
+            error.BatchEntryTooLong => std.debug.print(
+                "error: batch input entry exceeds {d} bytes\n",
+                .{api_batch.max_entry_bytes},
+            ),
+            error.DuplicateBatchKey => std.debug.print("error: batch input contains a duplicate key\n", .{}),
+            error.InvalidBatchInput => std.debug.print("error: batch input is not valid Batch API JSONL\n", .{}),
+            else => std.debug.print("error: failed to validate batch input: {s}\n", .{@errorName(err)}),
+        }
+        return exit_usage;
+    };
+
+    var upload_response = api_batch.uploadInput(
+        gpa,
+        init.io,
+        api_key,
+        bytes,
+        command.display_name,
+    ) catch |err| {
+        printApiRequestError(err);
+        return exit_failure;
+    };
+    defer upload_response.deinit(gpa);
+
+    if (upload_response.status != .ok) {
+        std.debug.print(
+            "error: batch input upload failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(upload_response.status), upload_response.body },
+        );
+        return exit_failure;
+    }
+
+    const uploaded_file_name = api.decodeUploadedFileName(gpa, upload_response.body) catch |err| {
+        std.debug.print("error: failed to parse batch input upload response: {s}\n", .{@errorName(err)});
+        return exit_response_parse;
+    };
+    defer gpa.free(uploaded_file_name);
+
+    var submit_response = api_batch.submit(gpa, init.io, api_key, .{
+        .file_name = uploaded_file_name,
+        .display_name = command.display_name,
+    }) catch |err| {
+        printAmbiguousBatchCreationFailure(uploaded_file_name, err);
+        return exit_failure;
+    };
+    defer submit_response.deinit(gpa);
+
+    if (submit_response.status != .ok) {
+        std.debug.print(
+            "error: batch creation failed with HTTP {d}; uploaded input remains as {s}\n{s}\n",
+            .{ @intFromEnum(submit_response.status), uploaded_file_name, submit_response.body },
+        );
+        return exit_failure;
+    }
+
+    const batch_name = api_batch.decodeBatchName(gpa, submit_response.body) catch |err| {
+        std.debug.print("error: failed to parse batch creation response: {s}\n", .{@errorName(err)});
+        return exit_response_parse;
+    };
+    defer gpa.free(batch_name);
+
+    return printPrettyBatchResponse(init.io, gpa, submit_response.body);
+}
+
+fn runBatchStatus(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    api_key: []const u8,
+    command: BatchStatusCommand,
+) u8 {
+    var response = api_batch.status(gpa, init.io, api_key, command.name) catch |err| {
+        printApiRequestError(err);
+        return exit_failure;
+    };
+    defer response.deinit(gpa);
+
+    if (response.status != .ok) {
+        std.debug.print(
+            "error: batch status failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(response.status), response.body },
+        );
+        return exit_failure;
+    }
+
+    return printPrettyBatchResponse(init.io, gpa, response.body);
+}
+
+fn printPrettyBatchResponse(io: std.Io, gpa: std.mem.Allocator, response_body: []const u8) u8 {
+    const output = api_batch.prettyJson(gpa, response_body) catch |err| {
+        std.debug.print("error: failed to parse Batch API response: {s}\n", .{@errorName(err)});
+        return exit_response_parse;
+    };
+    defer gpa.free(output);
+
+    writeStdoutLine(io, output) catch |err| {
+        std.debug.print("error: failed to print Batch API response: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    return exit_success;
+}
+
+fn printAmbiguousBatchCreationFailure(uploaded_file_name: []const u8, err: anyerror) void {
+    assert(api.isCanonicalFileName(uploaded_file_name));
+
+    std.debug.print(
+        "error: batch creation transport failed after uploading {s}: {s}\n",
+        .{ uploaded_file_name, @errorName(err) },
+    );
+    std.debug.print(
+        "warning: batch creation is non-idempotent; a job may have been created, so nbimg did not retry\n",
+        .{},
+    );
+}
+
+fn ambiguousBatchCreationFailureText(
+    gpa: std.mem.Allocator,
+    uploaded_file_name: []const u8,
+    err: anyerror,
+) ![]u8 {
+    assert(api.isCanonicalFileName(uploaded_file_name));
+    return std.fmt.allocPrint(
+        gpa,
+        "error: batch creation transport failed after uploading {s}: {s}\n" ++
+            "warning: batch creation is non-idempotent; a job may have been created, so nbimg did not retry\n",
+        .{ uploaded_file_name, @errorName(err) },
+    );
+}
+
 pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
     return parseArgsWithPrompt(args, null);
 }
@@ -1182,6 +1356,30 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
         }
 
         return error.UnknownFilesCommand;
+    }
+
+    if (std.mem.eql(u8, args[1], "batch")) {
+        if (args.len < 3) return error.MissingBatchCommand;
+
+        const subcommand: []const u8 = args[2];
+        var command_args: CommandArgs = .{ .args = args[3..] };
+        if (std.mem.eql(u8, subcommand, "submit")) {
+            const batch_submit = try parseBatchSubmitCommand(&command_args);
+            return .{
+                .traffic_log_options = command_args.traffic_log_options,
+                .command = .{ .batch_submit = batch_submit },
+            };
+        }
+
+        if (std.mem.eql(u8, subcommand, "status")) {
+            const batch_status = try parseBatchStatusCommand(&command_args);
+            return .{
+                .traffic_log_options = command_args.traffic_log_options,
+                .command = .{ .batch_status = batch_status },
+            };
+        }
+
+        return error.UnknownBatchCommand;
     }
 
     return error.UnknownCommand;
@@ -2030,6 +2228,67 @@ fn parseFilesDeleteCommand(command_args: *CommandArgs) ParseError!FilesDeleteCom
     };
 }
 
+fn parseBatchSubmitCommand(command_args: *CommandArgs) ParseError!BatchSubmitCommand {
+    var path: ?[]const u8 = null;
+    var display_name: ?[]const u8 = null;
+
+    while (command_args.nextOption()) |arg| {
+        if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
+
+        if (std.mem.eql(u8, arg, "--out-dir")) {
+            return error.OutDirUnsupported;
+        } else if (std.mem.eql(u8, arg, "--path")) {
+            if (path != null) return error.DuplicatePath;
+
+            const value = try command_args.nextValue(error.MissingPath);
+            if (value.len == 0) return error.EmptyPath;
+            path = value;
+        } else if (std.mem.eql(u8, arg, "--display-name")) {
+            if (display_name != null) return error.DuplicateDisplayName;
+
+            const value = try command_args.nextValue(error.MissingDisplayName);
+            try validateDisplayName(value);
+            display_name = value;
+        } else {
+            return error.UnknownFlag;
+        }
+    }
+
+    const input_path = path orelse return error.MissingPath;
+    const effective_display_name = display_name orelse std.fs.path.basename(input_path);
+    try validateDisplayName(effective_display_name);
+
+    return .{
+        .path = input_path,
+        .display_name = effective_display_name,
+    };
+}
+
+fn parseBatchStatusCommand(command_args: *CommandArgs) ParseError!BatchStatusCommand {
+    var name: ?[]const u8 = null;
+
+    while (command_args.nextOption()) |arg| {
+        if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
+
+        if (std.mem.eql(u8, arg, "--out-dir")) {
+            return error.OutDirUnsupported;
+        } else if (std.mem.eql(u8, arg, "--name")) {
+            if (name != null) return error.DuplicateName;
+
+            const value = try command_args.nextValue(error.MissingName);
+            if (value.len == 0) return error.EmptyName;
+            if (!api_batch.isCanonicalBatchName(value)) return error.InvalidBatchName;
+            name = value;
+        } else {
+            return error.UnknownFlag;
+        }
+    }
+
+    return .{
+        .name = name orelse return error.MissingName,
+    };
+}
+
 fn parseRequiredFileName(command_args: *CommandArgs) ParseError![]const u8 {
     var name: ?[]const u8 = null;
     while (command_args.nextOption()) |arg| {
@@ -2228,6 +2487,8 @@ fn printUsageError(err: ParseError) void {
         error.UnknownCommand => std.debug.print("error: unknown command\n", .{}),
         error.MissingFilesCommand => std.debug.print("error: missing files subcommand\n", .{}),
         error.UnknownFilesCommand => std.debug.print("error: unknown files subcommand\n", .{}),
+        error.MissingBatchCommand => std.debug.print("error: missing batch subcommand\n", .{}),
+        error.UnknownBatchCommand => std.debug.print("error: unknown batch subcommand\n", .{}),
         error.MissingPrompt => std.debug.print("error: missing prompt\n", .{}),
         error.EmptyPrompt => std.debug.print("error: prompt must not be empty\n", .{}),
         error.PromptTooLong => std.debug.print("error: prompt must be at most 16 KiB\n", .{}),
@@ -2249,13 +2510,14 @@ fn printUsageError(err: ParseError) void {
         error.MissingPreserve => std.debug.print("error: missing preserve text\n", .{}),
         error.MissingDoNot => std.debug.print("error: missing do-not text\n", .{}),
         error.TooManyConstraints => std.debug.print("error: too many edit constraints\n", .{}),
-        error.MissingPath => std.debug.print("error: missing upload path\n", .{}),
-        error.EmptyPath => std.debug.print("error: upload path must not be empty\n", .{}),
-        error.DuplicatePath => std.debug.print("error: upload path specified more than once\n", .{}),
-        error.MissingName => std.debug.print("error: missing file name\n", .{}),
-        error.EmptyName => std.debug.print("error: file name must not be empty\n", .{}),
-        error.DuplicateName => std.debug.print("error: file name specified more than once\n", .{}),
+        error.MissingPath => std.debug.print("error: missing input path\n", .{}),
+        error.EmptyPath => std.debug.print("error: input path must not be empty\n", .{}),
+        error.DuplicatePath => std.debug.print("error: input path specified more than once\n", .{}),
+        error.MissingName => std.debug.print("error: missing resource name\n", .{}),
+        error.EmptyName => std.debug.print("error: resource name must not be empty\n", .{}),
+        error.DuplicateName => std.debug.print("error: resource name specified more than once\n", .{}),
         error.InvalidName => std.debug.print("error: file name must use canonical files/... form\n", .{}),
+        error.InvalidBatchName => std.debug.print("error: batch name must use canonical batches/... form\n", .{}),
         error.MissingDisplayName => std.debug.print("error: missing display name\n", .{}),
         error.EmptyDisplayName => std.debug.print("error: display name must not be empty\n", .{}),
         error.DuplicateDisplayName => std.debug.print("error: display name specified more than once\n", .{}),
@@ -2353,6 +2615,8 @@ fn usageText() []const u8 {
         "       nbimg files list [--print-request]\n" ++
         "       nbimg files get [--print-request] --name files/ID\n" ++
         "       nbimg files delete [--print-request] --name files/ID\n" ++
+        "       nbimg batch submit [--print-request] [--display-name NAME] --path PATH\n" ++
+        "       nbimg batch status [--print-request] --name batches/ID\n" ++
         "\n" ++
         "edit reference details:\n" ++
         "       first --ref is the BASE_IMAGE and must omit LABEL\n" ++
@@ -2369,6 +2633,8 @@ fn usageText() []const u8 {
         "       --batch-file validates with countTokens, then appends a Batch API JSONL request instead of generating\n" ++
         "       --batch-key sets the response-correlation key; otherwise nbimg derives one from the append offset\n" ++
         "       batch keys must be unique within the file; --batch-file cannot be combined with --out-dir\n" ++
+        "       batch submit validates and uploads JSONL, then creates exactly one non-idempotent Batch job\n" ++
+        "       batch status performs one GET and requires the canonical batches/ID name\n" ++
         "\n" ++
         "advanced generation options:\n" ++
         "       --temperature accepts 0.0 to 2.0\n" ++
@@ -2439,6 +2705,10 @@ test "usageText documents edit reference roles and defaults" {
         "--batch-file validates with countTokens",
         "--batch-key sets the response-correlation key",
         "batch keys must be unique within the file",
+        "nbimg batch submit",
+        "nbimg batch status",
+        "creates exactly one non-idempotent Batch job",
+        "requires the canonical batches/ID name",
         "0.0 to 2.0",
         "0.0 to 1.0",
         "signed 32-bit decimal integer",
@@ -3658,6 +3928,105 @@ test "parseArgs accepts files delete request log flag" {
     try std.testing.expectEqualStrings("files/abc123", files_delete.name);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
+test "parseArgs accepts batch submit and defaults display name to complete basename" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "batch",
+        "submit",
+        "--path",
+        "batch/requests.jsonl",
+    });
+    const batch_submit = expectBatchSubmitCommand(parsed_command);
+    try std.testing.expectEqualStrings("batch/requests.jsonl", batch_submit.path);
+    try std.testing.expectEqualStrings("requests.jsonl", batch_submit.display_name);
+    try std.testing.expect(!parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
+test "parseArgs accepts batch submit display name and request logging" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "batch",
+        "submit",
+        "--print-request",
+        "--display-name",
+        "image batch",
+        "--path",
+        "requests.jsonl",
+    });
+    const batch_submit = expectBatchSubmitCommand(parsed_command);
+    try std.testing.expectEqualStrings("requests.jsonl", batch_submit.path);
+    try std.testing.expectEqualStrings("image batch", batch_submit.display_name);
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+}
+
+test "parseArgs accepts batch status canonical name" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "batch",
+        "status",
+        "--name",
+        "batches/abc123",
+        "--print-request",
+    });
+    const batch_status = expectBatchStatusCommand(parsed_command);
+    try std.testing.expectEqualStrings("batches/abc123", batch_status.name);
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+}
+
+test "parseArgs rejects invalid batch command arguments" {
+    try std.testing.expectError(error.MissingBatchCommand, parseArgs(&.{ "nbimg", "batch" }));
+    try std.testing.expectError(error.UnknownBatchCommand, parseArgs(&.{ "nbimg", "batch", "list" }));
+    try std.testing.expectError(error.MissingPath, parseArgs(&.{ "nbimg", "batch", "submit" }));
+    try std.testing.expectError(error.DuplicatePath, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "submit",
+        "--path",
+        "one.jsonl",
+        "--path",
+        "two.jsonl",
+    }));
+    try std.testing.expectError(error.DuplicateDisplayName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "submit",
+        "--path",
+        "one.jsonl",
+        "--display-name",
+        "one",
+        "--display-name",
+        "two",
+    }));
+    try std.testing.expectError(error.MissingName, parseArgs(&.{ "nbimg", "batch", "status" }));
+    try std.testing.expectError(error.InvalidBatchName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "status",
+        "--name",
+        "abc123",
+    }));
+    try std.testing.expectError(error.InvalidBatchName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "status",
+        "--name",
+        "batches/",
+    }));
+}
+
+test "ambiguous batch creation failure reports uploaded file and no retry" {
+    const gpa = std.testing.allocator;
+    const message = try ambiguousBatchCreationFailureText(gpa, "files/input123", error.Timeout);
+    defer gpa.free(message);
+
+    try std.testing.expectEqualStrings(
+        "error: batch creation transport failed after uploading files/input123: Timeout\n" ++
+            "warning: batch creation is non-idempotent; a job may have been created, so nbimg did not retry\n",
+        message,
+    );
 }
 
 test "files upload json formats all metadata fields" {
@@ -5053,6 +5422,20 @@ fn expectFilesGetCommand(parsed_command: ParsedCommand) FilesGetCommand {
 fn expectFilesDeleteCommand(parsed_command: ParsedCommand) FilesDeleteCommand {
     return switch (parsed_command.command) {
         .files_delete => |files_delete| files_delete,
+        else => unreachable,
+    };
+}
+
+fn expectBatchSubmitCommand(parsed_command: ParsedCommand) BatchSubmitCommand {
+    return switch (parsed_command.command) {
+        .batch_submit => |batch_submit| batch_submit,
+        else => unreachable,
+    };
+}
+
+fn expectBatchStatusCommand(parsed_command: ParsedCommand) BatchStatusCommand {
+    return switch (parsed_command.command) {
+        .batch_status => |batch_status| batch_status,
         else => unreachable,
     };
 }
