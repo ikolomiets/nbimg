@@ -112,12 +112,16 @@ pub const Command = union(enum) {
 
 pub const ParsedCommand = struct {
     traffic_log_options: api.TrafficLogOptions = default_cli_traffic_log_options,
+    api_key: ?[]const u8 = null,
     command: Command,
 };
 
 pub const ParseError = error{
     MissingCommand,
     UnknownCommand,
+    MissingApiKey,
+    EmptyApiKey,
+    DuplicateApiKey,
     MissingFilesCommand,
     UnknownFilesCommand,
     MissingBatchCommand,
@@ -245,14 +249,23 @@ const CommandArgs = struct {
     args: []const [:0]const u8,
     index: usize = 0,
     traffic_log_options: api.TrafficLogOptions = default_cli_traffic_log_options,
+    api_key: ?[]const u8 = null,
 
-    fn nextOption(command_args: *CommandArgs) ?[]const u8 {
+    fn nextOption(command_args: *CommandArgs) ParseError!?[]const u8 {
         while (command_args.index < command_args.args.len) {
             const arg_z = command_args.args[command_args.index];
             command_args.index += 1;
 
             const arg: []const u8 = arg_z;
             if (parseTrafficLogFlag(arg, &command_args.traffic_log_options)) continue;
+            if (std.mem.eql(u8, arg, "--api-key")) {
+                if (command_args.api_key != null) return error.DuplicateApiKey;
+
+                const value = try command_args.nextValue(error.MissingApiKey);
+                if (value.len == 0) return error.EmptyApiKey;
+                command_args.api_key = value;
+                continue;
+            }
             return arg;
         }
 
@@ -313,7 +326,7 @@ pub fn run(init: std.process.Init) u8 {
     api.traffic_log_options = parsed_command.traffic_log_options;
     defer api.traffic_log_options = .{};
 
-    const api_key = api.apiKeyFromMap(init.environ_map) catch |err| switch (err) {
+    const api_key = resolveApiKey(parsed_command.api_key, init.environ_map) catch |err| switch (err) {
         error.MissingApiKey => {
             std.debug.print("error: GEMINI_API_KEY is not set\n", .{});
             return exit_usage;
@@ -336,6 +349,18 @@ pub fn run(init: std.process.Init) u8 {
         .batch_cancel => |batch_cancel| runBatchCancel(init, gpa, api_key, batch_cancel),
         .batch_list => runBatchList(init, gpa, api_key),
     };
+}
+
+fn resolveApiKey(
+    explicit_api_key: ?[]const u8,
+    environ_map: *const std.process.Environ.Map,
+) api.ApiKeyError![]const u8 {
+    if (explicit_api_key) |api_key| {
+        if (api_key.len == 0) return error.EmptyApiKey;
+        return api_key;
+    }
+
+    return api.apiKeyFromMap(environ_map);
 }
 
 fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
@@ -1388,7 +1413,7 @@ fn ambiguousBatchCreationFailureText(
     );
 }
 
-pub fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
+fn parseArgs(args: []const [:0]const u8) ParseError!ParsedCommand {
     return parseArgsWithPrompt(args, null);
 }
 
@@ -1400,6 +1425,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
         const gen = try parseGenCommand(&command_args, stdin_prompt);
         return .{
             .traffic_log_options = command_args.traffic_log_options,
+            .api_key = command_args.api_key,
             .command = .{ .gen = gen },
         };
     }
@@ -1409,6 +1435,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
         const edit = try parseEditCommand(&command_args, stdin_prompt);
         return .{
             .traffic_log_options = command_args.traffic_log_options,
+            .api_key = command_args.api_key,
             .command = .{ .edit = edit },
         };
     }
@@ -1422,6 +1449,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const files_upload = try parseFilesUploadCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .files_upload = files_upload },
             };
         }
@@ -1430,6 +1458,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const files_list = try parseFilesListCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .files_list = files_list },
             };
         }
@@ -1438,6 +1467,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const files_get = try parseFilesGetCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .files_get = files_get },
             };
         }
@@ -1446,6 +1476,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const files_delete = try parseFilesDeleteCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .files_delete = files_delete },
             };
         }
@@ -1462,6 +1493,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const batch_submit = try parseBatchSubmitCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .batch_submit = batch_submit },
             };
         }
@@ -1470,6 +1502,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const batch_status = try parseBatchStatusCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .batch_status = batch_status },
             };
         }
@@ -1478,6 +1511,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const batch_cancel = try parseBatchCancelCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .batch_cancel = batch_cancel },
             };
         }
@@ -1486,6 +1520,7 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             const batch_list = try parseBatchListCommand(&command_args);
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
+                .api_key = command_args.api_key,
                 .command = .{ .batch_list = batch_list },
             };
         }
@@ -1512,7 +1547,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
     var batch_file: ?[]const u8 = null;
     var batch_key: ?[]const u8 = null;
 
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
             if (prompt != null) return error.SplitPrompt;
             return error.UnexpectedArgument;
@@ -1594,7 +1629,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
     var do_nots: [max_edit_constraints][]const u8 = undefined;
     var do_not_count: usize = 0;
 
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) {
             if (prompt != null) return error.SplitPrompt;
             return error.UnexpectedArgument;
@@ -2271,7 +2306,7 @@ fn parseFilesUploadCommand(command_args: *CommandArgs) ParseError!FilesUploadCom
     var path: ?[]const u8 = null;
     var display_name: ?[]const u8 = null;
 
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
         if (std.mem.eql(u8, arg, "--out-dir")) {
@@ -2314,7 +2349,7 @@ fn validateDisplayName(display_name: []const u8) ParseError!void {
 }
 
 fn parseFilesListCommand(command_args: *CommandArgs) ParseError!FilesListCommand {
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
         if (std.mem.eql(u8, arg, "--out-dir")) {
@@ -2343,7 +2378,7 @@ fn parseBatchSubmitCommand(command_args: *CommandArgs) ParseError!BatchSubmitCom
     var path: ?[]const u8 = null;
     var display_name: ?[]const u8 = null;
 
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
         if (std.mem.eql(u8, arg, "--out-dir")) {
@@ -2389,7 +2424,7 @@ fn parseBatchCancelCommand(command_args: *CommandArgs) ParseError!BatchCancelCom
 
 fn parseRequiredBatchName(command_args: *CommandArgs) ParseError![]const u8 {
     var name: ?[]const u8 = null;
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
         if (std.mem.eql(u8, arg, "--out-dir")) {
@@ -2410,7 +2445,7 @@ fn parseRequiredBatchName(command_args: *CommandArgs) ParseError![]const u8 {
 }
 
 fn parseBatchListCommand(command_args: *CommandArgs) ParseError!BatchListCommand {
-    const arg = command_args.nextOption() orelse return .{};
+    const arg = try command_args.nextOption() orelse return .{};
     if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
     return error.UnknownFlag;
@@ -2418,7 +2453,7 @@ fn parseBatchListCommand(command_args: *CommandArgs) ParseError!BatchListCommand
 
 fn parseRequiredFileName(command_args: *CommandArgs) ParseError![]const u8 {
     var name: ?[]const u8 = null;
-    while (command_args.nextOption()) |arg| {
+    while (try command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
         if (std.mem.eql(u8, arg, "--out-dir")) {
@@ -2625,6 +2660,9 @@ fn printUsageError(err: ParseError) void {
     switch (err) {
         error.MissingCommand => std.debug.print("error: missing command\n", .{}),
         error.UnknownCommand => std.debug.print("error: unknown command\n", .{}),
+        error.MissingApiKey => std.debug.print("error: missing API key\n", .{}),
+        error.EmptyApiKey => std.debug.print("error: API key must not be empty\n", .{}),
+        error.DuplicateApiKey => std.debug.print("error: API key specified more than once\n", .{}),
         error.MissingFilesCommand => std.debug.print("error: missing files subcommand\n", .{}),
         error.UnknownFilesCommand => std.debug.print("error: unknown files subcommand\n", .{}),
         error.MissingBatchCommand => std.debug.print("error: missing batch subcommand\n", .{}),
@@ -2749,16 +2787,19 @@ fn printUsageError(err: ParseError) void {
 }
 
 fn usageText() []const u8 {
-    return "usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
-        "       nbimg files upload [--print-request] [--display-name NAME] --path PATH\n" ++
-        "       nbimg files list [--print-request]\n" ++
-        "       nbimg files get [--print-request] --name files/ID\n" ++
-        "       nbimg files delete [--print-request] --name files/ID\n" ++
-        "       nbimg batch submit [--print-request] [--display-name NAME] --path PATH\n" ++
-        "       nbimg batch status [--print-request] --name batches/ID\n" ++
-        "       nbimg batch cancel [--print-request] --name batches/ID\n" ++
-        "       nbimg batch list [--print-request]\n" ++
+    return "usage: nbimg gen [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg edit [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt \"PROMPT\"]\n" ++
+        "       nbimg files upload [--api-key KEY] [--print-request] [--display-name NAME] --path PATH\n" ++
+        "       nbimg files list [--api-key KEY] [--print-request]\n" ++
+        "       nbimg files get [--api-key KEY] [--print-request] --name files/ID\n" ++
+        "       nbimg files delete [--api-key KEY] [--print-request] --name files/ID\n" ++
+        "       nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH\n" ++
+        "       nbimg batch status [--api-key KEY] [--print-request] --name batches/ID\n" ++
+        "       nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID\n" ++
+        "       nbimg batch list [--api-key KEY] [--print-request]\n" ++
+        "\n" ++
+        "authentication options:\n" ++
+        "       --api-key overrides GEMINI_API_KEY; otherwise GEMINI_API_KEY must be set and non-empty\n" ++
         "\n" ++
         "edit reference details:\n" ++
         "       first --ref is the BASE_IMAGE and must omit LABEL\n" ++
@@ -2810,6 +2851,8 @@ fn usageText() []const u8 {
 test "usageText documents edit reference roles and defaults" {
     const usage = usageText();
     const expected = [_][]const u8{
+        "--api-key KEY",
+        "--api-key overrides GEMINI_API_KEY",
         "--aspect-ratio RATIO",
         "--image-size SIZE",
         "--system TEXT",
@@ -2884,6 +2927,7 @@ test "parseArgs accepts prompt flag" {
     const parsed_command = try parseArgs(&.{ "nbimg", "gen", "--prompt", "My fair lady" });
     const gen = expectGenCommand(parsed_command);
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed_command.api_key);
     try std.testing.expect(!parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
     try std.testing.expectEqual(@as(?api.ImageAspectRatio, null), gen.output_options.aspect_ratio);
@@ -2919,6 +2963,108 @@ test "parseArgs accepts print request flag" {
     try std.testing.expectEqualStrings("My fair lady", gen.prompt);
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
     try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
+test "parseArgs accepts API key for all command families" {
+    const gen_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--prompt",
+        "My fair lady",
+        "--api-key",
+        "gen-key",
+        "--print-request",
+    });
+    try std.testing.expectEqualStrings("gen-key", gen_command.api_key.?);
+    try std.testing.expect(gen_command.traffic_log_options.print_request);
+
+    const edit_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--api-key",
+        "edit-key",
+        "--ref",
+        "scene=files/test,image/jpeg",
+        "--prompt",
+        "Change the style",
+    });
+    try std.testing.expectEqualStrings("edit-key", edit_command.api_key.?);
+
+    const files_command = try parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--api-key",
+        "files-key",
+    });
+    try std.testing.expectEqualStrings("files-key", files_command.api_key.?);
+
+    const batch_command = try parseArgs(&.{
+        "nbimg",
+        "batch",
+        "status",
+        "--name",
+        "batches/test",
+        "--api-key",
+        "batch-key",
+    });
+    try std.testing.expectEqualStrings("batch-key", batch_command.api_key.?);
+}
+
+test "parseArgs rejects invalid API key arguments" {
+    try std.testing.expectError(error.MissingApiKey, parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--api-key",
+        "--prompt",
+        "My fair lady",
+    }));
+    try std.testing.expectError(error.EmptyApiKey, parseArgs(&.{
+        "nbimg",
+        "files",
+        "list",
+        "--api-key",
+        "",
+    }));
+    try std.testing.expectError(error.DuplicateApiKey, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "list",
+        "--api-key",
+        "one",
+        "--api-key",
+        "two",
+    }));
+}
+
+test "resolveApiKey prefers explicit API key" {
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+
+    try environ_map.put(api.api_key_env_name, "environment-key");
+    try std.testing.expectEqualStrings("argument-key", try resolveApiKey("argument-key", &environ_map));
+
+    try environ_map.put(api.api_key_env_name, "");
+    try std.testing.expectEqualStrings("argument-key", try resolveApiKey("argument-key", &environ_map));
+}
+
+test "resolveApiKey falls back to environment" {
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+
+    try environ_map.put(api.api_key_env_name, "environment-key");
+    try std.testing.expectEqualStrings("environment-key", try resolveApiKey(null, &environ_map));
+
+    try environ_map.put(api.api_key_env_name, "");
+    try std.testing.expectError(error.EmptyApiKey, resolveApiKey(null, &environ_map));
+}
+
+test "resolveApiKey rejects missing or empty explicit API key" {
+    var environ_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer environ_map.deinit();
+
+    try std.testing.expectError(error.MissingApiKey, resolveApiKey(null, &environ_map));
+    try std.testing.expectError(error.EmptyApiKey, resolveApiKey("", &environ_map));
 }
 
 test "parseArgs accepts gen output directory" {

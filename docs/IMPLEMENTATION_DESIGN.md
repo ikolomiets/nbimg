@@ -10,16 +10,16 @@ snapshot of the code that exists today, not the full product design in
 generation. The implemented command surface is:
 
 ```sh
-nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--display-name NAME] --path PATH
-nbimg files list [--print-request]
-nbimg files get [--print-request] --name files/ID
-nbimg files delete [--print-request] --name files/ID
-nbimg batch submit [--print-request] [--display-name NAME] --path PATH
-nbimg batch status [--print-request] --name batches/ID
-nbimg batch cancel [--print-request] --name batches/ID
-nbimg batch list [--print-request]
+nbimg gen [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--api-key KEY] [--print-request]
+nbimg files get [--api-key KEY] [--print-request] --name files/ID
+nbimg files delete [--api-key KEY] [--print-request] --name files/ID
+nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch list [--api-key KEY] [--print-request]
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
@@ -187,16 +187,16 @@ checks away.
 The CLI accepts:
 
 ```sh
-nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--display-name NAME] --path PATH
-nbimg files list [--print-request]
-nbimg files get [--print-request] --name files/ID
-nbimg files delete [--print-request] --name files/ID
-nbimg batch submit [--print-request] [--display-name NAME] --path PATH
-nbimg batch status [--print-request] --name batches/ID
-nbimg batch cancel [--print-request] --name batches/ID
-nbimg batch list [--print-request]
+nbimg gen [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier TIER] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--api-key KEY] [--print-request]
+nbimg files get [--api-key KEY] [--print-request] --name files/ID
+nbimg files delete [--api-key KEY] [--print-request] --name files/ID
+nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch list [--api-key KEY] [--print-request]
 ```
 
 Argument rules are intentionally narrow:
@@ -205,6 +205,9 @@ Argument rules are intentionally narrow:
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
 - The `batch` command requires a `submit`, `status`, `cancel`, or `list`
+  subcommand.
+- Every leaf command accepts one non-empty `--api-key KEY` option in any option
+  order. The option is not accepted before `gen`, `edit`, or a `files`/`batch`
   subcommand.
 - For `gen` and `edit`, `--prompt` is optional. If omitted, `cli.run` reads the
   prompt from stdin until EOF.
@@ -424,22 +427,26 @@ safety options:
 
 ## Authentication
 
-The current implementation reads the API key from:
+The CLI resolves one non-empty API key with this precedence:
 
-```text
-GEMINI_API_KEY
-```
+1. `--api-key KEY` on the leaf command.
+2. `GEMINI_API_KEY` from the inherited process environment.
 
-The value must exist and must not be empty. The key is passed as an
-`x-goog-api-key` HTTP header. It is not written into request JSON or output
-files. Validation is centralized in `api.apiKeyFromMap`, which returns a
-borrowed slice from the supplied environment map. Callers must keep that map
-alive while the key is in use; the CLI uses `init.environ_map`, and live tests
-create a temporary environment map from `std.testing.environ` in each live test
-scope.
+An explicit key overrides the environment even when `GEMINI_API_KEY` is empty.
+If `--api-key` is omitted, a missing or empty environment value is a usage
+error. Missing, empty, and repeated `--api-key` values are also usage errors.
 
-`GOOGLE_API_KEY`, key files, and explicit `--api-key` flags are not implemented
-yet.
+The selected key is a borrowed slice from either the process argument storage
+or environment map, both of which remain alive during command dispatch.
+Environment validation remains centralized in `api.apiKeyFromMap`; CLI
+precedence is handled by `cli.resolveApiKey`.
+
+The key is passed only as an `x-goog-api-key` HTTP header. It is not written
+into request JSON, traffic logs, diagnostics, or output files. Environment
+configuration remains preferable for routine use because command-line values
+may appear in shell history or process listings.
+
+`GOOGLE_API_KEY` fallback and key files are not implemented.
 
 ## Request Construction
 
@@ -466,7 +473,7 @@ has this shape:
 
 The prompt is asserted to be non-empty before request construction. This is a
 programmer boundary check; user-facing validation happens earlier in `cli.run`
-and `cli.parseArgs`.
+and the CLI argument parser.
 
 When `--aspect-ratio`, `--image-size`, or both are provided, `gen` and `edit`
 add `generationConfig.responseFormat.image` to the same request shape. CLI
@@ -675,7 +682,7 @@ The HTTP request uses:
 
 - `content-type: application/json`
 - `user-agent: nbimg/0.0.0`
-- `x-goog-api-key: GEMINI_API_KEY`
+- `x-goog-api-key: <resolved API key>`
 
 The full response body is buffered in memory. The current hard limit is:
 

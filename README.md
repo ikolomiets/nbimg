@@ -29,7 +29,7 @@ current implementation details.
 ## Requirements
 
 - Zig 0.16.0
-- `GEMINI_API_KEY` set in the environment for live API calls
+- a non-empty Gemini API key supplied through `GEMINI_API_KEY` or `--api-key`
 
 The project currently uses only the Zig standard library.
 
@@ -56,17 +56,27 @@ separate Debug artifact from the build cache.
 The CLI accepts these command forms:
 
 ```sh
-nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
-nbimg edit [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--display-name NAME] --path PATH
-nbimg files list [--print-request]
-nbimg files get [--print-request] --name files/ID
-nbimg files delete [--print-request] --name files/ID
-nbimg batch submit [--print-request] [--display-name NAME] --path PATH
-nbimg batch status [--print-request] --name batches/ID
-nbimg batch cancel [--print-request] --name batches/ID
-nbimg batch list [--print-request]
+nbimg gen [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] [--prompt "PROMPT"]
+nbimg edit [--api-key KEY] [--print-request] [--batch-file PATH [--batch-key KEY] | --out-dir DIR] [--system TEXT] [--cached-content cachedContents/ID] [--service-tier flex|standard|priority] [--store|--no-store] [--aspect-ratio RATIO] [--image-size SIZE] [--temperature FLOAT] [--top-p FLOAT] [--seed INT] [--max-output-tokens INT] [--presence-penalty FLOAT] [--frequency-penalty FLOAT] [--stop TEXT] [--response-logprobs] [--logprobs INT] [--grounding MODE] [--thinking-level LEVEL] [--include-thoughts] [--safety LEVEL] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
+nbimg files upload [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--api-key KEY] [--print-request]
+nbimg files get [--api-key KEY] [--print-request] --name files/ID
+nbimg files delete [--api-key KEY] [--print-request] --name files/ID
+nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch list [--api-key KEY] [--print-request]
 ```
+
+`--api-key` is accepted after the leaf command or subcommand in any option
+order. For example:
+
+```sh
+zig-out/bin/nbimg files list --api-key "$GEMINI_API_KEY"
+```
+
+Prefer the environment variable for routine use because command-line values
+may be retained in shell history or exposed through process inspection.
 
 Generate an image from a prompt:
 
