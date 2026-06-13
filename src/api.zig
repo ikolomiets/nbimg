@@ -1820,6 +1820,15 @@ pub fn getJson(
     return requestJsonWithoutBody(gpa, io, api_key, url, .GET);
 }
 
+pub fn postJsonWithoutBody(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+) !HttpResponse {
+    return requestJsonWithoutBody(gpa, io, api_key, url, .POST);
+}
+
 pub fn deleteJson(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -1885,6 +1894,7 @@ fn requestJsonWithoutBodyRaw(
     const result = try client.fetch(.{
         .location = .{ .url = url },
         .method = method,
+        .payload = if (method.requestHasBody()) "" else null,
         .headers = .{
             .user_agent = .{ .override = "nbimg/0.0.0" },
         },
@@ -2503,6 +2513,27 @@ test "runRequestWithTimeout completes against local HTTP response" {
     try server_future.await(io);
     try std.testing.expectEqual(std.http.Status.ok, response.response.status);
     try std.testing.expectEqualStrings("{}", response.response.body);
+}
+
+test "postJsonWithoutBody sends zero-length POST payload" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try listenLocalHttp(io);
+    defer server.deinit(io);
+
+    var server_future = try io.concurrent(acceptAndWriteHttpResponse, .{ io, &server });
+    defer cancelServerFuture(io, &server_future);
+
+    var url_buffer: [128]u8 = undefined;
+    const url = try localHttpUrl(&url_buffer, &server);
+
+    var response = try postJsonWithoutBody(gpa, io, "test-key", url);
+    defer response.deinit(gpa);
+
+    try server_future.await(io);
+    try std.testing.expectEqual(std.http.Status.ok, response.status);
+    try std.testing.expectEqualStrings("{}", response.body);
 }
 
 test "runRequestWithTimeout times out against silent local HTTP connection" {

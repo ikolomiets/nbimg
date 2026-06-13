@@ -17,7 +17,7 @@ The current implementation is intentionally narrow:
 - validate generation and edit requests with `countTokens` and append them to
   Gemini Batch API JSONL input files
 - validate and upload Batch JSONL input, submit one Batch job, fetch one
-  current Batch operation status, and list recent Batch jobs
+  current Batch operation status, request cancellation, and list recent jobs
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print whole-second response timing and sanitized response traffic by default,
@@ -64,6 +64,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch cancel [--print-request] --name batches/ID
 nbimg batch list [--print-request]
 ```
 
@@ -187,6 +188,18 @@ zig-out/bin/nbimg batch status --name batches/123456789
 `batch status` performs one GET without polling or retries and prints every
 returned response field as pretty JSON.
 
+Request best-effort cancellation of an existing Batch job:
+
+```sh
+zig-out/bin/nbimg batch cancel --name batches/123456789
+```
+
+`batch cancel` performs one bodyless POST without polling or retries and
+prints `OK` when Gemini accepts the request. Acceptance does not guarantee the
+job has already reached `JOB_STATE_CANCELLED`; use `batch status` to inspect
+the current state. Cancellation does not delete the Batch job or its uploaded
+JSONL input.
+
 List all recent Batch jobs currently exposed by Gemini:
 
 ```sh
@@ -198,8 +211,7 @@ zig-out/bin/nbimg batch list
 `operations` array. Each operation must have a canonical `batches/...` name,
 and all other returned operation fields are preserved. Gemini does not return
 deleted jobs from this recent-job history. The API's undocumented `filter`
-parameter is intentionally not exposed. Results download and cancellation are
-not implemented.
+parameter is intentionally not exposed. Results download is not implemented.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
@@ -498,5 +510,6 @@ the aggregate response without creating a job.
 `test-live-api-batch-submit-status` is explicitly billable and
 non-idempotent. It builds two `512` image-generation JSONL entries without
 `thinkingConfig`, uploads the input, creates exactly one Batch job, captures
-the returned `batches/...` name, and performs one status GET. The uploaded
-JSONL File and Batch job are left in the remote service.
+the returned `batches/...` name, performs one status GET, requests
+cancellation, and confirms the operation remains retrievable. The uploaded
+JSONL File and cancelled Batch job are left in the remote service.

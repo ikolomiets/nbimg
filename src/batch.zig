@@ -1,4 +1,4 @@
-//! Gemini Batch API JSONL validation, upload, submission, listing, and status handling.
+//! Gemini Batch API JSONL validation, upload, submission, listing, status, and cancellation.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -178,6 +178,19 @@ pub fn status(
     return api.getJson(gpa, io, api_key, url);
 }
 
+pub fn cancel(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    name: []const u8,
+) !api.HttpResponse {
+    assert(isCanonicalBatchName(name));
+
+    const url = try buildCancelUrl(gpa, name);
+    defer gpa.free(url);
+    return api.postJsonWithoutBody(gpa, io, api_key, url);
+}
+
 pub fn listPage(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -298,12 +311,21 @@ fn submitUrl() []const u8 {
 }
 
 fn buildStatusUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
+    return buildBatchUrl(gpa, name, "");
+}
+
+fn buildCancelUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
+    return buildBatchUrl(gpa, name, ":cancel");
+}
+
+fn buildBatchUrl(gpa: std.mem.Allocator, name: []const u8, suffix: []const u8) ![]u8 {
     assert(isCanonicalBatchName(name));
 
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
     try output.writer.writeAll("https://generativelanguage.googleapis.com/v1beta/batches/");
     try formatPathSegment(&output.writer, name[canonical_batch_name_prefix.len..]);
+    try output.writer.writeAll(suffix);
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
@@ -448,7 +470,7 @@ test "buildSubmitRequestJson uses uploaded file and display name" {
     );
 }
 
-test "batch URLs use fixed model and canonical status name" {
+test "batch URLs use fixed model and canonical resource names" {
     try std.testing.expectEqualStrings(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:batchGenerateContent",
         submitUrl(),
@@ -460,6 +482,13 @@ test "batch URLs use fixed model and canonical status name" {
     try std.testing.expectEqualStrings(
         "https://generativelanguage.googleapis.com/v1beta/batches/abc%20123%2Fone",
         status_url,
+    );
+
+    const cancel_url = try buildCancelUrl(gpa, "batches/abc 123/one");
+    defer gpa.free(cancel_url);
+    try std.testing.expectEqualStrings(
+        "https://generativelanguage.googleapis.com/v1beta/batches/abc%20123%2Fone:cancel",
+        cancel_url,
     );
 }
 
@@ -599,7 +628,7 @@ test "prettyJson rejects malformed response" {
     );
 }
 
-test "live API batch submit and status succeeds" {
+test "live API batch submit status and cancel succeeds" {
     if (!build_options.live_api_tests) return error.SkipZigTest;
 
     const gpa = std.testing.allocator;
@@ -676,6 +705,30 @@ test "live API batch submit and status succeeds" {
 
     const pretty_status = try prettyJson(gpa, status_response.body);
     defer gpa.free(pretty_status);
+
+    var cancel_response = try cancel(gpa, std.testing.io, api_key, batch_name);
+    defer cancel_response.deinit(gpa);
+    if (cancel_response.status != .ok) {
+        std.debug.print(
+            "error: live batch cancel failed with HTTP {d} for {s}\n{s}\n",
+            .{ @intFromEnum(cancel_response.status), batch_name, cancel_response.body },
+        );
+        return error.BatchCancelFailed;
+    }
+    try expectEmptyJsonObjectBody(gpa, cancel_response.body);
+
+    var cancelled_status_response = try status(gpa, std.testing.io, api_key, batch_name);
+    defer cancelled_status_response.deinit(gpa);
+    if (cancelled_status_response.status != .ok) {
+        std.debug.print(
+            "error: live cancelled batch status failed with HTTP {d} for {s}\n{s}\n",
+            .{ @intFromEnum(cancelled_status_response.status), batch_name, cancelled_status_response.body },
+        );
+        return error.BatchStatusFailed;
+    }
+
+    const pretty_cancelled_status = try prettyJson(gpa, cancelled_status_response.body);
+    defer gpa.free(pretty_cancelled_status);
 }
 
 test "live API batch list succeeds" {
@@ -743,4 +796,16 @@ fn buildLiveGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
             .image_size = .px512,
         },
     });
+}
+
+fn expectEmptyJsonObjectBody(gpa: std.mem.Allocator, body: []const u8) !void {
+    try std.testing.expectEqualStrings("{}", std.mem.trim(u8, body, " \t\r\n"));
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, body, .{});
+    defer parsed.deinit();
+
+    switch (parsed.value) {
+        .object => |object| try std.testing.expectEqual(@as(usize, 0), object.count()),
+        else => return error.ExpectedEmptyJsonObject,
+    }
 }

@@ -91,6 +91,10 @@ pub const BatchStatusCommand = struct {
     name: []const u8,
 };
 
+pub const BatchCancelCommand = struct {
+    name: []const u8,
+};
+
 pub const BatchListCommand = struct {};
 
 pub const Command = union(enum) {
@@ -102,6 +106,7 @@ pub const Command = union(enum) {
     files_delete: FilesDeleteCommand,
     batch_submit: BatchSubmitCommand,
     batch_status: BatchStatusCommand,
+    batch_cancel: BatchCancelCommand,
     batch_list: BatchListCommand,
 };
 
@@ -328,6 +333,7 @@ pub fn run(init: std.process.Init) u8 {
         .files_delete => |files_delete| runFilesDelete(init, gpa, api_key, files_delete),
         .batch_submit => |batch_submit| runBatchSubmit(init, gpa, api_key, batch_submit),
         .batch_status => |batch_status| runBatchStatus(init, gpa, api_key, batch_status),
+        .batch_cancel => |batch_cancel| runBatchCancel(init, gpa, api_key, batch_cancel),
         .batch_list => runBatchList(init, gpa, api_key),
     };
 }
@@ -1256,6 +1262,33 @@ fn runBatchStatus(
     return printPrettyBatchResponse(init.io, gpa, response.body);
 }
 
+fn runBatchCancel(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    api_key: []const u8,
+    command: BatchCancelCommand,
+) u8 {
+    var response = api_batch.cancel(gpa, init.io, api_key, command.name) catch |err| {
+        printApiRequestError(err);
+        return exit_failure;
+    };
+    defer response.deinit(gpa);
+
+    if (response.status != .ok) {
+        std.debug.print(
+            "error: batch cancel failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(response.status), response.body },
+        );
+        return exit_failure;
+    }
+
+    writeStdoutLine(init.io, "OK") catch |err| {
+        std.debug.print("error: failed to print batch cancel result: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    return exit_success;
+}
+
 fn runBatchList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8) u8 {
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
@@ -1438,6 +1471,14 @@ fn parseArgsWithPrompt(args: []const [:0]const u8, stdin_prompt: ?[]const u8) Pa
             return .{
                 .traffic_log_options = command_args.traffic_log_options,
                 .command = .{ .batch_status = batch_status },
+            };
+        }
+
+        if (std.mem.eql(u8, subcommand, "cancel")) {
+            const batch_cancel = try parseBatchCancelCommand(&command_args);
+            return .{
+                .traffic_log_options = command_args.traffic_log_options,
+                .command = .{ .batch_cancel = batch_cancel },
             };
         }
 
@@ -2335,8 +2376,19 @@ fn parseBatchSubmitCommand(command_args: *CommandArgs) ParseError!BatchSubmitCom
 }
 
 fn parseBatchStatusCommand(command_args: *CommandArgs) ParseError!BatchStatusCommand {
-    var name: ?[]const u8 = null;
+    return .{
+        .name = try parseRequiredBatchName(command_args),
+    };
+}
 
+fn parseBatchCancelCommand(command_args: *CommandArgs) ParseError!BatchCancelCommand {
+    return .{
+        .name = try parseRequiredBatchName(command_args),
+    };
+}
+
+fn parseRequiredBatchName(command_args: *CommandArgs) ParseError![]const u8 {
+    var name: ?[]const u8 = null;
     while (command_args.nextOption()) |arg| {
         if (!std.mem.startsWith(u8, arg, "--")) return error.UnexpectedArgument;
 
@@ -2354,9 +2406,7 @@ fn parseBatchStatusCommand(command_args: *CommandArgs) ParseError!BatchStatusCom
         }
     }
 
-    return .{
-        .name = name orelse return error.MissingName,
-    };
+    return name orelse return error.MissingName;
 }
 
 fn parseBatchListCommand(command_args: *CommandArgs) ParseError!BatchListCommand {
@@ -2707,6 +2757,7 @@ fn usageText() []const u8 {
         "       nbimg files delete [--print-request] --name files/ID\n" ++
         "       nbimg batch submit [--print-request] [--display-name NAME] --path PATH\n" ++
         "       nbimg batch status [--print-request] --name batches/ID\n" ++
+        "       nbimg batch cancel [--print-request] --name batches/ID\n" ++
         "       nbimg batch list [--print-request]\n" ++
         "\n" ++
         "edit reference details:\n" ++
@@ -2726,6 +2777,7 @@ fn usageText() []const u8 {
         "       batch keys must be unique within the file; --batch-file cannot be combined with --out-dir\n" ++
         "       batch submit validates and uploads JSONL, then creates exactly one non-idempotent Batch job\n" ++
         "       batch status performs one GET and requires the canonical batches/ID name\n" ++
+        "       batch cancel requests best-effort cancellation and prints OK when Gemini accepts it\n" ++
         "       batch list follows all pages of recent jobs and prints complete operation objects\n" ++
         "\n" ++
         "advanced generation options:\n" ++
@@ -2779,6 +2831,7 @@ test "usageText documents edit reference roles and defaults" {
         "--safety LEVEL",
         "--out-dir DIR",
         "--ref ROLE=files/ID,MIME",
+        "nbimg batch cancel",
         "first --ref is the BASE_IMAGE and must omit LABEL",
         "later --ref ROLE[:LABEL]=files/ID,MIME references may include LABEL",
         "scene|character|object|style|pose|composition|background|texture|image",
@@ -4070,6 +4123,21 @@ test "parseArgs accepts batch status canonical name" {
     try std.testing.expect(parsed_command.traffic_log_options.print_request);
 }
 
+test "parseArgs accepts batch cancel canonical name" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--name",
+        "batches/abc123",
+        "--print-request",
+    });
+    const batch_cancel = expectBatchCancelCommand(parsed_command);
+    try std.testing.expectEqualStrings("batches/abc123", batch_cancel.name);
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
 test "parseArgs accepts batch list" {
     const parsed_command = try parseArgs(&.{ "nbimg", "batch", "list" });
     _ = expectBatchListCommand(parsed_command);
@@ -4127,6 +4195,49 @@ test "parseArgs rejects invalid batch command arguments" {
         "status",
         "--name",
         "batches/",
+    }));
+    try std.testing.expectError(error.MissingName, parseArgs(&.{ "nbimg", "batch", "cancel" }));
+    try std.testing.expectError(error.DuplicateName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--name",
+        "batches/one",
+        "--name",
+        "batches/two",
+    }));
+    try std.testing.expectError(error.InvalidBatchName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--name",
+        "abc123",
+    }));
+    try std.testing.expectError(error.InvalidBatchName, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--name",
+        "batches/",
+    }));
+    try std.testing.expectError(error.UnexpectedArgument, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "batches/abc123",
+    }));
+    try std.testing.expectError(error.OutDirUnsupported, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--out-dir",
+        "output",
+    }));
+    try std.testing.expectError(error.UnknownFlag, parseArgs(&.{
+        "nbimg",
+        "batch",
+        "cancel",
+        "--force",
     }));
     try std.testing.expectError(error.UnexpectedArgument, parseArgs(&.{
         "nbimg",
@@ -5569,6 +5680,13 @@ fn expectBatchSubmitCommand(parsed_command: ParsedCommand) BatchSubmitCommand {
 fn expectBatchStatusCommand(parsed_command: ParsedCommand) BatchStatusCommand {
     return switch (parsed_command.command) {
         .batch_status => |batch_status| batch_status,
+        else => unreachable,
+    };
+}
+
+fn expectBatchCancelCommand(parsed_command: ParsedCommand) BatchCancelCommand {
+    return switch (parsed_command.command) {
+        .batch_cancel => |batch_cancel| batch_cancel,
         else => unreachable,
     };
 }

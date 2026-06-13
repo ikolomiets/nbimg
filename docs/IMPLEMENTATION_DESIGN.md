@@ -18,6 +18,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch cancel [--print-request] --name batches/ID
 nbimg batch list [--print-request]
 ```
 
@@ -37,11 +38,12 @@ Instead of immediate generation, `gen` and `edit` can validate the same
 JSONL input file.
 It can also upload image files to Gemini's Files API, list or get uploaded file
 metadata, delete uploaded files, validate and upload Batch JSONL, create one
-Batch job, fetch one current Batch operation, and list all recent Batch jobs.
+Batch job, fetch one current Batch operation, request cancellation, and list
+all recent Batch jobs.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, response snapshots, or
-Batch result download, cancellation, and streaming uploads.
+Batch result download and streaming uploads.
 
 ## Module Layout
 
@@ -62,7 +64,7 @@ The code is split into eight source files:
   generic resumable byte uploads, generated response decoding and output
   naming, and response log sanitization.
 - `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
-  input upload configuration, create/status/list request construction,
+  input upload configuration, create/status/cancel/list request construction,
   canonical `batches/...` validation, response-name and list-page decoding,
   pagination token handling, and full JSON pretty-printing.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
@@ -193,6 +195,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch cancel [--print-request] --name batches/ID
 nbimg batch list [--print-request]
 ```
 
@@ -201,7 +204,8 @@ Argument rules are intentionally narrow:
 - The command name must be `gen`, `edit`, `files`, or `batch`.
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
-- The `batch` command requires a `submit`, `status`, or `list` subcommand.
+- The `batch` command requires a `submit`, `status`, `cancel`, or `list`
+  subcommand.
 - For `gen` and `edit`, `--prompt` is optional. If omitted, `cli.run` reads the
   prompt from stdin until EOF.
 - Stdin prompts are preserved exactly, including trailing newlines, and are
@@ -341,8 +345,8 @@ Argument rules are intentionally narrow:
 - For `batch submit`, `--path` is required exactly once and
   `--display-name NAME` is optional at most once. The default is the complete
   basename, including `.jsonl`.
-- For `batch status`, `--name` is required exactly once and must use canonical
-  `batches/...` form; bare IDs are rejected.
+- For `batch status` and `batch cancel`, `--name` is required exactly once and
+  must use canonical `batches/...` form; bare IDs are rejected.
 - `batch list` accepts no command-specific flags or positional arguments. It
   does not expose the Batch API's undocumented `filter` parameter.
 - Response traffic is logged by default for all CLI commands.
@@ -377,6 +381,7 @@ usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-
        nbimg files delete [--print-request] --name files/ID
        nbimg batch submit [--print-request] [--display-name NAME] --path PATH
        nbimg batch status [--print-request] --name batches/ID
+       nbimg batch cancel [--print-request] --name batches/ID
        nbimg batch list [--print-request]
 
 edit reference details:
@@ -896,6 +901,18 @@ GET https://generativelanguage.googleapis.com/v1beta/batches/{id}
 Status does not poll or retry. A successful response is validated as JSON and
 every returned field is printed as one pretty JSON document.
 
+`nbimg batch cancel --name batches/ID` applies the same canonical-name
+validation and path-segment encoding, then performs one bodyless request:
+
+```text
+POST https://generativelanguage.googleapis.com/v1beta/batches/{id}:cancel
+```
+
+Cancellation does not poll or retry. HTTP 200 prints `OK`; non-OK responses
+include Gemini's response body in the diagnostic. Cancellation is best-effort,
+so callers can use `batch status` to inspect whether the operation reached
+`JOB_STATE_CANCELLED`. It does not delete the operation or its uploaded input.
+
 `nbimg batch list` repeatedly requests:
 
 ```text
@@ -923,8 +940,8 @@ document:
 
 The aggregated result never includes `nextPageToken`. Gemini's recent-job
 history does not return deleted jobs. The API's undocumented `filter`
-parameter is not exposed. Batch result download, cancellation, and deletion of
-the uploaded input are not implemented.
+parameter is not exposed. Batch result download and deletion of the uploaded
+input are not implemented.
 
 ## CountTokens Validation Helper
 
@@ -1178,8 +1195,9 @@ operation list without creating a Batch job.
 `test-live-api-batch-submit-status` is explicitly billable and non-idempotent.
 It builds two generation entries with `imageSize=512` and no `thinkingConfig`,
 uploads one JSONL input, creates exactly one Batch job, captures the returned
-canonical name, and performs one status GET. The remote uploaded File and job
-are intentionally retained.
+canonical name, performs one status GET, requests cancellation, validates the
+empty JSON response, and confirms the operation remains retrievable. The
+remote uploaded File and cancelled job are intentionally retained.
 
 Live generation checks live in `src/gen.zig`. They send a
 `GenerateContentRequest` shape with `responseFormat.image` to `countTokens`
@@ -1248,8 +1266,8 @@ The following areas are intentionally not implemented yet:
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
 - Response snapshots.
-- Batch result download, cancellation, streaming upload, and explicit cleanup
-  of uploaded JSONL input.
+- Batch result download, streaming upload, and explicit cleanup of uploaded
+  JSONL input.
 - Timeout and retry policy.
 - Structured verbose output.
 - Response fixture tests for full API payloads.
