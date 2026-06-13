@@ -16,8 +16,8 @@ The current implementation is intentionally narrow:
   content, service tier, and request storage
 - validate generation and edit requests with `countTokens` and append them to
   Gemini Batch API JSONL input files
-- validate and upload Batch JSONL input, submit one Batch job, and fetch one
-  current Batch operation status
+- validate and upload Batch JSONL input, submit one Batch job, fetch one
+  current Batch operation status, and list recent Batch jobs
 - upload supported image files to Gemini Files API
 - list, get, and delete uploaded Gemini files
 - print whole-second response timing and sanitized response traffic by default,
@@ -64,6 +64,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch list [--print-request]
 ```
 
 Generate an image from a prompt:
@@ -184,8 +185,21 @@ zig-out/bin/nbimg batch status --name batches/123456789
 ```
 
 `batch status` performs one GET without polling or retries and prints every
-returned response field as pretty JSON. Results download, cancellation, and
-listing are not implemented.
+returned response field as pretty JSON.
+
+List all recent Batch jobs currently exposed by Gemini:
+
+```sh
+zig-out/bin/nbimg batch list
+```
+
+`batch list` requests 100 operations per page, follows every returned
+`nextPageToken`, and prints one pretty JSON object containing the aggregated
+`operations` array. Each operation must have a canonical `batches/...` name,
+and all other returned operation fields are preserved. Gemini does not return
+deleted jobs from this recent-job history. The API's undocumented `filter`
+parameter is intentionally not exposed. Results download and cancellation are
+not implemented.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
@@ -461,6 +475,7 @@ zig build test-live-api-edit-request-validity
 zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
+zig build test-live-api-batch-list
 zig build test-live-api-batch-submit-status
 ```
 
@@ -475,6 +490,10 @@ shape. Cached-content live validation requires an existing
 edit request-shape live test uploads `sample_images/good_night.jpeg` through
 the Files API, validates the edit request with the uploaded `files/...` name,
 and deletes the uploaded file after validation.
+
+`test-live-api-batch-list` is non-billable and read-only. It follows all
+available Batch list pages, validates canonical operation names, and formats
+the aggregate response without creating a job.
 
 `test-live-api-batch-submit-status` is explicitly billable and
 non-idempotent. It builds two `512` image-generation JSONL entries without

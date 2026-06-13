@@ -18,6 +18,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch list [--print-request]
 ```
 
 The current build stays stdlib-only and keeps the module layout flat. The
@@ -36,11 +37,11 @@ Instead of immediate generation, `gen` and `edit` can validate the same
 JSONL input file.
 It can also upload image files to Gemini's Files API, list or get uploaded file
 metadata, delete uploaded files, validate and upload Batch JSONL, create one
-Batch job, and fetch one current Batch operation.
+Batch job, fetch one current Batch operation, and list all recent Batch jobs.
 
 The current implementation does not yet support chat, model selection, output
 file naming controls, local image inputs for `edit`, response snapshots, or
-Batch result download, cancellation, listing, and streaming uploads.
+Batch result download, cancellation, and streaming uploads.
 
 ## Module Layout
 
@@ -61,9 +62,9 @@ The code is split into eight source files:
   generic resumable byte uploads, generated response decoding and output
   naming, and response log sanitization.
 - `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
-  input upload configuration, create/status request construction, canonical
-  `batches/...` validation, response-name decoding, and full JSON
-  pretty-printing.
+  input upload configuration, create/status/list request construction,
+  canonical `batches/...` validation, response-name and list-page decoding,
+  pagination token handling, and full JSON pretty-printing.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
@@ -130,7 +131,9 @@ metadata.
 input and unique keys, enforces the temporary 4 MiB per-entry and 64 MiB local
 file limits, uploads bytes as `application/jsonl`, submits the uploaded
 `files/...` name to the fixed image model, builds status URLs from canonical
-`batches/...` names, and validates/pretty-prints successful JSON responses.
+`batches/...` names, builds paginated list URLs, validates listed operation
+names, preserves complete operation objects, and pretty-prints successful JSON
+responses.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
@@ -190,6 +193,7 @@ nbimg files get [--print-request] --name files/ID
 nbimg files delete [--print-request] --name files/ID
 nbimg batch submit [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--print-request] --name batches/ID
+nbimg batch list [--print-request]
 ```
 
 Argument rules are intentionally narrow:
@@ -197,7 +201,7 @@ Argument rules are intentionally narrow:
 - The command name must be `gen`, `edit`, `files`, or `batch`.
 - The `files` command requires an `upload`, `list`, `get`, or `delete`
   subcommand.
-- The `batch` command requires a `submit` or `status` subcommand.
+- The `batch` command requires a `submit`, `status`, or `list` subcommand.
 - For `gen` and `edit`, `--prompt` is optional. If omitted, `cli.run` reads the
   prompt from stdin until EOF.
 - Stdin prompts are preserved exactly, including trailing newlines, and are
@@ -339,6 +343,8 @@ Argument rules are intentionally narrow:
   basename, including `.jsonl`.
 - For `batch status`, `--name` is required exactly once and must use canonical
   `batches/...` form; bare IDs are rejected.
+- `batch list` accepts no command-specific flags or positional arguments. It
+  does not expose the Batch API's undocumented `filter` parameter.
 - Response traffic is logged by default for all CLI commands.
 - `--print-request` is an optional boolean flag on all commands. Its default
   value is `false`.
@@ -357,7 +363,7 @@ Argument rules are intentionally narrow:
 - `2` for usage and configuration errors, such as bad arguments or a missing
   API key.
 - `3` for successful HTTP responses whose JSON body cannot be parsed for
-  generated files, File metadata, or Batch operation JSON.
+  generated files, File metadata, Batch operation JSON, or a Batch list page.
 
 Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:
@@ -371,6 +377,7 @@ usage: nbimg gen [--print-request] [--batch-file PATH [--batch-key KEY] | --out-
        nbimg files delete [--print-request] --name files/ID
        nbimg batch submit [--print-request] [--display-name NAME] --path PATH
        nbimg batch status [--print-request] --name batches/ID
+       nbimg batch list [--print-request]
 
 edit reference details:
        first --ref is the BASE_IMAGE and must omit LABEL
@@ -887,9 +894,37 @@ GET https://generativelanguage.googleapis.com/v1beta/batches/{id}
 ```
 
 Status does not poll or retry. A successful response is validated as JSON and
-every returned field is printed as one pretty JSON document. Batch result
-download, cancellation, listing, and deletion of the uploaded input are not
-implemented.
+every returned field is printed as one pretty JSON document.
+
+`nbimg batch list` repeatedly requests:
+
+```text
+GET https://generativelanguage.googleapis.com/v1beta/batches?pageSize=100
+GET https://generativelanguage.googleapis.com/v1beta/batches?pageSize=100&pageToken={encoded-token}
+```
+
+The first request omits `pageToken`. Later requests percent-encode the opaque
+`nextPageToken` using only RFC 3986 unreserved characters without escaping.
+Listing follows pages until the service omits `nextPageToken` or returns it as
+an empty string.
+
+Each successful page must be a JSON object. An absent `operations` field is
+treated as an empty array; when present it must be an array of objects. Every
+operation must contain a canonical `batches/...` string name. Unknown operation
+fields and number spellings are preserved by storing each complete operation
+as owned JSON. After all pages are decoded, the CLI prints one pretty JSON
+document:
+
+```json
+{
+  "operations": []
+}
+```
+
+The aggregated result never includes `nextPageToken`. Gemini's recent-job
+history does not return deleted jobs. The API's undocumented `filter`
+parameter is not exposed. Batch result download, cancellation, and deletion of
+the uploaded input are not implemented.
 
 ## CountTokens Validation Helper
 
@@ -1051,10 +1086,14 @@ Allocator ownership is explicit:
   owned copy of the uploaded `files/...` name.
 - `files.decodeFile` and `files.decodeFileListPage` return owned File
   metadata. `decodeFileListPage` also returns an optional owned next page token.
+- `batch.decodeListPage` returns owned JSON for every complete operation and
+  an optional owned next page token. The CLI transfers those operation buffers
+  into the aggregate list before deinitializing each page.
 - `api.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
   buffers plus one owned response ID on the returned collection.
-- `HttpResponse.deinit`, `FileListPage.deinit`, `GeneratedFile.deinit`, and
-  `GeneratedFiles.deinit` release owned allocations.
+- `HttpResponse.deinit`, `FileListPage.deinit`, `batch.ListPage.deinit`,
+  `GeneratedFile.deinit`, and `GeneratedFiles.deinit` release owned
+  allocations.
 
 Partial decode failures clean up already-decoded file buffers with `errdefer`.
 
@@ -1072,9 +1111,11 @@ Current tests cover:
 - Batch option parsing, output-directory conflicts, automatic offset keys,
   separator insertion, duplicate-key rejection, and malformed-file
   preservation.
-- Batch submit/status parsing, canonical names, request JSON, endpoint URLs,
-  malformed and duplicate JSONL rejection, local size limits, complete
-  response pretty-printing, and ambiguous non-idempotent failure diagnostics.
+- Batch submit/status/list parsing, canonical names, request JSON, endpoint
+  URLs, list page-token encoding, arbitrary operation-field preservation,
+  empty list responses, multi-page aggregation, malformed and duplicate JSONL
+  rejection, local size limits, complete response pretty-printing, and
+  ambiguous non-idempotent failure diagnostics.
 - Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
@@ -1122,12 +1163,17 @@ zig build test-live-api-edit-request-validity
 zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
+zig build test-live-api-batch-list
 zig build test-live-api-batch-submit-status
 ```
 
 `GEMINI_API_KEY` is read from the inherited process environment through the
 same common borrowed-key validation helper, so an already-exported variable is
 enough.
+
+`test-live-api-batch-list` is non-billable and read-only. It follows every
+returned page, validates canonical operation names, and formats the aggregated
+operation list without creating a Batch job.
 
 `test-live-api-batch-submit-status` is explicitly billable and non-idempotent.
 It builds two generation entries with `imageSize=512` and no `thinkingConfig`,
@@ -1187,8 +1233,9 @@ behavior. Live tests enable `api.traffic_log_options` for request and response
 logging, require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an
 uploaded file in the Gemini Files API until Google expires it if a delete test
 fails before cleanup, intentionally retain Batch input uploads, and can fail
-due to quota or remote API errors. The Batch submit/status target also creates
-one billable non-idempotent job.
+due to quota or remote API errors. The Batch list target is read-only and
+non-billable. The Batch submit/status target creates one billable
+non-idempotent job.
 
 ## Known Gaps
 
@@ -1201,8 +1248,8 @@ The following areas are intentionally not implemented yet:
 - Output directory, file prefix, and overwrite controls.
 - Prompt files and additional prompt sources.
 - Response snapshots.
-- Batch result download, cancellation, listing, streaming upload, and explicit
-  cleanup of uploaded JSONL input.
+- Batch result download, cancellation, streaming upload, and explicit cleanup
+  of uploaded JSONL input.
 - Timeout and retry policy.
 - Structured verbose output.
 - Response fixture tests for full API payloads.

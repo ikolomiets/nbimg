@@ -1,4 +1,4 @@
-//! Gemini Batch API JSONL validation, upload, submission, and status handling.
+//! Gemini Batch API JSONL validation, upload, submission, listing, and status handling.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -13,6 +13,18 @@ pub const canonical_batch_name_prefix = "batches/";
 pub const SubmitRequest = struct {
     file_name: []const u8,
     display_name: []const u8,
+};
+
+pub const ListPage = struct {
+    operations: [][]u8,
+    next_page_token: ?[]u8 = null,
+
+    pub fn deinit(page: *ListPage, gpa: std.mem.Allocator) void {
+        for (page.operations) |operation| gpa.free(operation);
+        gpa.free(page.operations);
+        if (page.next_page_token) |token| gpa.free(token);
+        page.* = undefined;
+    }
 };
 
 pub fn buildEntryJson(
@@ -166,6 +178,20 @@ pub fn status(
     return api.getJson(gpa, io, api_key, url);
 }
 
+pub fn listPage(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    page_token: ?[]const u8,
+) !api.HttpResponse {
+    assert(api_key.len > 0);
+    if (page_token) |token| assert(token.len > 0);
+
+    const url = try buildListUrl(gpa, page_token);
+    defer gpa.free(url);
+    return api.getJson(gpa, io, api_key, url);
+}
+
 pub fn isCanonicalBatchName(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, canonical_batch_name_prefix)) return false;
     return name.len > canonical_batch_name_prefix.len;
@@ -186,21 +212,85 @@ pub fn decodeBatchName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 
     return gpa.dupe(u8, name);
 }
 
+pub fn decodeListPage(gpa: std.mem.Allocator, response_json: []const u8) !ListPage {
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
+        .parse_numbers = false,
+    });
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidBatchListResponse,
+    };
+
+    const operation_values: []const std.json.Value = if (root.get("operations")) |value| switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidBatchListResponse,
+    } else &.{};
+
+    const operations = try gpa.alloc([]u8, operation_values.len);
+    var operation_count: usize = 0;
+    errdefer {
+        for (operations[0..operation_count]) |operation| gpa.free(operation);
+        gpa.free(operations);
+    }
+
+    for (operation_values) |operation_value| {
+        const operation = switch (operation_value) {
+            .object => |object| object,
+            else => return error.InvalidBatchListResponse,
+        };
+        const name_value = operation.get("name") orelse return error.MissingBatchName;
+        const name = switch (name_value) {
+            .string => |string| string,
+            else => return error.MissingBatchName,
+        };
+        if (!isCanonicalBatchName(name)) return error.MissingBatchName;
+
+        operations[operation_count] = try stringifyJson(gpa, operation_value, .{});
+        operation_count += 1;
+    }
+    assert(operation_count == operations.len);
+
+    const next_page_token: ?[]u8 = if (root.get("nextPageToken")) |value| switch (value) {
+        .string => |token| if (token.len == 0) null else try gpa.dupe(u8, token),
+        else => return error.InvalidBatchListResponse,
+    } else null;
+    errdefer if (next_page_token) |token| gpa.free(token);
+
+    return .{
+        .operations = operations,
+        .next_page_token = next_page_token,
+    };
+}
+
+pub fn listJson(gpa: std.mem.Allocator, operations: []const []const u8) ![]u8 {
+    var compact: std.Io.Writer.Allocating = .init(gpa);
+    defer compact.deinit();
+
+    try compact.writer.writeAll("{\"operations\":[");
+    for (operations, 0..) |operation, index| {
+        assert(operation.len >= 2);
+        assert(operation[0] == '{');
+        assert(operation[operation.len - 1] == '}');
+
+        if (index > 0) try compact.writer.writeByte(',');
+        try compact.writer.writeAll(operation);
+    }
+    try compact.writer.writeAll("]}");
+
+    return prettyJson(gpa, compact.written());
+}
+
 pub fn prettyJson(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
         .parse_numbers = false,
     });
     defer parsed.deinit();
 
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-    try std.json.Stringify.value(parsed.value, .{
+    return stringifyJson(gpa, parsed.value, .{
         .whitespace = .indent_2,
-    }, &output.writer);
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    });
 }
 
 fn submitUrl() []const u8 {
@@ -214,6 +304,36 @@ fn buildStatusUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
     errdefer output.deinit();
     try output.writer.writeAll("https://generativelanguage.googleapis.com/v1beta/batches/");
     try formatPathSegment(&output.writer, name[canonical_batch_name_prefix.len..]);
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+fn buildListUrl(gpa: std.mem.Allocator, page_token: ?[]const u8) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+
+    try output.writer.writeAll("https://generativelanguage.googleapis.com/v1beta/batches?pageSize=100");
+    if (page_token) |token| {
+        assert(token.len > 0);
+        try output.writer.writeAll("&pageToken=");
+        try (std.Uri.Component{ .raw = token }).formatEscaped(&output.writer);
+    }
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
+fn stringifyJson(
+    gpa: std.mem.Allocator,
+    value: std.json.Value,
+    options: std.json.Stringify.Options,
+) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    try std.json.Stringify.value(value, options, &output.writer);
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
@@ -343,6 +463,24 @@ test "batch URLs use fixed model and canonical status name" {
     );
 }
 
+test "batch list URLs use page size and percent-encoded token" {
+    const gpa = std.testing.allocator;
+
+    const first_url = try buildListUrl(gpa, null);
+    defer gpa.free(first_url);
+    try std.testing.expectEqualStrings(
+        "https://generativelanguage.googleapis.com/v1beta/batches?pageSize=100",
+        first_url,
+    );
+
+    const next_url = try buildListUrl(gpa, "next token&one");
+    defer gpa.free(next_url);
+    try std.testing.expectEqualStrings(
+        "https://generativelanguage.googleapis.com/v1beta/batches?pageSize=100&pageToken=next%20token%26one",
+        next_url,
+    );
+}
+
 test "canonical batch names require batches prefix and id" {
     try std.testing.expect(isCanonicalBatchName("batches/abc123"));
     try std.testing.expect(!isCanonicalBatchName("abc123"));
@@ -355,6 +493,89 @@ test "decodeBatchName accepts canonical name" {
     const name = try decodeBatchName(gpa, "{\"name\":\"batches/abc123\",\"state\":\"JOB_STATE_PENDING\"}");
     defer gpa.free(name);
     try std.testing.expectEqualStrings("batches/abc123", name);
+}
+
+test "decodeListPage preserves operation fields and next page token" {
+    const gpa = std.testing.allocator;
+    var page = try decodeListPage(
+        gpa,
+        "{\"operations\":[{\"name\":\"batches/one\",\"metadata\":{\"count\":\"2\"},\"done\":false,\"large\":12345678901234567890},{\"name\":\"batches/two\",\"response\":{\"ok\":true}}],\"nextPageToken\":\"next-token\",\"ignored\":true}",
+    );
+    defer page.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), page.operations.len);
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"batches/one\",\"metadata\":{\"count\":\"2\"},\"done\":false,\"large\":12345678901234567890}",
+        page.operations[0],
+    );
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"batches/two\",\"response\":{\"ok\":true}}",
+        page.operations[1],
+    );
+    try std.testing.expectEqualStrings("next-token", page.next_page_token.?);
+}
+
+test "decodeListPage accepts empty results" {
+    const gpa = std.testing.allocator;
+
+    var absent = try decodeListPage(gpa, "{}");
+    defer absent.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), absent.operations.len);
+    try std.testing.expectEqual(@as(?[]u8, null), absent.next_page_token);
+
+    var explicit = try decodeListPage(gpa, "{\"operations\":[],\"nextPageToken\":\"\"}");
+    defer explicit.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), explicit.operations.len);
+    try std.testing.expectEqual(@as(?[]u8, null), explicit.next_page_token);
+}
+
+test "decodeListPage rejects invalid batch operation names" {
+    try std.testing.expectError(
+        error.MissingBatchName,
+        decodeListPage(std.testing.allocator, "{\"operations\":[{}]}"),
+    );
+    try std.testing.expectError(
+        error.MissingBatchName,
+        decodeListPage(std.testing.allocator, "{\"operations\":[{\"name\":\"batch/one\"}]}"),
+    );
+    try std.testing.expectError(
+        error.MissingBatchName,
+        decodeListPage(std.testing.allocator, "{\"operations\":[{\"name\":\"batches/\"}]}"),
+    );
+}
+
+test "listJson aggregates pages and pretty prints operations" {
+    const gpa = std.testing.allocator;
+    var first = try decodeListPage(
+        gpa,
+        "{\"operations\":[{\"name\":\"batches/one\",\"done\":false}],\"nextPageToken\":\"next\"}",
+    );
+    defer first.deinit(gpa);
+    var second = try decodeListPage(
+        gpa,
+        "{\"operations\":[{\"name\":\"batches/two\",\"metadata\":{\"state\":\"RUNNING\"}}]}",
+    );
+    defer second.deinit(gpa);
+
+    var operations: std.ArrayList([]u8) = .empty;
+    defer operations.deinit(gpa);
+    try operations.appendSlice(gpa, first.operations);
+    try operations.appendSlice(gpa, second.operations);
+
+    const output = try listJson(gpa, operations.items);
+    defer gpa.free(output);
+    try std.testing.expectEqualStrings(
+        "{\n  \"operations\": [\n    {\n      \"name\": \"batches/one\",\n      \"done\": false\n    },\n    {\n      \"name\": \"batches/two\",\n      \"metadata\": {\n        \"state\": \"RUNNING\"\n      }\n    }\n  ]\n}",
+        output,
+    );
+}
+
+test "listJson formats empty aggregate" {
+    const gpa = std.testing.allocator;
+    const output = try listJson(gpa, &.{});
+    defer gpa.free(output);
+
+    try std.testing.expectEqualStrings("{\n  \"operations\": []\n}", output);
 }
 
 test "prettyJson validates and preserves all response fields" {
@@ -455,6 +676,63 @@ test "live API batch submit and status succeeds" {
 
     const pretty_status = try prettyJson(gpa, status_response.body);
     defer gpa.free(pretty_status);
+}
+
+test "live API batch list succeeds" {
+    if (!build_options.live_api_tests) return error.SkipZigTest;
+
+    const gpa = std.testing.allocator;
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
+    defer environ_map.deinit();
+    const api_key = try api.apiKeyFromMap(&environ_map);
+
+    api.traffic_log_options = .{
+        .print_request = true,
+        .print_response = true,
+    };
+    defer api.traffic_log_options = .{};
+
+    var page_token: ?[]u8 = null;
+    defer if (page_token) |token| gpa.free(token);
+
+    var operations: std.ArrayList([]u8) = .empty;
+    defer {
+        for (operations.items) |operation| gpa.free(operation);
+        operations.deinit(gpa);
+    }
+
+    while (true) {
+        var response = try listPage(gpa, std.testing.io, api_key, page_token);
+        defer response.deinit(gpa);
+
+        if (page_token) |token| {
+            gpa.free(token);
+            page_token = null;
+        }
+
+        if (response.status != .ok) {
+            std.debug.print(
+                "error: live batch list failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(response.status), response.body },
+            );
+            return error.BatchListFailed;
+        }
+
+        var page = try decodeListPage(gpa, response.body);
+        defer page.deinit(gpa);
+
+        try operations.ensureUnusedCapacity(gpa, page.operations.len);
+        const page_operations = page.operations;
+        for (page_operations) |operation| operations.appendAssumeCapacity(operation);
+        page.operations = &.{};
+        gpa.free(page_operations);
+
+        page_token = page.next_page_token orelse break;
+        page.next_page_token = null;
+    }
+
+    const output = try listJson(gpa, operations.items);
+    defer gpa.free(output);
 }
 
 fn buildLiveGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {

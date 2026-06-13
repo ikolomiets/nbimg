@@ -43,6 +43,15 @@ pub fn build(b: *std.Build) void {
         b,
         target,
         execution_optimize,
+        "test-live-api-batch-list",
+        "List recent Gemini Batch jobs without content generation",
+        "src/batch.zig",
+        "live API batch list succeeds",
+    );
+    addLiveApiTestStep(
+        b,
+        target,
+        execution_optimize,
         "test-live-api-batch-submit-status",
         "BILLABLE and non-idempotent: submit one Gemini Batch job and fetch its status",
         "src/batch.zig",
