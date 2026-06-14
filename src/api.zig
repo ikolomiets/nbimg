@@ -1820,6 +1820,96 @@ pub fn getJson(
     return requestJsonWithoutBody(gpa, io, api_key, url, .GET);
 }
 
+pub fn getBytesBounded(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+    max_body_bytes: usize,
+) !HttpResponse {
+    assert(api_key.len > 0);
+    assert(url.len > 0);
+    assert(max_body_bytes > 0);
+
+    var timed_response = try runRequestWithTimeout(
+        gpa,
+        io,
+        httpRequestTimeoutDuration(),
+        getBytesBoundedRaw,
+        .{ gpa, io, api_key, url, max_body_bytes },
+    );
+    errdefer timed_response.response.deinit(gpa);
+
+    try logResponseBodyOmitted(
+        io,
+        timed_response.response_time_seconds,
+        timed_response.response.status,
+        timed_response.response.body.len,
+    );
+    return timed_response.response;
+}
+
+fn getBytesBoundedRaw(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    url: []const u8,
+    max_body_bytes: usize,
+) !TimedHttpResponse {
+    assert(api_key.len > 0);
+    assert(url.len > 0);
+    assert(max_body_bytes > 0);
+
+    var client: std.http.Client = .{
+        .allocator = gpa,
+        .io = io,
+    };
+    defer client.deinit();
+
+    const headers = [_]std.http.Header{
+        .{ .name = "x-goog-api-key", .value = api_key },
+    };
+    const uri = try std.Uri.parse(url);
+    var request = try client.request(.GET, uri, .{
+        .headers = .{
+            .user_agent = .{ .override = "nbimg/0.0.0" },
+            .accept_encoding = .{ .override = "identity" },
+        },
+        .extra_headers = &headers,
+    });
+    defer request.deinit();
+
+    try logRequest(io, url, .empty);
+
+    const started = responseTimerStart(io);
+    try request.sendBodiless();
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = try request.receiveHead(&redirect_buffer);
+    const status = response.head.status;
+    const content_length = response.head.content_length;
+
+    var transfer_buffer: [64 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+    const body_result = readBoundedBody(
+        gpa,
+        reader,
+        content_length,
+        max_body_bytes,
+    ) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr().?,
+        else => |e| return e,
+    };
+
+    return .{
+        .response = .{
+            .status = status,
+            .body = body_result.bytes,
+        },
+        .response_time_seconds = roundedResponseTimeSeconds(io, started),
+    };
+}
+
 pub fn postJsonWithoutBody(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2133,6 +2223,111 @@ fn readHttpBody(gpa: std.mem.Allocator, response: *std.http.Client.Response) ![]
     return gpa.dupe(u8, response_writer.buffered());
 }
 
+const bounded_body_initial_capacity = 16 * 1024;
+const bounded_body_read_chunk_bytes = 64 * 1024;
+
+const BoundedBodyRead = struct {
+    bytes: []u8,
+    peak_capacity: usize,
+};
+
+fn readBoundedBody(
+    gpa: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    content_length: ?u64,
+    max_body_bytes: usize,
+) !BoundedBodyRead {
+    assert(max_body_bytes > 0);
+
+    const initial_capacity = if (content_length) |length| initial: {
+        if (length > max_body_bytes) return error.ResponseTooLong;
+        break :initial @as(usize, @intCast(length));
+    } else @min(bounded_body_initial_capacity, max_body_bytes);
+
+    var output = try std.Io.Writer.Allocating.initCapacity(gpa, initial_capacity);
+    errdefer output.deinit();
+    var peak_capacity = output.writer.buffer.len;
+    var read_buffer: [bounded_body_read_chunk_bytes]u8 = undefined;
+
+    while (true) {
+        const written_count = output.writer.end;
+        const remaining_bytes = max_body_bytes - written_count;
+        const read_limit = if (remaining_bytes >= read_buffer.len)
+            read_buffer.len
+        else
+            remaining_bytes + 1;
+        const read_count = try reader.readSliceShort(read_buffer[0..read_limit]);
+        if (read_count == 0) break;
+
+        if (read_count > remaining_bytes) return error.ResponseTooLong;
+
+        const required_capacity = written_count + read_count;
+        if (required_capacity > output.writer.buffer.len) {
+            const grown_capacity = std.ArrayList(u8).growCapacity(required_capacity);
+            const bounded_capacity = @min(grown_capacity, max_body_bytes);
+            assert(bounded_capacity >= required_capacity);
+            try output.ensureTotalCapacityPrecise(bounded_capacity);
+            peak_capacity = @max(peak_capacity, output.writer.buffer.len);
+        }
+        try output.writer.writeAll(read_buffer[0..read_count]);
+
+        if (read_count < read_buffer.len) break;
+    }
+
+    return .{
+        .bytes = try output.toOwnedSlice(),
+        .peak_capacity = peak_capacity,
+    };
+}
+
+test "readBoundedBody accepts known lengths below and at limit" {
+    const gpa = std.testing.allocator;
+
+    var below_reader = std.Io.Reader.fixed("abc");
+    const below = try readBoundedBody(gpa, &below_reader, 3, 8);
+    defer gpa.free(below.bytes);
+    try std.testing.expectEqualStrings("abc", below.bytes);
+    try std.testing.expectEqual(@as(usize, 3), below.peak_capacity);
+
+    var exact_reader = std.Io.Reader.fixed("12345678");
+    const exact = try readBoundedBody(gpa, &exact_reader, 8, 8);
+    defer gpa.free(exact.bytes);
+    try std.testing.expectEqualStrings("12345678", exact.bytes);
+    try std.testing.expectEqual(@as(usize, 8), exact.peak_capacity);
+}
+
+test "readBoundedBody rejects oversized known length before allocation" {
+    var no_memory: [0]u8 = .{};
+    var fixed_allocator = std.heap.FixedBufferAllocator.init(&no_memory);
+    var reader = std.Io.Reader.fixed("123456789");
+
+    try std.testing.expectError(
+        error.ResponseTooLong,
+        readBoundedBody(fixed_allocator.allocator(), &reader, 9, 8),
+    );
+}
+
+test "readBoundedBody enforces absent content length incrementally" {
+    const gpa = std.testing.allocator;
+
+    var below_reader = std.Io.Reader.fixed("small");
+    const below = try readBoundedBody(gpa, &below_reader, null, 512 * 1024 * 1024);
+    defer gpa.free(below.bytes);
+    try std.testing.expectEqualStrings("small", below.bytes);
+    try std.testing.expect(below.peak_capacity < 512 * 1024 * 1024);
+
+    var exact_reader = std.Io.Reader.fixed("12345678");
+    const exact = try readBoundedBody(gpa, &exact_reader, null, 8);
+    defer gpa.free(exact.bytes);
+    try std.testing.expectEqualStrings("12345678", exact.bytes);
+
+    var too_long_reader = std.Io.Reader.fixed("123456789");
+    try std.testing.expectError(
+        error.ResponseTooLong,
+        readBoundedBody(gpa, &too_long_reader, null, 8),
+    );
+}
+
 fn logRequest(io: std.Io, url: []const u8, body: RequestBodyLog) !void {
     if (!traffic_log_options.print_request) return;
 
@@ -2180,6 +2375,19 @@ fn logResponseBody(
     defer gpa.free(log_body);
     try writeStderr(io, log_body);
     try writeStderr(io, "\n");
+}
+
+fn logResponseBodyOmitted(
+    io: std.Io,
+    response_time_seconds: u64,
+    status: std.http.Status,
+    body_bytes: usize,
+) !void {
+    if (!traffic_log_options.print_response) return;
+
+    var response_log_header_buffer: [128]u8 = undefined;
+    try writeStderr(io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
+    try writeStderrFormat(io, "<download body omitted: {d} bytes>\n", .{body_bytes});
 }
 
 fn responseLogHeader(

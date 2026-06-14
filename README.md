@@ -65,6 +65,7 @@ nbimg files delete [--api-key KEY] [--print-request] --name files/ID
 nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
 nbimg batch status [--api-key KEY] [--print-request] --name batches/ID
 nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch download [--api-key KEY] [--print-request] --name batches/ID [--out-dir DIR]
 nbimg batch list [--api-key KEY] [--print-request]
 ```
 
@@ -151,6 +152,8 @@ to Gemini's non-generation `countTokens` endpoint, and appends it only after an
 HTTP success and a valid token-count response. Each line has the Batch API
 shape `{"key":"...","request":{...}}`. The file is created when absent and
 locked while existing keys are checked and the new line is appended.
+Each batch file is limited to 50 entries. An attempted 51st append is rejected
+before the locked file is modified.
 
 `--batch-key KEY` is optional and requires `--batch-file`. Explicit keys must
 be unique within that JSONL file. If omitted, `nbimg` derives a deterministic
@@ -175,7 +178,8 @@ zig-out/bin/nbimg batch submit --path requests.jsonl
 `batch submit` validates every JSONL line before network IO. Each entry must
 contain a non-empty unique `key` and an object-valued `request`. Empty or
 malformed lines are rejected. The current temporary limits are `4 MiB` per
-entry and `64 MiB` for the complete local file.
+entry, `64 MiB` for the complete local file, and 50 entries. Inputs over the
+entry limit are rejected before upload or job creation.
 
 The command uploads the input through the Gemini Files API as
 `application/jsonl`, then creates exactly one job for
@@ -210,6 +214,30 @@ job has already reached `JOB_STATE_CANCELLED`; use `batch status` to inspect
 the current state. Cancellation does not delete the Batch job or its uploaded
 JSONL input.
 
+Download image results from a completed Batch job:
+
+```sh
+zig-out/bin/nbimg batch download \
+  --name batches/123456789 \
+  --out-dir outputs
+```
+
+`batch download` checks status exactly once and proceeds only for a succeeded
+job. It rejects a reported `batchStats.requestCount` over 50, downloads the
+output JSONL with a separate `512 MiB` limit, and independently enforces at
+most 50 output records. A known oversized `Content-Length` is rejected before
+body allocation; unknown lengths grow incrementally and accept exactly
+`512 MiB`.
+
+The complete JSONL stays in memory, while records are decoded one at a time.
+Successful inline images are written to the current directory by default or
+to an existing `--out-dir`. Names use
+`{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
+overwrite existing files. Every successfully written filename is printed to
+stdout. Error records, malformed records, duplicate keys, decode failures, and
+write collisions are reported while later records continue processing; any
+such failure makes the command exit nonzero.
+
 List all recent Batch jobs currently exposed by Gemini:
 
 ```sh
@@ -221,7 +249,7 @@ zig-out/bin/nbimg batch list
 `operations` array. Each operation must have a canonical `batches/...` name,
 and all other returned operation fields are preserved. Gemini does not return
 deleted jobs from this recent-job history. The API's undocumented `filter`
-parameter is intentionally not exposed. Results download is not implemented.
+parameter is intentionally not exposed.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect

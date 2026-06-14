@@ -7,12 +7,58 @@ const build_options = @import("build_options");
 
 pub const max_entry_bytes = 4 * 1024 * 1024;
 pub const max_input_bytes = 64 * 1024 * 1024;
+pub const max_output_bytes = 512 * 1024 * 1024;
+pub const max_entries = 50;
 pub const input_content_type = "application/jsonl";
 pub const canonical_batch_name_prefix = "batches/";
+const max_safe_key_bytes = 160;
+const truncated_safe_key_prefix_bytes = 120;
 
 pub const SubmitRequest = struct {
     file_name: []const u8,
     display_name: []const u8,
+};
+
+pub const DownloadInfo = struct {
+    file_name: []u8,
+    request_count: ?usize,
+
+    pub fn deinit(info: *DownloadInfo, gpa: std.mem.Allocator) void {
+        gpa.free(info.file_name);
+        info.* = undefined;
+    }
+};
+
+pub const OutputRecord = struct {
+    key: []u8,
+    response_json: ?[]u8,
+
+    pub fn deinit(record: *OutputRecord, gpa: std.mem.Allocator) void {
+        gpa.free(record.key);
+        if (record.response_json) |response_json| gpa.free(response_json);
+        record.* = undefined;
+    }
+};
+
+pub const OutputLineIterator = struct {
+    bytes: []const u8,
+    offset: usize = 0,
+    line_count: usize = 0,
+
+    pub fn next(iterator: *OutputLineIterator) !?[]const u8 {
+        if (iterator.offset >= iterator.bytes.len) return null;
+
+        const newline_relative = std.mem.indexOfScalar(u8, iterator.bytes[iterator.offset..], '\n');
+        const line_end = if (newline_relative) |relative| iterator.offset + relative else iterator.bytes.len;
+        var line = iterator.bytes[iterator.offset..line_end];
+        if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+
+        iterator.line_count += 1;
+        if (iterator.line_count > max_entries) return error.BatchTooManyEntries;
+
+        iterator.offset = if (newline_relative == null) iterator.bytes.len else line_end + 1;
+        return line;
+    }
 };
 
 pub const ListPage = struct {
@@ -67,6 +113,7 @@ pub fn validateInputJsonl(gpa: std.mem.Allocator, bytes: []const u8) !void {
 
         if (line.len == 0) return error.InvalidBatchInput;
         if (line.len > max_entry_bytes) return error.BatchEntryTooLong;
+        if (entry_count == max_entries) return error.BatchTooManyEntries;
         try validateEntry(gpa, &keys, line);
         entry_count += 1;
 
@@ -178,6 +225,72 @@ pub fn status(
     return api.getJson(gpa, io, api_key, url);
 }
 
+pub fn decodeDownloadInfo(gpa: std.mem.Allocator, response_json: []const u8) !DownloadInfo {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
+        .parse_numbers = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidBatchStatusResponse,
+    };
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidBatchStatusResponse,
+    };
+
+    var candidate_objects: [4]std.json.ObjectMap = undefined;
+    var candidate_count: usize = 0;
+    candidate_objects[candidate_count] = root;
+    candidate_count += 1;
+
+    if (objectField(root, "metadata")) |metadata| {
+        candidate_objects[candidate_count] = metadata;
+        candidate_count += 1;
+    }
+    if (objectField(root, "response")) |response| {
+        candidate_objects[candidate_count] = response;
+        candidate_count += 1;
+        if (candidate_count < candidate_objects.len) {
+            if (objectField(response, "batch")) |batch| {
+                candidate_objects[candidate_count] = batch;
+                candidate_count += 1;
+            }
+        }
+    }
+
+    const candidates = candidate_objects[0..candidate_count];
+    const state = findStringField(candidates, "state") orelse return error.InvalidBatchStatusResponse;
+    if (!isSucceededState(state)) return error.BatchNotSucceeded;
+
+    const request_count = try findRequestCount(candidates);
+    if (request_count) |count| {
+        if (count > max_entries) return error.BatchTooManyEntries;
+    }
+
+    const file_name = findOutputFileName(candidates) orelse return error.MissingBatchOutputFile;
+    if (!api.isCanonicalFileName(file_name)) return error.MissingBatchOutputFile;
+
+    return .{
+        .file_name = try gpa.dupe(u8, file_name),
+        .request_count = request_count,
+    };
+}
+
+pub fn downloadOutput(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    file_name: []const u8,
+) !api.HttpResponse {
+    assert(api_key.len > 0);
+    assert(api.isCanonicalFileName(file_name));
+
+    const url = try buildOutputDownloadUrl(gpa, file_name);
+    defer gpa.free(url);
+    return api.getBytesBounded(gpa, io, api_key, url, max_output_bytes);
+}
+
 pub fn cancel(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -223,6 +336,100 @@ pub fn decodeBatchName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 
     const name = parsed.value.name orelse return error.MissingBatchName;
     if (!isCanonicalBatchName(name)) return error.MissingBatchName;
     return gpa.dupe(u8, name);
+}
+
+pub fn validateOutputJsonl(bytes: []const u8) !usize {
+    if (bytes.len == 0) return error.EmptyBatchOutput;
+
+    var iterator = OutputLineIterator{ .bytes = bytes };
+    while (try iterator.next()) |_| {}
+    assert(iterator.line_count > 0);
+    assert(iterator.line_count <= max_entries);
+    return iterator.line_count;
+}
+
+pub fn decodeOutputRecord(gpa: std.mem.Allocator, line: []const u8) !OutputRecord {
+    if (line.len == 0) return error.InvalidBatchOutput;
+
+    const Record = struct {
+        key: ?[]const u8 = null,
+        response: ?std.json.Value = null,
+        @"error": ?std.json.Value = null,
+    };
+
+    var parsed = std.json.parseFromSlice(Record, gpa, line, .{
+        .ignore_unknown_fields = true,
+        .parse_numbers = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidBatchOutput,
+    };
+    defer parsed.deinit();
+
+    const key = parsed.value.key orelse return error.InvalidBatchOutput;
+    if (key.len == 0) return error.InvalidBatchOutput;
+
+    if (parsed.value.response != null and parsed.value.@"error" != null) {
+        return error.InvalidBatchOutput;
+    }
+    if (parsed.value.response == null and parsed.value.@"error" == null) {
+        return error.InvalidBatchOutput;
+    }
+
+    const owned_key = try gpa.dupe(u8, key);
+    errdefer gpa.free(owned_key);
+
+    const response_json = if (parsed.value.response) |response| response_json: {
+        if (response != .object) return error.InvalidBatchOutput;
+        break :response_json try stringifyJson(gpa, response, .{});
+    } else null;
+    errdefer if (response_json) |json| gpa.free(json);
+
+    return .{
+        .key = owned_key,
+        .response_json = response_json,
+    };
+}
+
+pub fn safeOutputKey(gpa: std.mem.Allocator, key: []const u8) ![]u8 {
+    if (key.len == 0) return error.InvalidBatchOutput;
+
+    var encoded_length: usize = 0;
+    for (key) |byte| {
+        encoded_length = std.math.add(
+            usize,
+            encoded_length,
+            if (isSafeOutputKeyByte(byte)) 1 else 3,
+        ) catch return error.BatchOutputKeyTooLong;
+    }
+
+    if (encoded_length <= max_safe_key_bytes) {
+        var output = try std.Io.Writer.Allocating.initCapacity(gpa, encoded_length);
+        errdefer output.deinit();
+        for (key) |byte| try writeSafeOutputKeyByte(&output.writer, byte);
+        return output.toOwnedSlice();
+    }
+
+    var output = try std.Io.Writer.Allocating.initCapacity(
+        gpa,
+        truncated_safe_key_prefix_bytes + 1 + 32,
+    );
+    errdefer output.deinit();
+
+    for (key) |byte| {
+        const byte_length: usize = if (isSafeOutputKeyByte(byte)) 1 else 3;
+        if (output.writer.end + byte_length > truncated_safe_key_prefix_bytes) break;
+        try writeSafeOutputKeyByte(&output.writer, byte);
+    }
+    assert(output.writer.end > 0);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(key, &digest, .{});
+    try output.writer.writeByte('-');
+    for (digest[0..16]) |byte| try output.writer.print("{x:0>2}", .{byte});
+
+    assert(output.writer.end <= max_safe_key_bytes);
+    return output.toOwnedSlice();
 }
 
 pub fn decodeListPage(gpa: std.mem.Allocator, response_json: []const u8) !ListPage {
@@ -314,6 +521,20 @@ fn buildStatusUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
     return buildBatchUrl(gpa, name, "");
 }
 
+fn buildOutputDownloadUrl(gpa: std.mem.Allocator, file_name: []const u8) ![]u8 {
+    assert(api.isCanonicalFileName(file_name));
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    try output.writer.writeAll("https://generativelanguage.googleapis.com/download/v1beta/files/");
+    try formatPathSegment(&output.writer, file_name[api.canonical_file_name_prefix.len..]);
+    try output.writer.writeAll(":download?alt=media");
+
+    var list = output.toArrayList();
+    errdefer list.deinit(gpa);
+    return list.toOwnedSlice(gpa);
+}
+
 fn buildCancelUrl(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
     return buildBatchUrl(gpa, name, ":cancel");
 }
@@ -381,6 +602,93 @@ fn isPathSegmentChar(byte: u8) bool {
     };
 }
 
+fn objectField(object: std.json.ObjectMap, name: []const u8) ?std.json.ObjectMap {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .object => |nested| nested,
+        else => null,
+    };
+}
+
+fn findStringField(objects: []const std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    for (objects) |object| {
+        const value = object.get(name) orelse continue;
+        return switch (value) {
+            .string => |string| string,
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn isSucceededState(state: []const u8) bool {
+    return std.mem.eql(u8, state, "BATCH_STATE_SUCCEEDED") or
+        std.mem.eql(u8, state, "JOB_STATE_SUCCEEDED");
+}
+
+fn findRequestCount(objects: []const std.json.ObjectMap) !?usize {
+    for (objects) |object| {
+        const stats = objectField(object, "batchStats") orelse continue;
+        const value = stats.get("requestCount") orelse continue;
+        return try parseRequestCount(value);
+    }
+    return null;
+}
+
+fn parseRequestCount(value: std.json.Value) !usize {
+    const parsed: u64 = switch (value) {
+        .string => |string| std.fmt.parseInt(u64, string, 10) catch {
+            return error.InvalidBatchStatusResponse;
+        },
+        .number_string => |number| std.fmt.parseInt(u64, number, 10) catch {
+            return error.InvalidBatchStatusResponse;
+        },
+        .integer => |integer| if (integer >= 0)
+            @intCast(integer)
+        else
+            return error.InvalidBatchStatusResponse,
+        else => return error.InvalidBatchStatusResponse,
+    };
+    return std.math.cast(usize, parsed) orelse return error.InvalidBatchStatusResponse;
+}
+
+fn findOutputFileName(objects: []const std.json.ObjectMap) ?[]const u8 {
+    for (objects) |object| {
+        if (objectField(object, "dest")) |dest| {
+            if (stringField(dest, "fileName")) |file_name| return file_name;
+        }
+        if (objectField(object, "output")) |output| {
+            if (stringField(output, "responsesFile")) |file_name| return file_name;
+        }
+        if (stringField(object, "responsesFile")) |file_name| return file_name;
+        if (stringField(object, "fileName")) |file_name| return file_name;
+    }
+    return null;
+}
+
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |string| string,
+        else => null,
+    };
+}
+
+fn isSafeOutputKeyByte(byte: u8) bool {
+    return switch (byte) {
+        'A'...'Z', 'a'...'z', '0'...'9', '-', '_' => true,
+        else => false,
+    };
+}
+
+fn writeSafeOutputKeyByte(writer: *std.Io.Writer, byte: u8) !void {
+    if (isSafeOutputKeyByte(byte)) {
+        try writer.writeByte(byte);
+    } else {
+        try writer.print("~{X:0>2}", .{byte});
+    }
+}
+
 test "buildEntryJson wraps request and escapes key" {
     const gpa = std.testing.allocator;
     const entry = try buildEntryJson(
@@ -401,6 +709,25 @@ test "validateInputJsonl accepts LF and CRLF entries" {
         "{\"key\":\"one\",\"request\":{\"contents\":[]}}\r\n" ++
         "{\"key\":\"two\",\"request\":{\"contents\":[]}}\n";
     try validateInputJsonl(std.testing.allocator, input);
+}
+
+test "validateInputJsonl accepts one and fifty entries and rejects fifty one" {
+    const gpa = std.testing.allocator;
+
+    const one = try testInputJsonl(gpa, 1);
+    defer gpa.free(one);
+    try validateInputJsonl(gpa, one);
+
+    const fifty = try testInputJsonl(gpa, max_entries);
+    defer gpa.free(fifty);
+    try validateInputJsonl(gpa, fifty);
+
+    const fifty_one = try testInputJsonl(gpa, max_entries + 1);
+    defer gpa.free(fifty_one);
+    try std.testing.expectError(
+        error.BatchTooManyEntries,
+        validateInputJsonl(gpa, fifty_one),
+    );
 }
 
 test "validateInputJsonl rejects malformed and invalid entries" {
@@ -524,6 +851,124 @@ test "decodeBatchName accepts canonical name" {
     try std.testing.expectEqualStrings("batches/abc123", name);
 }
 
+test "decodeDownloadInfo accepts flattened and operation status shapes" {
+    const gpa = std.testing.allocator;
+
+    var flattened = try decodeDownloadInfo(
+        gpa,
+        "{\"name\":\"batches/one\",\"state\":\"JOB_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":\"50\"},\"dest\":{\"fileName\":\"files/output-one\"}}",
+    );
+    defer flattened.deinit(gpa);
+    try std.testing.expectEqualStrings("files/output-one", flattened.file_name);
+    try std.testing.expectEqual(@as(?usize, 50), flattened.request_count);
+
+    var operation = try decodeDownloadInfo(
+        gpa,
+        "{\"name\":\"batches/two\",\"metadata\":{\"state\":\"BATCH_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":1},\"output\":{\"responsesFile\":\"files/output-two\"}},\"done\":true}",
+    );
+    defer operation.deinit(gpa);
+    try std.testing.expectEqualStrings("files/output-two", operation.file_name);
+    try std.testing.expectEqual(@as(?usize, 1), operation.request_count);
+
+    var response_wrapped = try decodeDownloadInfo(
+        gpa,
+        "{\"name\":\"batches/three\",\"response\":{\"batch\":{\"state\":\"BATCH_STATE_SUCCEEDED\",\"output\":{\"responsesFile\":\"files/output-three\"}}}}",
+    );
+    defer response_wrapped.deinit(gpa);
+    try std.testing.expectEqualStrings("files/output-three", response_wrapped.file_name);
+    try std.testing.expectEqual(@as(?usize, null), response_wrapped.request_count);
+}
+
+test "decodeDownloadInfo rejects unfinished oversized and missing output status" {
+    try std.testing.expectError(
+        error.BatchNotSucceeded,
+        decodeDownloadInfo(
+            std.testing.allocator,
+            "{\"state\":\"BATCH_STATE_RUNNING\",\"output\":{\"responsesFile\":\"files/output\"}}",
+        ),
+    );
+    try std.testing.expectError(
+        error.BatchTooManyEntries,
+        decodeDownloadInfo(
+            std.testing.allocator,
+            "{\"state\":\"BATCH_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":\"51\"},\"output\":{\"responsesFile\":\"files/output\"}}",
+        ),
+    );
+    try std.testing.expectError(
+        error.MissingBatchOutputFile,
+        decodeDownloadInfo(
+            std.testing.allocator,
+            "{\"state\":\"BATCH_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":\"1\"}}",
+        ),
+    );
+}
+
+test "batch output JSONL accepts one and fifty records and rejects fifty one" {
+    const gpa = std.testing.allocator;
+
+    const one = try testOutputJsonl(gpa, 1);
+    defer gpa.free(one);
+    try std.testing.expectEqual(@as(usize, 1), try validateOutputJsonl(one));
+
+    const fifty = try testOutputJsonl(gpa, max_entries);
+    defer gpa.free(fifty);
+    try std.testing.expectEqual(@as(usize, max_entries), try validateOutputJsonl(fifty));
+
+    const fifty_one = try testOutputJsonl(gpa, max_entries + 1);
+    defer gpa.free(fifty_one);
+    try std.testing.expectError(
+        error.BatchTooManyEntries,
+        validateOutputJsonl(fifty_one),
+    );
+}
+
+test "decodeOutputRecord distinguishes responses errors and malformed records" {
+    const gpa = std.testing.allocator;
+
+    var success = try decodeOutputRecord(
+        gpa,
+        "{\"key\":\"hero\",\"response\":{\"responseId\":\"id\",\"candidates\":[]}}",
+    );
+    defer success.deinit(gpa);
+    try std.testing.expectEqualStrings("hero", success.key);
+    try std.testing.expectEqualStrings(
+        "{\"responseId\":\"id\",\"candidates\":[]}",
+        success.response_json.?,
+    );
+
+    var failed = try decodeOutputRecord(
+        gpa,
+        "{\"key\":\"failed\",\"error\":{\"code\":400,\"message\":\"bad request\"}}",
+    );
+    defer failed.deinit(gpa);
+    try std.testing.expectEqualStrings("failed", failed.key);
+    try std.testing.expectEqual(@as(?[]u8, null), failed.response_json);
+
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeOutputRecord(gpa, "not-json"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeOutputRecord(gpa, "{\"key\":\"both\",\"response\":{},\"error\":{}}"),
+    );
+}
+
+test "safeOutputKey prevents path traversal and bounds long keys" {
+    const gpa = std.testing.allocator;
+
+    const safe = try safeOutputKey(gpa, "../../hero image");
+    defer gpa.free(safe);
+    try std.testing.expectEqualStrings("~2E~2E~2F~2E~2E~2Fhero~20image", safe);
+    try std.testing.expect(std.mem.indexOfScalar(u8, safe, '/') == null);
+
+    const long_key = "unsafe/key?" ** 100;
+    const bounded = try safeOutputKey(gpa, long_key);
+    defer gpa.free(bounded);
+    try std.testing.expect(bounded.len <= max_safe_key_bytes);
+    try std.testing.expect(std.mem.indexOfScalar(u8, bounded, '/') == null);
+}
+
 test "decodeListPage preserves operation fields and next page token" {
     const gpa = std.testing.allocator;
     var page = try decodeListPage(
@@ -626,6 +1071,42 @@ test "prettyJson rejects malformed response" {
         error.UnexpectedEndOfInput,
         prettyJson(std.testing.allocator, "{"),
     );
+}
+
+test "batch download URL uses canonical generated file name" {
+    const gpa = std.testing.allocator;
+    const url = try buildOutputDownloadUrl(gpa, "files/output one");
+    defer gpa.free(url);
+
+    try std.testing.expectEqualStrings(
+        "https://generativelanguage.googleapis.com/download/v1beta/files/output%20one:download?alt=media",
+        url,
+    );
+}
+
+fn testInputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
+    assert(entry_count > 0);
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    for (0..entry_count) |index| {
+        try output.writer.print(
+            "{{\"key\":\"key-{d}\",\"request\":{{\"contents\":[]}}}}\n",
+            .{index},
+        );
+    }
+    return output.toOwnedSlice();
+}
+
+fn testOutputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
+    assert(entry_count > 0);
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    for (0..entry_count) |index| {
+        try output.writer.print("record-{d}\n", .{index});
+    }
+    return output.toOwnedSlice();
 }
 
 test "live API batch submit status and cancel succeeds" {
