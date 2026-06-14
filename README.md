@@ -235,8 +235,9 @@ to an existing `--out-dir`. Names use
 `{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
 overwrite existing files. Every successfully written filename is printed to
 stdout. Error records, malformed records, duplicate keys, decode failures, and
-write collisions are reported while later records continue processing; any
-such failure makes the command exit nonzero.
+write failures are reported while later records continue processing. Existing
+target files are named explicitly and left untouched. Any such failure makes
+the command exit nonzero.
 
 List all recent Batch jobs currently exposed by Gemini:
 

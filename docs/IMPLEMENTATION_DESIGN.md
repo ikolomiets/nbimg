@@ -969,9 +969,10 @@ Long encoded keys are bounded with a SHA-256 suffix. Images use:
 {safe_key}-{candidate_index}-{part_index}.{extension}
 ```
 
-Writes are exclusive. Successful filenames are printed to stdout. Failed keys
-are reported to stderr, and any failed record or file write makes the command
-exit nonzero after all records have been processed.
+Writes are exclusive. Successful filenames are printed to stdout. Existing
+target filenames are reported explicitly to stderr and left untouched; other
+failed records are reported by key. Any failed record or file write makes the
+command exit nonzero after all records have been processed.
 
 `nbimg batch list` repeatedly requests:
 

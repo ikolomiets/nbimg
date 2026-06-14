@@ -1514,11 +1514,20 @@ fn runBatchDownload(
             return exit_failure;
         };
     }
+    for (summary.existing_files) |name| {
+        std.debug.print(
+            "error: batch output file already exists and was not overwritten: {s}\n",
+            .{name},
+        );
+    }
     for (summary.failed_keys) |key| {
         std.debug.print("error: batch result failed for key {s}\n", .{key});
     }
 
-    return if (summary.failed_keys.len == 0) exit_success else exit_failure;
+    return if (summary.existing_files.len == 0 and summary.failed_keys.len == 0)
+        exit_success
+    else
+        exit_failure;
 }
 
 fn runBatchList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8) u8 {
@@ -2775,12 +2784,15 @@ fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api.GeneratedFil
 
 const BatchOutputSummary = struct {
     written_files: [][]u8,
+    existing_files: [][]u8,
     failed_keys: [][]u8,
 
     fn deinit(summary: *BatchOutputSummary, gpa: std.mem.Allocator) void {
         for (summary.written_files) |name| gpa.free(name);
+        for (summary.existing_files) |name| gpa.free(name);
         for (summary.failed_keys) |key| gpa.free(key);
         gpa.free(summary.written_files);
+        gpa.free(summary.existing_files);
         gpa.free(summary.failed_keys);
         summary.* = undefined;
     }
@@ -2805,6 +2817,11 @@ fn processBatchOutput(
         for (written_files.items) |name| gpa.free(name);
         written_files.deinit(gpa);
     }
+    var existing_files: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (existing_files.items) |name| gpa.free(name);
+        existing_files.deinit(gpa);
+    }
     var failed_keys: std.ArrayList([]u8) = .empty;
     errdefer {
         for (failed_keys.items) |key| gpa.free(key);
@@ -2821,6 +2838,7 @@ fn processBatchOutput(
             output_dir.dir,
             &seen_keys,
             &written_files,
+            &existing_files,
             &failed_keys,
             line_number,
             line,
@@ -2832,9 +2850,15 @@ fn processBatchOutput(
         for (owned_written_files) |name| gpa.free(name);
         gpa.free(owned_written_files);
     }
+    const owned_existing_files = try existing_files.toOwnedSlice(gpa);
+    errdefer {
+        for (owned_existing_files) |name| gpa.free(name);
+        gpa.free(owned_existing_files);
+    }
     const owned_failed_keys = try failed_keys.toOwnedSlice(gpa);
     return .{
         .written_files = owned_written_files,
+        .existing_files = owned_existing_files,
         .failed_keys = owned_failed_keys,
     };
 }
@@ -2845,6 +2869,7 @@ fn processBatchOutputLine(
     output_dir: std.Io.Dir,
     seen_keys: *std.BufSet,
     written_files: *std.ArrayList([]u8),
+    existing_files: *std.ArrayList([]u8),
     failed_keys: *std.ArrayList([]u8),
     line_number: usize,
     line: []const u8,
@@ -2881,6 +2906,7 @@ fn processBatchOutputLine(
     defer files.deinit(gpa);
 
     try written_files.ensureUnusedCapacity(gpa, files.items.len);
+    try existing_files.ensureUnusedCapacity(gpa, files.items.len);
     var record_failed = false;
     for (files.items) |file| {
         const name = try std.fmt.allocPrint(
@@ -2894,10 +2920,18 @@ fn processBatchOutputLine(
             .sub_path = name,
             .data = file.bytes,
             .flags = .{ .exclusive = true },
-        }) catch {
-            gpa.free(name);
-            record_failed = true;
-            continue;
+        }) catch |err| {
+            switch (err) {
+                error.PathAlreadyExists => {
+                    existing_files.appendAssumeCapacity(name);
+                    continue;
+                },
+                else => {
+                    gpa.free(name);
+                    record_failed = true;
+                    continue;
+                },
+            }
         };
         written_files.appendAssumeCapacity(name);
     }
@@ -2967,6 +3001,7 @@ test "processBatchOutput writes valid images and reports malformed error and dup
 
     try std.testing.expectEqual(@as(usize, 1), summary.written_files.len);
     try std.testing.expectEqualStrings("~2E~2E~2Fhero-0-0.png", summary.written_files[0]);
+    try std.testing.expectEqual(@as(usize, 0), summary.existing_files.len);
     try std.testing.expectEqual(@as(usize, 3), summary.failed_keys.len);
     try std.testing.expectEqualStrings("line-1", summary.failed_keys[0]);
     try std.testing.expectEqualStrings("failed", summary.failed_keys[1]);
@@ -2982,7 +3017,7 @@ test "processBatchOutput writes valid images and reports malformed error and dup
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, written);
 }
 
-test "processBatchOutput preserves existing files on exclusive write collision" {
+test "processBatchOutput reports and preserves existing output files" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -3000,8 +3035,9 @@ test "processBatchOutput preserves existing files on exclusive write collision" 
     defer summary.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 0), summary.written_files.len);
-    try std.testing.expectEqual(@as(usize, 1), summary.failed_keys.len);
-    try std.testing.expectEqualStrings("hero", summary.failed_keys[0]);
+    try std.testing.expectEqual(@as(usize, 1), summary.existing_files.len);
+    try std.testing.expectEqualStrings("hero-0-0.png", summary.existing_files[0]);
+    try std.testing.expectEqual(@as(usize, 0), summary.failed_keys.len);
 
     const written = try tmp_dir.dir.readFileAlloc(
         std.testing.io,
