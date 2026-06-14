@@ -1493,17 +1493,19 @@ fn runBatchDownload(
         command.out_dir,
         download_response.body,
     ) catch |err| {
-        switch (err) {
-            error.EmptyBatchOutput => std.debug.print("error: downloaded batch output is empty\n", .{}),
-            error.BatchTooManyEntries => std.debug.print(
-                "error: downloaded batch output contains more than {d} records\n",
-                .{api_batch.max_entries},
-            ),
-            else => std.debug.print(
-                "error: failed to process downloaded batch output: {s}\n",
-                .{@errorName(err)},
-            ),
-        }
+        const diagnostic = batchOutputProcessingDiagnostic(
+            gpa,
+            command.out_dir,
+            err,
+        ) catch |format_err| {
+            std.debug.print(
+                "error: failed to format batch output error: {s}\n",
+                .{@errorName(format_err)},
+            );
+            return exit_failure;
+        };
+        defer gpa.free(diagnostic);
+        std.debug.print("{s}", .{diagnostic});
         return exit_failure;
     };
     defer summary.deinit(gpa);
@@ -1515,10 +1517,19 @@ fn runBatchDownload(
         };
     }
     for (summary.existing_files) |name| {
-        std.debug.print(
-            "error: batch output file already exists and was not overwritten: {s}\n",
-            .{name},
-        );
+        const diagnostic = batchOutputExistingFileDiagnostic(
+            gpa,
+            command.out_dir,
+            name,
+        ) catch |err| {
+            std.debug.print(
+                "error: failed to format existing batch output path: {s}\n",
+                .{@errorName(err)},
+            );
+            return exit_failure;
+        };
+        defer gpa.free(diagnostic);
+        std.debug.print("{s}", .{diagnostic});
     }
     for (summary.failed_keys) |key| {
         std.debug.print("error: batch result failed for key {s}\n", .{key});
@@ -1528,6 +1539,60 @@ fn runBatchDownload(
         exit_success
     else
         exit_failure;
+}
+
+fn batchOutputProcessingDiagnostic(
+    gpa: std.mem.Allocator,
+    out_dir: ?[]const u8,
+    err: anyerror,
+) ![]u8 {
+    return switch (err) {
+        error.EmptyBatchOutput => gpa.dupe(u8, "error: downloaded batch output is empty\n"),
+        error.BatchTooManyEntries => std.fmt.allocPrint(
+            gpa,
+            "error: downloaded batch output contains more than {d} records\n",
+            .{api_batch.max_entries},
+        ),
+        error.FileNotFound => gpa.dupe(
+            u8,
+            "error: batch output directory does not exist\n",
+        ),
+        error.NotDir => std.fmt.allocPrint(
+            gpa,
+            "error: batch output path is not a directory: {s}\n",
+            .{out_dir orelse "."},
+        ),
+        error.AccessDenied, error.PermissionDenied => std.fmt.allocPrint(
+            gpa,
+            "error: batch output directory is not accessible: {s}\n",
+            .{out_dir orelse "."},
+        ),
+        else => std.fmt.allocPrint(
+            gpa,
+            "error: failed to process downloaded batch output: {s}\n",
+            .{@errorName(err)},
+        ),
+    };
+}
+
+fn batchOutputExistingFileDiagnostic(
+    gpa: std.mem.Allocator,
+    out_dir: ?[]const u8,
+    name: []const u8,
+) ![]u8 {
+    assert(name.len > 0);
+
+    const path = if (out_dir) |directory|
+        try std.fs.path.join(gpa, &.{ directory, name })
+    else
+        try gpa.dupe(u8, name);
+    defer gpa.free(path);
+
+    return std.fmt.allocPrint(
+        gpa,
+        "error: batch output file already exists and was not overwritten: {s}\n",
+        .{path},
+    );
 }
 
 fn runBatchList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8) u8 {
@@ -3047,6 +3112,51 @@ test "processBatchOutput reports and preserves existing output files" {
     );
     defer gpa.free(written);
     try std.testing.expectEqualStrings("existing", written);
+}
+
+test "processBatchOutput rejects a missing output directory" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const out_dir = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/missing",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(out_dir);
+
+    const jsonl =
+        "{\"key\":\"hero\",\"response\":{\"responseId\":\"ignored\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}}\n";
+    try std.testing.expectError(
+        error.FileNotFound,
+        processBatchOutput(gpa, std.testing.io, out_dir, jsonl),
+    );
+}
+
+test "batch output diagnostics identify missing output directory and existing target path" {
+    const gpa = std.testing.allocator;
+
+    const missing_directory = try batchOutputProcessingDiagnostic(
+        gpa,
+        "missing",
+        error.FileNotFound,
+    );
+    defer gpa.free(missing_directory);
+    try std.testing.expectEqualStrings(
+        "error: batch output directory does not exist\n",
+        missing_directory,
+    );
+
+    const existing_file = try batchOutputExistingFileDiagnostic(
+        gpa,
+        "outputs",
+        "hero-0-0.png",
+    );
+    defer gpa.free(existing_file);
+    const expected_existing_file = "error: batch output file already exists and was not overwritten: outputs" ++
+        std.fs.path.sep_str ++ "hero-0-0.png\n";
+    try std.testing.expectEqualStrings(expected_existing_file, existing_file);
 }
 
 fn writeStdoutLine(io: std.Io, line: []const u8) !void {

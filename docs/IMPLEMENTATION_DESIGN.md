@@ -961,18 +961,20 @@ at a time. Each record requires a non-empty `key` and exactly one `response` or
 records, malformed records, duplicate keys, image decode failures, and write
 failures are accumulated without stopping later records.
 
-Output defaults to the current directory; `--out-dir` must already exist.
-Filename keys percent-encode bytes outside ASCII letters, digits, `-`, and `_`.
-Long encoded keys are bounded with a SHA-256 suffix. Images use:
+Output defaults to the current directory; `--out-dir` must already exist. A
+missing output directory is reported clearly; a path that is not a directory
+is reported with the supplied path. Filename keys percent-encode bytes outside
+ASCII letters, digits, `-`, and `_`. Long encoded keys are bounded with a
+SHA-256 suffix. Images use:
 
 ```text
 {safe_key}-{candidate_index}-{part_index}.{extension}
 ```
 
 Writes are exclusive. Successful filenames are printed to stdout. Existing
-target filenames are reported explicitly to stderr and left untouched; other
-failed records are reported by key. Any failed record or file write makes the
-command exit nonzero after all records have been processed.
+targets are reported to stderr with their destination paths and left
+untouched; other failed records are reported by key. Any failed record or file
+write makes the command exit nonzero after all records have been processed.
 
 `nbimg batch list` repeatedly requests:
 

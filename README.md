@@ -231,13 +231,14 @@ body allocation; unknown lengths grow incrementally and accept exactly
 
 The complete JSONL stays in memory, while records are decoded one at a time.
 Successful inline images are written to the current directory by default or
-to an existing `--out-dir`. Names use
+to an existing `--out-dir`. A missing output directory is reported clearly.
+Names use
 `{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
 overwrite existing files. Every successfully written filename is printed to
 stdout. Error records, malformed records, duplicate keys, decode failures, and
 write failures are reported while later records continue processing. Existing
-target files are named explicitly and left untouched. Any such failure makes
-the command exit nonzero.
+target files are reported with their destination paths and left untouched. Any
+such failure makes the command exit nonzero.
 
 List all recent Batch jobs currently exposed by Gemini:
 
