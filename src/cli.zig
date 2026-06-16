@@ -973,7 +973,48 @@ test "appendBatchRequest rejects malformed existing JSONL without modifying file
     try std.testing.expectEqualStrings(existing, written);
 }
 
-test "appendBatchRequest accepts fiftieth entry and rejects fifty first without modifying file" {
+test "appendBatchRequest does not revalidate existing request semantics" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const existing =
+        "{\"key\":\"older\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}],\"futureField\":true}}\n";
+    try tmp_dir.dir.writeFile(std.testing.io, .{
+        .sub_path = "requests.jsonl",
+        .data = existing,
+    });
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    var result = try appendBatchRequest(
+        gpa,
+        std.testing.io,
+        batch_path,
+        "newer",
+        "{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}",
+    );
+    defer result.deinit(gpa);
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(2048),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings(
+        existing ++ "{\"key\":\"newer\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n",
+        written,
+    );
+}
+
+test "appendBatchRequest accepts maximum entry and rejects one over maximum without modifying file" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -992,14 +1033,16 @@ test "appendBatchRequest accepts fiftieth entry and rejects fifty first without 
     );
     defer gpa.free(batch_path);
 
-    var fiftieth = try appendBatchRequest(
+    const accepted_key = try std.fmt.allocPrint(gpa, "key-{d}", .{api_batch.max_entries - 1});
+    defer gpa.free(accepted_key);
+    var maximum = try appendBatchRequest(
         gpa,
         std.testing.io,
         batch_path,
-        "key-49",
-        "{\"contents\":[]}",
+        accepted_key,
+        "{\"contents\":[{\"parts\":[{\"text\":\"maximum\"}]}]}",
     );
-    defer fiftieth.deinit(gpa);
+    defer maximum.deinit(gpa);
 
     const full_file = try tmp_dir.dir.readFileAlloc(
         std.testing.io,
@@ -1010,14 +1053,16 @@ test "appendBatchRequest accepts fiftieth entry and rejects fifty first without 
     defer gpa.free(full_file);
     try api_batch.validateInputJsonl(gpa, full_file);
 
+    const rejected_key = try std.fmt.allocPrint(gpa, "key-{d}", .{api_batch.max_entries});
+    defer gpa.free(rejected_key);
     try std.testing.expectError(
         error.BatchTooManyEntries,
         appendBatchRequest(
             gpa,
             std.testing.io,
             batch_path,
-            "key-50",
-            "{\"contents\":[]}",
+            rejected_key,
+            "{\"contents\":[{\"parts\":[{\"text\":\"over maximum\"}]}]}",
         ),
     );
 
@@ -6552,8 +6597,8 @@ fn testBatchInputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
     errdefer output.deinit();
     for (0..entry_count) |index| {
         try output.writer.print(
-            "{{\"key\":\"key-{d}\",\"request\":{{\"contents\":[]}}}}\n",
-            .{index},
+            "{{\"key\":\"key-{d}\",\"request\":{{\"contents\":[{{\"parts\":[{{\"text\":\"prompt-{d}\"}}]}}]}}}}\n",
+            .{ index, index },
         );
     }
     return output.toOwnedSlice();

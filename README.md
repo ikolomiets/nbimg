@@ -152,7 +152,7 @@ to Gemini's non-generation `countTokens` endpoint, and appends it only after an
 HTTP success and a valid token-count response. Each line has the Batch API
 shape `{"key":"...","request":{...}}`. The file is created when absent and
 locked while existing keys are checked and the new line is appended.
-Each batch file is limited to 50 entries. An attempted 51st append is rejected
+Each batch file is limited to 100 entries. An attempted 101st append is rejected
 before the locked file is modified.
 
 `--batch-key KEY` is optional and requires `--batch-file`. Explicit keys must
@@ -176,10 +176,11 @@ zig-out/bin/nbimg batch submit --path requests.jsonl
 ```
 
 `batch submit` validates every JSONL line before network IO. Each entry must
-contain a non-empty unique `key` and an object-valued `request`. Empty or
-malformed lines are rejected. The current temporary limits are `4 MiB` per
-entry, `64 MiB` for the complete local file, and 50 entries. Inputs over the
-entry limit are rejected before upload or job creation.
+contain a non-empty unique `key` and an object-valued `request`. Empty lines
+and malformed JSON are rejected. The nested request JSON is not semantically
+validated; the serialized JSONL entry itself is capped at `5 MiB`. The complete
+local file is capped at `512 MiB`, and one batch is capped at 100 entries.
+Inputs over those limits are rejected before upload or job creation.
 
 The command uploads the input through the Gemini Files API as
 `application/jsonl`, then creates exactly one job for
@@ -223,9 +224,9 @@ zig-out/bin/nbimg batch download \
 ```
 
 `batch download` checks status exactly once and proceeds only for a succeeded
-job. It rejects a reported `batchStats.requestCount` over 50, downloads the
+job. It rejects a reported `batchStats.requestCount` over 100, downloads the
 output JSONL with a separate `512 MiB` limit, and independently enforces at
-most 50 output records. A known oversized `Content-Length` is rejected before
+most 100 output records. A known oversized `Content-Length` is rejected before
 body allocation; unknown lengths grow incrementally and accept exactly
 `512 MiB`.
 
@@ -466,8 +467,8 @@ these flags renders no extra preserve or do-not section. Each list is capped at
 Generated `generateContent` request envelopes are bounded before JSON
 serialization: one content entry, 32 total content plus system-instruction
 parts, 16 KiB text fields, 512-byte File API URIs, 64-byte MIME strings, and 5 MiB
-of counted variable request fields. Uploaded file bytes are not counted because
-edit requests reference Gemini Files by URI.
+of counted variable request fields including stop sequences. Uploaded file
+bytes are not counted because edit requests reference Gemini Files by URI.
 
 List uploaded file metadata:
 

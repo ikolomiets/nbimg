@@ -471,7 +471,7 @@ pub fn buildGenerateContentRequestJson(
     contents: []const GenerateContent,
     options: GenerateContentRequestOptions,
 ) ![]u8 {
-    assertValidGenerateContentRequest(contents, options.request_options);
+    assertValidGenerateContentRequest(contents, options);
 
     var system_instruction_parts_buffer: [1]TextPart = undefined;
     const system_instruction: ?TextContent = if (options.request_options.system_instruction) |text| system_instruction: {
@@ -514,8 +514,12 @@ pub fn buildGenerateContentRequestJson(
     return list.toOwnedSlice(gpa);
 }
 
-fn assertValidGenerateContentRequest(contents: []const GenerateContent, request_options: RequestOptions) void {
-    const validation = validateGenerateContentRequest(contents, request_options);
+fn assertValidGenerateContentRequest(contents: []const GenerateContent, options: GenerateContentRequestOptions) void {
+    const validation = validateGenerateContentRequest(
+        contents,
+        options.request_options,
+        &options.generation_options,
+    );
     assert(validation.has_contents);
     assert(validation.content_count_within_limit);
     assert(validation.every_content_has_parts);
@@ -572,7 +576,10 @@ const GenerateContentRequestValidation = struct {
 fn validateGenerateContentRequest(
     contents: []const GenerateContent,
     request_options: RequestOptions,
+    generation_options: *const GenerationOptions,
 ) GenerateContentRequestValidation {
+    assertValidGenerationOptions(generation_options.*);
+
     var validation = GenerateContentRequestValidation{
         .has_contents = contents.len > 0,
         .content_count_within_limit = contents.len <= max_generate_content_count,
@@ -616,6 +623,10 @@ fn validateGenerateContentRequest(
     if (request_options.cached_content) |cached_content| {
         if (!isCanonicalCachedContentName(cached_content)) validation.cached_content_canonical = false;
         field_bytes +|= cached_content.len;
+    }
+
+    for (generation_options.stopSequenceSlice()) |stop_sequence| {
+        field_bytes +|= stop_sequence.len;
     }
 
     validation.part_count_within_limit = part_count <= max_generate_request_parts_total;
@@ -1256,7 +1267,7 @@ test "generateContent request validation accepts maximum text fields" {
 
     try std.testing.expect(validateGenerateContentRequest(contents[0..], .{
         .system_instruction = max_text,
-    }).valid());
+    }, &.{}).valid());
 }
 
 test "generateContent request validation rejects too many contents" {
@@ -1266,7 +1277,7 @@ test "generateContent request validation rejects too many contents" {
         .{ .parts = &parts },
     };
 
-    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}, &.{}).valid());
 }
 
 test "generateContent request validation rejects 33 total parts" {
@@ -1278,7 +1289,7 @@ test "generateContent request validation rejects 33 total parts" {
 
     try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{
         .system_instruction = "system",
-    }).valid());
+    }, &.{}).valid());
 }
 
 test "generateContent request validation rejects oversized text part" {
@@ -1286,7 +1297,7 @@ test "generateContent request validation rejects oversized text part" {
     const parts = [_]GeneratePart{.{ .text = too_long_text }};
     const contents = [_]GenerateContent{.{ .parts = &parts }};
 
-    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}, &.{}).valid());
 }
 
 test "generateContent request validation rejects oversized file data fields" {
@@ -1299,7 +1310,7 @@ test "generateContent request validation rejects oversized file data fields" {
             .file_uri = too_long_file_uri,
         } }};
         const contents = [_]GenerateContent{.{ .parts = &parts }};
-        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}, &.{}).valid());
     }
 
     {
@@ -1308,7 +1319,7 @@ test "generateContent request validation rejects oversized file data fields" {
             .file_uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123",
         } }};
         const contents = [_]GenerateContent{.{ .parts = &parts }};
-        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}, &.{}).valid());
     }
 }
 
@@ -1324,7 +1335,7 @@ test "generateContent request validation rejects oversized request field total" 
 
     try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{
         .cached_content = cached_content,
-    }).valid());
+    }, &.{}).valid());
 }
 
 test "explicit block none safety settings serialize all supported harm categories" {

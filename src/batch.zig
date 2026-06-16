@@ -5,10 +5,10 @@ const assert = std.debug.assert;
 const api = @import("api.zig");
 const build_options = @import("build_options");
 
-pub const max_entry_bytes = 4 * 1024 * 1024;
-pub const max_input_bytes = 64 * 1024 * 1024;
+pub const max_entry_bytes = api.max_generate_request_field_bytes;
+pub const max_input_bytes = 512 * 1024 * 1024;
 pub const max_output_bytes = 512 * 1024 * 1024;
-pub const max_entries = 50;
+pub const max_entries = 100;
 pub const input_content_type = "application/jsonl";
 pub const canonical_batch_name_prefix = "batches/";
 const max_safe_key_bytes = 160;
@@ -706,27 +706,27 @@ test "buildEntryJson wraps request and escapes key" {
 
 test "validateInputJsonl accepts LF and CRLF entries" {
     const input =
-        "{\"key\":\"one\",\"request\":{\"contents\":[]}}\r\n" ++
-        "{\"key\":\"two\",\"request\":{\"contents\":[]}}\n";
+        "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\r\n" ++
+        "{\"key\":\"two\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
     try validateInputJsonl(std.testing.allocator, input);
 }
 
-test "validateInputJsonl accepts one and fifty entries and rejects fifty one" {
+test "validateInputJsonl accepts maximum entries and rejects one over maximum" {
     const gpa = std.testing.allocator;
 
     const one = try testInputJsonl(gpa, 1);
     defer gpa.free(one);
     try validateInputJsonl(gpa, one);
 
-    const fifty = try testInputJsonl(gpa, max_entries);
-    defer gpa.free(fifty);
-    try validateInputJsonl(gpa, fifty);
+    const maximum = try testInputJsonl(gpa, max_entries);
+    defer gpa.free(maximum);
+    try validateInputJsonl(gpa, maximum);
 
-    const fifty_one = try testInputJsonl(gpa, max_entries + 1);
-    defer gpa.free(fifty_one);
+    const over_maximum = try testInputJsonl(gpa, max_entries + 1);
+    defer gpa.free(over_maximum);
     try std.testing.expectError(
         error.BatchTooManyEntries,
-        validateInputJsonl(gpa, fifty_one),
+        validateInputJsonl(gpa, over_maximum),
     );
 }
 
@@ -755,8 +755,8 @@ test "validateInputJsonl rejects malformed and invalid entries" {
 
 test "validateInputJsonl rejects duplicate keys" {
     const input =
-        "{\"key\":\"one\",\"request\":{}}\n" ++
-        "{\"key\":\"one\",\"request\":{}}\n";
+        "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\n" ++
+        "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
     try std.testing.expectError(
         error.DuplicateBatchKey,
         validateInputJsonl(std.testing.allocator, input),
@@ -772,6 +772,29 @@ test "validateInputJsonl enforces per-entry limit" {
     try std.testing.expectError(
         error.BatchEntryTooLong,
         validateInputJsonl(gpa, input),
+    );
+}
+
+test "validateInputJsonl accepts serialized entry at exact limit" {
+    const gpa = std.testing.allocator;
+    const request_json = "{\"contents\":[{\"parts\":[{\"text\":\"hello\"}]}]}";
+    const overhead = "{\"key\":\"".len + "\",\"request\":".len + request_json.len + "}".len;
+    assert(overhead < max_entry_bytes);
+
+    const key = try gpa.alloc(u8, max_entry_bytes - overhead);
+    defer gpa.free(key);
+    @memset(key, 'a');
+
+    const entry = try buildEntryJson(gpa, key, request_json);
+    defer gpa.free(entry);
+    try std.testing.expectEqual(@as(usize, max_entry_bytes), entry.len);
+    try validateInputJsonl(gpa, entry);
+}
+
+test "validateInputJsonl accepts object-valued request without semantic validation" {
+    try validateInputJsonl(
+        std.testing.allocator,
+        "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"hello\"}]}],\"futureField\":true}}\n",
     );
 }
 
@@ -891,7 +914,7 @@ test "decodeDownloadInfo rejects unfinished oversized and missing output status"
         error.BatchTooManyEntries,
         decodeDownloadInfo(
             std.testing.allocator,
-            "{\"state\":\"BATCH_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":\"51\"},\"output\":{\"responsesFile\":\"files/output\"}}",
+            "{\"state\":\"BATCH_STATE_SUCCEEDED\",\"batchStats\":{\"requestCount\":\"101\"},\"output\":{\"responsesFile\":\"files/output\"}}",
         ),
     );
     try std.testing.expectError(
@@ -903,22 +926,22 @@ test "decodeDownloadInfo rejects unfinished oversized and missing output status"
     );
 }
 
-test "batch output JSONL accepts one and fifty records and rejects fifty one" {
+test "batch output JSONL accepts maximum records and rejects one over maximum" {
     const gpa = std.testing.allocator;
 
     const one = try testOutputJsonl(gpa, 1);
     defer gpa.free(one);
     try std.testing.expectEqual(@as(usize, 1), try validateOutputJsonl(one));
 
-    const fifty = try testOutputJsonl(gpa, max_entries);
-    defer gpa.free(fifty);
-    try std.testing.expectEqual(@as(usize, max_entries), try validateOutputJsonl(fifty));
+    const maximum = try testOutputJsonl(gpa, max_entries);
+    defer gpa.free(maximum);
+    try std.testing.expectEqual(@as(usize, max_entries), try validateOutputJsonl(maximum));
 
-    const fifty_one = try testOutputJsonl(gpa, max_entries + 1);
-    defer gpa.free(fifty_one);
+    const over_maximum = try testOutputJsonl(gpa, max_entries + 1);
+    defer gpa.free(over_maximum);
     try std.testing.expectError(
         error.BatchTooManyEntries,
-        validateOutputJsonl(fifty_one),
+        validateOutputJsonl(over_maximum),
     );
 }
 
@@ -1091,8 +1114,8 @@ fn testInputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
     errdefer output.deinit();
     for (0..entry_count) |index| {
         try output.writer.print(
-            "{{\"key\":\"key-{d}\",\"request\":{{\"contents\":[]}}}}\n",
-            .{index},
+            "{{\"key\":\"key-{d}\",\"request\":{{\"contents\":[{{\"parts\":[{{\"text\":\"prompt-{d}\"}}]}}]}}}}\n",
+            .{ index, index },
         );
     }
     return output.toOwnedSlice();

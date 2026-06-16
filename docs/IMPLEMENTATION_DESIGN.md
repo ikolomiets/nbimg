@@ -133,12 +133,13 @@ file-resource get/delete URLs, and decodes uploaded/listed/fetched File
 metadata.
 
 `src/batch.zig` owns Gemini Batch API semantics. It validates complete JSONL
-input and unique keys, enforces the temporary 4 MiB per-entry and 64 MiB local
-file limits, uploads bytes as `application/jsonl`, submits the uploaded
-`files/...` name to the fixed image model, builds status URLs from canonical
-`batches/...` names, builds paginated list URLs, validates listed operation
-names, preserves complete operation objects, and pretty-prints successful JSON
-responses.
+input and unique keys, enforces the 5 MiB serialized-entry and 512 MiB local
+file limits, requires object-valued request JSON without semantically
+validating the nested generateContent request, uploads bytes as
+`application/jsonl`, submits the uploaded `files/...` name to the fixed image
+model, builds status URLs from canonical `batches/...` names, builds paginated
+list URLs, validates listed operation names, preserves complete operation
+objects, and pretty-prints successful JSON responses.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
@@ -271,8 +272,9 @@ Argument rules are intentionally narrow:
   byte position at which the JSON entry starts.
 - Batch appends create the file when absent and hold an exclusive advisory lock
   while scanning existing entries and writing. Existing lines must be valid
-  objects with `key` and `request`, and each line is capped at `4 MiB` during
-  local validation.
+  objects with a non-empty `key` and an object-valued `request`; the nested
+  request is not semantically revalidated during append. Each serialized JSONL
+  entry is capped at `5 MiB` during local validation.
 - The appended line is `{"key":"...","request":{...}}`, using the exact
   `GenerateContentRequest` validated by `countTokens`. HTTP failure or an
   invalid token-count response leaves the file untouched.
@@ -581,10 +583,11 @@ request models before JSON serialization with shared TigerStyle assertions:
 - at most 5 MiB of counted variable request fields.
 
 The 5 MiB counted field total includes content text parts, system-instruction
-text, File API URIs, MIME strings, and `cachedContent` names before JSON
-serialization. Fixed JSON field names, enum literals, booleans, and JSON
-escaping overhead are excluded. Uploaded file bytes are also excluded because
-current edit requests send Gemini Files API URIs rather than inline image data.
+text, File API URIs, MIME strings, `cachedContent` names, and stop sequences
+before JSON serialization. Fixed JSON field names, enum literals, booleans,
+and JSON escaping overhead are excluded. Uploaded file bytes are also excluded
+because current edit requests send Gemini Files API URIs rather than inline
+image data.
 CLI parsing rejects oversized user-controlled text fields first; the shared API
 assertions are paired programmer-error checks for request builders.
 
@@ -882,16 +885,15 @@ and stdout for metadata JSON or delete `OK`.
 ## Batch API
 
 `nbimg batch submit --path PATH` reads one complete local JSONL input into
-memory with a `64 MiB` limit. Before network IO, `batch.validateInputJsonl`
+memory with a `512 MiB` limit. Before network IO, `batch.validateInputJsonl`
 requires at least one non-empty line, valid JSON on every line, a non-empty
 unique `key`, and an object-valued `request`. LF and CRLF separators are
-accepted. Empty lines are rejected. Each serialized entry is temporarily
-limited to `4 MiB`, the complete input remains limited to `64 MiB`, and one
-batch is limited to 50 entries. `gen` and `edit` reject the 51st locked append
-before modifying the file. `batch submit` rejects an input over 50 entries
-before upload or job creation. `TODO.txt` records the work needed to replace
-the per-entry limit with a derived bound over variable request fields, JSON
-escaping, and fixed overhead.
+accepted. Empty lines are rejected. The nested request object is not
+semantically validated; its local bound is the `5 MiB` serialized JSONL entry
+limit. The complete input is limited to `512 MiB`, and one batch is limited to
+100 entries. `gen` and `edit` reject the 101st locked append before modifying
+the file. `batch submit` rejects an input over 100 entries before upload or job
+creation.
 
 The validated bytes are uploaded through `api.uploadResumableBytes` with
 `application/jsonl`. The shared transport owns the resumable upload start and
@@ -960,7 +962,7 @@ status GET. Status decoding accepts both the flattened API representation
 representation (`BATCH_STATE_SUCCEEDED`, `output.responsesFile`), including
 operation wrappers that place Batch fields under `metadata` or `response`.
 Other states are rejected. If `batchStats.requestCount` is present and exceeds
-50, the download is rejected before requesting the output file.
+100, the download is rejected before requesting the output file.
 
 The output file is downloaded from:
 
@@ -968,17 +970,17 @@ The output file is downloaded from:
 GET https://generativelanguage.googleapis.com/download/v1beta/files/{id}:download?alt=media
 ```
 
-Batch output uses a separate `512 MiB` response limit; normal API responses and
-Batch input files remain limited to `64 MiB`. A known `Content-Length` over the
-output limit fails before body allocation. A valid known length reserves only
-that size. Without a length, the body starts with a small allocation and grows
-incrementally without exceeding the configured bound. Exactly `512 MiB` is
-accepted and the first byte beyond it is rejected. Download traffic logging
-prints response metadata and an omitted-body byte count instead of parsing or
-copying the complete JSONL for stderr.
+Batch output uses a separate `512 MiB` response limit, matching the Batch input
+file limit. Normal non-Batch API responses remain limited to `64 MiB`. A known
+`Content-Length` over the output limit fails before body allocation. A valid
+known length reserves only that size. Without a length, the body starts with a
+small allocation and grows incrementally without exceeding the configured
+bound. Exactly `512 MiB` is accepted and the first byte beyond it is rejected.
+Download traffic logging prints response metadata and an omitted-body byte
+count instead of parsing or copying the complete JSONL for stderr.
 
 The complete downloaded JSONL remains in memory. A preliminary line-count pass
-rejects more than 50 records before file output, then records are decoded one
+rejects more than 100 records before file output, then records are decoded one
 at a time. Each record requires a non-empty `key` and exactly one `response` or
 `error`. Successful response objects reuse `api.decodeGeneratedFiles`; error
 records, malformed records, duplicate keys, image decode failures, and write
