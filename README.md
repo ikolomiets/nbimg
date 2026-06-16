@@ -125,9 +125,9 @@ printf '%s\n' "change visual style to Broadway musical" | zig-out/bin/nbimg edit
 
 If `gen` or `edit` omits `--prompt`, `nbimg` reads the prompt from stdin.
 Stdin prompts are preserved exactly, including trailing newlines, and are
-limited to `16 KiB`. Explicit `--prompt` values must be one shell argument, so
-quote prompts that contain spaces. Empty prompts are rejected, and prompts are
-not accepted as positional arguments.
+limited to `16 KiB`. Explicit `--prompt` values use the same `16 KiB` limit and
+must be one shell argument, so quote prompts that contain spaces. Empty prompts
+are rejected, and prompts are not accepted as positional arguments.
 
 Use `--out-dir DIR` with `gen` or `edit` to write generated outputs to an
 existing relative or absolute directory instead of the current directory. The
@@ -299,7 +299,7 @@ top-level Gemini `GenerateContentRequest` fields and are omitted unless
 explicitly set. Each request-level option is accepted at most once.
 
 Use `--system TEXT` to send a text-only Gemini `systemInstruction` alongside
-the user prompt. The value must be non-empty.
+the user prompt. The value must be non-empty and at most `16 KiB`.
 
 Use `--cached-content cachedContents/ID` to attach an existing Gemini cached
 content resource. `nbimg` requires the canonical `cachedContents/...` form and
@@ -461,7 +461,13 @@ Useful edit flags:
 `--preserve TEXT` and `--do-not TEXT` are repeatable task-level constraints.
 Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops. Omitting
 these flags renders no extra preserve or do-not section. Each list is capped at
-16 non-empty entries.
+16 non-empty entries, and each non-empty value is capped at `16 KiB`.
+
+Generated `generateContent` request envelopes are bounded before JSON
+serialization: one content entry, 32 total content plus system-instruction
+parts, 16 KiB text fields, 512-byte File API URIs, 64-byte MIME strings, and 5 MiB
+of counted variable request fields. Uploaded file bytes are not counted because
+edit requests reference Gemini Files by URI.
 
 List uploaded file metadata:
 

@@ -13,7 +13,6 @@ const exit_success = 0;
 const exit_failure = 1;
 const exit_usage = 2;
 const exit_response_parse = 3;
-const max_prompt_bytes = 16 * 1024;
 const live_edit_sample_image_path = "sample_images/good_night.jpeg";
 const live_edit_upload_display_name = "nbimg live edit request validity";
 const live_edit_prompt = "change visual style to Broadway musical";
@@ -151,7 +150,9 @@ pub const ParseError = error{
     InvalidMime,
     MalformedImageInput,
     MissingPreserve,
+    PreserveTooLong,
     MissingDoNot,
+    DoNotTooLong,
     TooManyConstraints,
     MissingPath,
     EmptyPath,
@@ -223,6 +224,7 @@ pub const ParseError = error{
     LogprobsRequiresResponseLogprobs,
     MissingSystem,
     EmptySystem,
+    SystemTooLong,
     DuplicateSystem,
     MissingCachedContent,
     EmptyCachedContent,
@@ -1081,14 +1083,14 @@ fn readPromptFromStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
 }
 
 fn readPromptFromReader(gpa: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
-    const prompt = reader.allocRemaining(gpa, .limited(max_prompt_bytes + 1)) catch |err| switch (err) {
+    const prompt = reader.allocRemaining(gpa, .limited(api.max_generate_text_part_bytes + 1)) catch |err| switch (err) {
         error.StreamTooLong => return error.PromptTooLong,
         else => return err,
     };
     errdefer gpa.free(prompt);
 
     if (prompt.len == 0) return error.MissingPrompt;
-    if (prompt.len > max_prompt_bytes) return error.PromptTooLong;
+    if (prompt.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
     return prompt;
 }
 
@@ -1872,6 +1874,7 @@ fn parseGenCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) ParseE
 
             const value = try command_args.nextValue(error.MissingPrompt);
             if (value.len == 0) return error.EmptyPrompt;
+            if (value.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
             prompt = value;
         } else {
             return error.UnknownFlag;
@@ -1954,6 +1957,7 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
 
             const value = try command_args.nextValue(error.MissingPrompt);
             if (value.len == 0) return error.EmptyPrompt;
+            if (value.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
             prompt = value;
         } else if (std.mem.eql(u8, arg, "--ref")) {
             const value = try command_args.nextValue(error.MissingReference);
@@ -1968,9 +1972,11 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             }
         } else if (std.mem.eql(u8, arg, "--preserve")) {
             const value = try command_args.nextValue(error.MissingPreserve);
+            if (value.len > api.max_generate_text_part_bytes) return error.PreserveTooLong;
             if (value.len > 0) try addConstraint(&preserves, &preserve_count, value);
         } else if (std.mem.eql(u8, arg, "--do-not")) {
             const value = try command_args.nextValue(error.MissingDoNot);
+            if (value.len > api.max_generate_text_part_bytes) return error.DoNotTooLong;
             if (value.len > 0) try addConstraint(&do_nots, &do_not_count, value);
         } else {
             return error.UnknownFlag;
@@ -2115,6 +2121,7 @@ fn parseRequestOption(
 
         const value = try command_args.nextValue(error.MissingSystem);
         if (value.len == 0) return error.EmptySystem;
+        if (value.len > api.max_generate_text_part_bytes) return error.SystemTooLong;
         request_options.system_instruction = value;
         return true;
     }
@@ -2316,6 +2323,7 @@ fn validateGenerationOptionDependencies(generation_options: api.GenerationOption
 fn fallbackPrompt(stdin_prompt: ?[]const u8) ParseError![]const u8 {
     const prompt = stdin_prompt orelse return error.MissingPrompt;
     if (prompt.len == 0) return error.MissingPrompt;
+    if (prompt.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
     return prompt;
 }
 
@@ -2391,6 +2399,8 @@ fn addConstraint(
     value: []const u8,
 ) ParseError!void {
     if (constraint_count.* >= constraints.len) return error.TooManyConstraints;
+    assert(value.len > 0);
+    assert(value.len <= api.max_generate_text_part_bytes);
 
     constraints[constraint_count.*] = value;
     constraint_count.* += 1;
@@ -3286,7 +3296,9 @@ fn printUsageError(err: ParseError) void {
         error.InvalidMime => std.debug.print("error: image MIME must be image/jpeg, image/png, or image/webp\n", .{}),
         error.MalformedImageInput => std.debug.print("error: image input must have exactly one comma: files/ID,MIME\n", .{}),
         error.MissingPreserve => std.debug.print("error: missing preserve text\n", .{}),
+        error.PreserveTooLong => std.debug.print("error: preserve text must be at most 16 KiB\n", .{}),
         error.MissingDoNot => std.debug.print("error: missing do-not text\n", .{}),
+        error.DoNotTooLong => std.debug.print("error: do-not text must be at most 16 KiB\n", .{}),
         error.TooManyConstraints => std.debug.print("error: too many edit constraints\n", .{}),
         error.MissingPath => std.debug.print("error: missing input path\n", .{}),
         error.EmptyPath => std.debug.print("error: input path must not be empty\n", .{}),
@@ -3358,6 +3370,7 @@ fn printUsageError(err: ParseError) void {
         error.LogprobsRequiresResponseLogprobs => std.debug.print("error: --logprobs requires --response-logprobs\n", .{}),
         error.MissingSystem => std.debug.print("error: missing system instruction\n", .{}),
         error.EmptySystem => std.debug.print("error: system instruction must not be empty\n", .{}),
+        error.SystemTooLong => std.debug.print("error: system instruction must be at most 16 KiB\n", .{}),
         error.DuplicateSystem => std.debug.print("error: system instruction specified more than once\n", .{}),
         error.MissingCachedContent => std.debug.print("error: missing cached content name\n", .{}),
         error.EmptyCachedContent => std.debug.print("error: cached content name must not be empty\n", .{}),
@@ -3543,6 +3556,25 @@ test "parseArgs accepts prompt flag" {
     try std.testing.expectEqual(@as(?[]const u8, null), gen.out_dir);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.batch_file);
     try std.testing.expectEqual(@as(?[]const u8, null), gen.batch_key);
+}
+
+test "parseArgs accepts explicit prompts at max text bytes" {
+    const max_prompt = "a" ** api.max_generate_text_part_bytes;
+
+    const gen_command = try parseArgs(&.{ "nbimg", "gen", "--prompt", max_prompt });
+    const gen = expectGenCommand(gen_command);
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), gen.prompt.len);
+
+    const edit_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        max_prompt,
+    });
+    const edit = expectEditCommand(edit_command);
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), edit.prompt.len);
 }
 
 test "parseArgs accepts stdin fallback prompt for gen" {
@@ -4109,6 +4141,21 @@ test "parseArgs accepts gen request-level controls" {
     try std.testing.expectEqual(false, options.store.?);
 }
 
+test "parseArgs accepts system instruction at max text bytes" {
+    const max_system = "s" ** api.max_generate_text_part_bytes;
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--system",
+        max_system,
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), gen.request_options.system_instruction.?.len);
+}
+
 test "parseArgs accepts edit request-level controls" {
     const parsed_command = try parseArgs(&.{
         "nbimg",
@@ -4138,6 +4185,7 @@ test "parseArgs rejects invalid request-level controls" {
     try std.testing.expectError(error.MissingSystem, parseArgs(&.{ "nbimg", "gen", "--system" }));
     try std.testing.expectError(error.MissingSystem, parseArgs(&.{ "nbimg", "gen", "--system", "--prompt", "My fair lady" }));
     try std.testing.expectError(error.EmptySystem, parseArgs(&.{ "nbimg", "gen", "--system", "", "--prompt", "My fair lady" }));
+    try std.testing.expectError(error.SystemTooLong, parseArgs(&.{ "nbimg", "gen", "--system", "s" ** (api.max_generate_text_part_bytes + 1), "--prompt", "My fair lady" }));
     try std.testing.expectError(error.DuplicateSystem, parseArgs(&.{ "nbimg", "gen", "--system", "one", "--system", "two", "--prompt", "My fair lady" }));
 
     try std.testing.expectError(error.MissingCachedContent, parseArgs(&.{ "nbimg", "gen", "--cached-content" }));
@@ -5305,6 +5353,26 @@ test "parseArgs rejects empty prompt" {
     try std.testing.expectError(error.EmptyPrompt, parseArgs(&.{ "nbimg", "gen", "--prompt", "" }));
 }
 
+test "parseArgs rejects explicit prompts over max text bytes" {
+    const too_long_prompt = "a" ** (api.max_generate_text_part_bytes + 1);
+
+    try std.testing.expectError(error.PromptTooLong, parseArgs(&.{ "nbimg", "gen", "--prompt", too_long_prompt }));
+    try std.testing.expectError(error.PromptTooLong, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        too_long_prompt,
+    }));
+}
+
+test "parseArgs rejects stdin fallback prompt over max text bytes" {
+    const too_long_prompt = "a" ** (api.max_generate_text_part_bytes + 1);
+
+    try std.testing.expectError(error.PromptTooLong, parseArgsWithPrompt(&.{ "nbimg", "gen" }, too_long_prompt));
+}
+
 test "parseArgs rejects split prompt" {
     try std.testing.expectError(error.SplitPrompt, parseArgs(&.{ "nbimg", "gen", "--prompt", "My", "fair", "lady" }));
 }
@@ -5580,6 +5648,55 @@ test "parseArgs accepts edit empty constraints as no-ops" {
 
     try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
     try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
+}
+
+test "parseArgs accepts edit constraints at max text bytes" {
+    const max_preserve = "p" ** api.max_generate_text_part_bytes;
+    const max_do_not = "d" ** api.max_generate_text_part_bytes;
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--preserve",
+        max_preserve,
+        "--do-not",
+        max_do_not,
+        "--prompt",
+        "edit",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), edit.preserves[0].len);
+    try std.testing.expectEqual(@as(usize, 1), edit.do_not_count);
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), edit.do_nots[0].len);
+}
+
+test "parseArgs rejects edit constraints over max text bytes" {
+    const too_long_preserve = "p" ** (api.max_generate_text_part_bytes + 1);
+    const too_long_do_not = "d" ** (api.max_generate_text_part_bytes + 1);
+
+    try std.testing.expectError(error.PreserveTooLong, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--preserve",
+        too_long_preserve,
+        "--prompt",
+        "edit",
+    }));
+    try std.testing.expectError(error.DoNotTooLong, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--do-not",
+        too_long_do_not,
+        "--prompt",
+        "edit",
+    }));
 }
 
 test "parseArgs keeps non-empty edit constraints when mixed with empty values" {
@@ -6414,16 +6531,16 @@ test "readPromptFromReader rejects empty stdin" {
 
 test "readPromptFromReader accepts max prompt bytes" {
     const gpa = std.testing.allocator;
-    const max_prompt = "a" ** max_prompt_bytes;
+    const max_prompt = "a" ** api.max_generate_text_part_bytes;
     var reader = std.Io.Reader.fixed(max_prompt);
     const prompt = try readPromptFromReader(gpa, &reader);
     defer gpa.free(prompt);
 
-    try std.testing.expectEqual(@as(usize, max_prompt_bytes), prompt.len);
+    try std.testing.expectEqual(@as(usize, api.max_generate_text_part_bytes), prompt.len);
 }
 
 test "readPromptFromReader rejects stdin over max prompt bytes" {
-    const too_long_prompt = "a" ** (max_prompt_bytes + 1);
+    const too_long_prompt = "a" ** (api.max_generate_text_part_bytes + 1);
     var reader = std.Io.Reader.fixed(too_long_prompt);
     try std.testing.expectError(error.PromptTooLong, readPromptFromReader(std.testing.allocator, &reader));
 }

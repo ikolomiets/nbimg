@@ -24,6 +24,7 @@ pub fn generateContent(
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
+    assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const request_json = try buildGenerateRequest(
@@ -55,6 +56,7 @@ pub fn countGenerateContentRequestTokens(
 ) !api.HttpResponse {
     assert(api_key.len > 0);
     assert(prompt.len > 0);
+    assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const request_json = try buildCountTokensRequest(
@@ -83,6 +85,7 @@ pub fn buildGenerateRequest(
     request_options: api.RequestOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
+    assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const parts = [_]api.GeneratePart{.{ .text = prompt }};
@@ -108,6 +111,7 @@ pub fn buildCountTokensRequest(
     request_options: api.RequestOptions,
 ) ![]u8 {
     assert(prompt.len > 0);
+    assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const generate_request_json = try buildGenerateRequest(

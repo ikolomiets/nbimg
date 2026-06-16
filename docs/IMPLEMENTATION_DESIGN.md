@@ -62,7 +62,7 @@ The code is split into eight source files:
   HTTP response ownership, canonical `files/...` name validation, traffic
   logging options, transport helpers, image MIME parsing and serialization,
   Thinking/output/generation/grounding wire helpers, shared generateContent
-  request envelope assembly, generateContent/countTokens JSON posting,
+  request bounds and envelope assembly, generateContent/countTokens JSON posting,
   generic resumable byte uploads, generated response decoding and output
   naming, and response log sanitization.
 - `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
@@ -144,8 +144,9 @@ responses.
 validation, canonical cached content name validation, shared
 generateContent/countTokens endpoint URLs, countTokens
 request envelope construction, countTokens response decoding, shared
-generateContent request envelope construction, shared generateContent/countTokens
-JSON posting helpers, generic resumable byte-upload transport, shared response
+generateContent request bounds and envelope construction, shared
+generateContent/countTokens JSON posting helpers, generic resumable byte-upload
+transport, shared response
 modality values, image MIME
 parsing/serialization for edit references and file uploads, generation config
 helpers, request-level control wire helpers, grounding tool wire structures,
@@ -221,7 +222,8 @@ Argument rules are intentionally narrow:
   missing `--prompt` path.
 - Explicit `--prompt` values must be one argument, so shell users need quotes
   for prompts with spaces. Quote presence is not visible to the process, so
-  single-token prompts are accepted.
+  single-token prompts are accepted. Explicit prompt values are also limited to
+  `16 KiB`.
 - Empty explicit prompt values are rejected.
 - `gen` and `edit` accept optional `--aspect-ratio RATIO` and
   `--image-size SIZE` output controls. Aspect ratios must be one of `1:1`,
@@ -247,8 +249,8 @@ Argument rules are intentionally narrow:
   diagnostics are not image confidence scores.
 - For `gen` and `edit`, request-level controls are optional and omitted from
   JSON unless explicitly set. `--system TEXT` sends a non-empty text-only
-  `systemInstruction`. `--cached-content cachedContents/ID` attaches an
-  existing cached content resource and requires the canonical
+  `systemInstruction` capped at `16 KiB`. `--cached-content cachedContents/ID`
+  attaches an existing cached content resource and requires the canonical
   `cachedContents/...` form; raw cache IDs are rejected.
 - `--service-tier TIER` accepts `flex`, `standard`, or `priority`. If omitted,
   `nbimg` does not serialize `serviceTier`, so Gemini uses the project and
@@ -336,7 +338,8 @@ Argument rules are intentionally narrow:
 - `edit` accepts repeatable `--preserve TEXT` and `--do-not TEXT` task-level
   constraints. Empty string values are accepted as no-ops. Omitted flags render
   no corresponding `PRESERVE FROM BASE_IMAGE` or `DO NOT` section, and the
-  implementation currently caps each list at 16 non-empty entries.
+  implementation currently caps each list at 16 non-empty entries. Each
+  non-empty constraint value is capped at `16 KiB`.
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
 - For `files upload`, `--display-name NAME` is optional and accepted at most
@@ -555,15 +558,35 @@ fields for both `gen` and `edit`:
 }
 ```
 
-`--system` is text-only. `--cached-content` must already be in canonical
-`cachedContents/...` form. `--service-tier` accepts only `flex`, `standard`,
-and `priority`; `unspecified` is not exposed because omitting the flag already
-leaves Gemini's default routing in effect. `--store` and `--no-store` are
-mutually exclusive and are also omitted by default.
+`--system` is text-only, non-empty, and capped at `16 KiB`.
+`--cached-content` must already be in canonical `cachedContents/...` form.
+`--service-tier` accepts only `flex`, `standard`, and `priority`;
+`unspecified` is not exposed because omitting the flag already leaves Gemini's
+default routing in effect. `--store` and `--no-store` are mutually exclusive
+and are also omitted by default.
 
 The CLI checks successful responses for `usageMetadata.serviceTier`. If the
 request asked for `priority` but the response reports `standard`, it prints a
 warning and continues response decoding normally.
+
+`api.buildGenerateContentRequestJson` validates outgoing `generateContent`
+request models before JSON serialization with shared TigerStyle assertions:
+
+- at most 1 `contents[]` entry,
+- at most 32 total request parts, counted as all `contents[].parts` plus an
+  optional one-part `systemInstruction`,
+- each text part and system instruction at most 16 KiB,
+- each `file_data.file_uri` at most 512 bytes,
+- each `file_data.mime_type` at most 64 bytes,
+- at most 5 MiB of counted variable request fields.
+
+The 5 MiB counted field total includes content text parts, system-instruction
+text, File API URIs, MIME strings, and `cachedContent` names before JSON
+serialization. Fixed JSON field names, enum literals, booleans, and JSON
+escaping overhead are excluded. Uploaded file bytes are also excluded because
+current edit requests send Gemini Files API URIs rather than inline image data.
+CLI parsing rejects oversized user-controlled text fields first; the shared API
+assertions are paired programmer-error checks for request builders.
 
 When `--grounding` is `web`, `image`, or `web,image`, `gen` and `edit` add a
 top-level `tools` array. The accepted grounding modes serialize as:

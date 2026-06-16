@@ -10,9 +10,17 @@ pub const max_character_references = 4;
 pub const max_object_references = 10;
 pub const max_label_bytes = 64;
 
+const max_edit_content_parts = 2 + max_references * 2 + 1;
+const max_edit_total_parts_with_system = max_edit_content_parts + 1;
 const file_uri_prefix = "https://generativelanguage.googleapis.com/v1beta/";
 const live_base_name = "files/tjtj5me9i96c";
 const live_prompt = "change visual style to Broadway musical";
+
+comptime {
+    assert(max_edit_content_parts == 29);
+    assert(max_edit_total_parts_with_system == 30);
+    assert(max_edit_total_parts_with_system <= api.max_generate_request_parts_total);
+}
 
 pub const ReferenceRole = enum {
     scene,
@@ -265,6 +273,7 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
 
 fn assertValidEditRequest(request: EditRequest) void {
     assert(request.prompt.len > 0);
+    assert(request.prompt.len <= api.max_generate_text_part_bytes);
     assert(api.isCanonicalFileName(request.base.name));
     assert(request.references.len <= max_references);
 
@@ -281,8 +290,14 @@ fn assertValidEditRequest(request: EditRequest) void {
     assert(character_count <= max_character_references);
     assert(object_count <= max_object_references);
 
-    for (request.preserves) |preserve| assert(preserve.len > 0);
-    for (request.do_nots) |do_not| assert(do_not.len > 0);
+    for (request.preserves) |preserve| {
+        assert(preserve.len > 0);
+        assert(preserve.len <= api.max_generate_text_part_bytes);
+    }
+    for (request.do_nots) |do_not| {
+        assert(do_not.len > 0);
+        assert(do_not.len <= api.max_generate_text_part_bytes);
+    }
     api.assertValidGenerationOptions(request.generation_options);
     api.assertValidRequestOptions(request.request_options);
 }
@@ -594,8 +609,114 @@ test "buildGenerateRequest includes edit request-level controls" {
     defer parsed.deinit();
 }
 
+test "buildGenerateRequest keeps max-reference edit within generateContent part limit with system" {
+    const gpa = std.testing.allocator;
+    const labels = [_][]const u8{
+        "STYLE_A",
+        "STYLE_B",
+        "STYLE_C",
+        "STYLE_D",
+        "STYLE_E",
+        "STYLE_F",
+        "STYLE_G",
+        "STYLE_H",
+        "STYLE_I",
+        "STYLE_J",
+        "STYLE_K",
+        "STYLE_L",
+        "STYLE_M",
+    };
+    const names = [_][]const u8{
+        "files/reference-a",
+        "files/reference-b",
+        "files/reference-c",
+        "files/reference-d",
+        "files/reference-e",
+        "files/reference-f",
+        "files/reference-g",
+        "files/reference-h",
+        "files/reference-i",
+        "files/reference-j",
+        "files/reference-k",
+        "files/reference-l",
+        "files/reference-m",
+    };
+    var references: [max_references]Reference = undefined;
+    for (&references, 0..) |*reference, index| {
+        reference.* = .{
+            .role = .style,
+            .label = labels[index],
+            .image = .{
+                .name = names[index],
+                .mime = .jpeg,
+            },
+        };
+    }
+
+    const request = try buildGenerateRequest(gpa, .{
+        .prompt = live_prompt,
+        .request_options = .{
+            .system_instruction = "Preserve the subject identity.",
+        },
+        .base = .{
+            .name = live_base_name,
+            .mime = .jpeg,
+        },
+        .references = &references,
+    });
+    defer gpa.free(request);
+
+    try expectGenerateRequestPartCounts(gpa, request, 29, 1);
+}
+
 fn expectNoSafetySettings(request_json: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"safetySettings\"") == null);
+}
+
+fn expectGenerateRequestPartCounts(
+    gpa: std.mem.Allocator,
+    request_json: []const u8,
+    expected_content_parts: usize,
+    expected_system_parts: usize,
+) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request_json, .{});
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidGenerateRequestJson,
+    };
+    const contents = switch (root.get("contents") orelse return error.MissingContents) {
+        .array => |array| array.items,
+        else => return error.InvalidContents,
+    };
+    try std.testing.expectEqual(@as(usize, 1), contents.len);
+
+    const content = switch (contents[0]) {
+        .object => |object| object,
+        else => return error.InvalidContent,
+    };
+    const content_parts = switch (content.get("parts") orelse return error.MissingContentParts) {
+        .array => |array| array.items,
+        else => return error.InvalidContentParts,
+    };
+    try std.testing.expectEqual(expected_content_parts, content_parts.len);
+
+    if (expected_system_parts == 0) {
+        try std.testing.expect(root.get("systemInstruction") == null);
+        return;
+    }
+
+    const system_instruction = switch (root.get("systemInstruction") orelse return error.MissingSystemInstruction) {
+        .object => |object| object,
+        else => return error.InvalidSystemInstruction,
+    };
+    const system_parts = switch (system_instruction.get("parts") orelse return error.MissingSystemParts) {
+        .array => |array| array.items,
+        else => return error.InvalidSystemParts,
+    };
+    try std.testing.expectEqual(expected_system_parts, system_parts.len);
+    try std.testing.expect(expected_content_parts + expected_system_parts <= api.max_generate_request_parts_total);
 }
 
 test "buildGenerateRequest renders only explicit edit constraints" {

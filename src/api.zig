@@ -9,6 +9,12 @@ pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
 pub const canonical_cached_content_name_prefix = "cachedContents/";
 pub const max_display_name_codepoints = 512;
+pub const max_generate_content_count = 1;
+pub const max_generate_request_parts_total = 32;
+pub const max_generate_text_part_bytes = 16 * 1024;
+pub const max_generate_file_uri_bytes = 512;
+pub const max_generate_mime_type_bytes = 64;
+pub const max_generate_request_field_bytes = 5 * 1024 * 1024;
 
 pub const ApiKeyError = error{
     MissingApiKey,
@@ -398,6 +404,7 @@ pub fn assertValidGenerationOptions(options: GenerationOptions) void {
 pub fn assertValidRequestOptions(options: RequestOptions) void {
     if (options.system_instruction) |system_instruction| {
         assert(system_instruction.len > 0);
+        assert(system_instruction.len <= max_generate_text_part_bytes);
     }
 
     if (options.cached_content) |cached_content| {
@@ -464,8 +471,7 @@ pub fn buildGenerateContentRequestJson(
     contents: []const GenerateContent,
     options: GenerateContentRequestOptions,
 ) ![]u8 {
-    assertValidGenerateContents(contents);
-    assertValidRequestOptions(options.request_options);
+    assertValidGenerateContentRequest(contents, options.request_options);
 
     var system_instruction_parts_buffer: [1]TextPart = undefined;
     const system_instruction: ?TextContent = if (options.request_options.system_instruction) |text| system_instruction: {
@@ -508,25 +514,113 @@ pub fn buildGenerateContentRequestJson(
     return list.toOwnedSlice(gpa);
 }
 
-fn assertValidGenerateContents(contents: []const GenerateContent) void {
-    assert(contents.len > 0);
+fn assertValidGenerateContentRequest(contents: []const GenerateContent, request_options: RequestOptions) void {
+    const validation = validateGenerateContentRequest(contents, request_options);
+    assert(validation.has_contents);
+    assert(validation.content_count_within_limit);
+    assert(validation.every_content_has_parts);
+    assert(validation.part_count_within_limit);
+    assert(validation.every_part_has_one_payload);
+    assert(validation.text_parts_non_empty);
+    assert(validation.text_parts_within_limit);
+    assert(validation.file_mime_types_non_empty);
+    assert(validation.file_mime_types_within_limit);
+    assert(validation.file_uris_non_empty);
+    assert(validation.file_uris_within_limit);
+    assert(validation.system_instruction_non_empty);
+    assert(validation.system_instruction_within_limit);
+    assert(validation.cached_content_canonical);
+    assert(validation.field_bytes_within_limit);
+}
+
+const GenerateContentRequestValidation = struct {
+    has_contents: bool,
+    content_count_within_limit: bool,
+    every_content_has_parts: bool = true,
+    part_count_within_limit: bool = true,
+    every_part_has_one_payload: bool = true,
+    text_parts_non_empty: bool = true,
+    text_parts_within_limit: bool = true,
+    file_mime_types_non_empty: bool = true,
+    file_mime_types_within_limit: bool = true,
+    file_uris_non_empty: bool = true,
+    file_uris_within_limit: bool = true,
+    system_instruction_non_empty: bool = true,
+    system_instruction_within_limit: bool = true,
+    cached_content_canonical: bool = true,
+    field_bytes_within_limit: bool = true,
+
+    fn valid(validation: GenerateContentRequestValidation) bool {
+        return validation.has_contents and
+            validation.content_count_within_limit and
+            validation.every_content_has_parts and
+            validation.part_count_within_limit and
+            validation.every_part_has_one_payload and
+            validation.text_parts_non_empty and
+            validation.text_parts_within_limit and
+            validation.file_mime_types_non_empty and
+            validation.file_mime_types_within_limit and
+            validation.file_uris_non_empty and
+            validation.file_uris_within_limit and
+            validation.system_instruction_non_empty and
+            validation.system_instruction_within_limit and
+            validation.cached_content_canonical and
+            validation.field_bytes_within_limit;
+    }
+};
+
+fn validateGenerateContentRequest(
+    contents: []const GenerateContent,
+    request_options: RequestOptions,
+) GenerateContentRequestValidation {
+    var validation = GenerateContentRequestValidation{
+        .has_contents = contents.len > 0,
+        .content_count_within_limit = contents.len <= max_generate_content_count,
+    };
+    var part_count: usize = 0;
+    var field_bytes: usize = 0;
 
     for (contents) |content| {
-        assert(content.parts.len > 0);
+        if (content.parts.len == 0) validation.every_content_has_parts = false;
+        part_count +|= content.parts.len;
 
         for (content.parts) |part| {
-            assert((part.text != null) != (part.file_data != null));
+            const has_text = part.text != null;
+            const has_file_data = part.file_data != null;
+            if (has_text == has_file_data) validation.every_part_has_one_payload = false;
 
             if (part.text) |text| {
-                assert(text.len > 0);
+                if (text.len == 0) validation.text_parts_non_empty = false;
+                if (text.len > max_generate_text_part_bytes) validation.text_parts_within_limit = false;
+                field_bytes +|= text.len;
             }
 
             if (part.file_data) |file_data| {
-                assert(file_data.mime_type.len > 0);
-                assert(file_data.file_uri.len > 0);
+                if (file_data.mime_type.len == 0) validation.file_mime_types_non_empty = false;
+                if (file_data.mime_type.len > max_generate_mime_type_bytes) validation.file_mime_types_within_limit = false;
+                if (file_data.file_uri.len == 0) validation.file_uris_non_empty = false;
+                if (file_data.file_uri.len > max_generate_file_uri_bytes) validation.file_uris_within_limit = false;
+                field_bytes +|= file_data.mime_type.len;
+                field_bytes +|= file_data.file_uri.len;
             }
         }
     }
+
+    if (request_options.system_instruction) |system_instruction| {
+        part_count +|= 1;
+        if (system_instruction.len == 0) validation.system_instruction_non_empty = false;
+        if (system_instruction.len > max_generate_text_part_bytes) validation.system_instruction_within_limit = false;
+        field_bytes +|= system_instruction.len;
+    }
+
+    if (request_options.cached_content) |cached_content| {
+        if (!isCanonicalCachedContentName(cached_content)) validation.cached_content_canonical = false;
+        field_bytes +|= cached_content.len;
+    }
+
+    validation.part_count_within_limit = part_count <= max_generate_request_parts_total;
+    validation.field_bytes_within_limit = field_bytes <= max_generate_request_field_bytes;
+    return validation;
 }
 
 pub const ResponseFormatConfig = struct {
@@ -1153,6 +1247,84 @@ test "buildGenerateContentRequestJson serializes shared request controls" {
 
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
     defer parsed.deinit();
+}
+
+test "generateContent request validation accepts maximum text fields" {
+    const max_text = "a" ** max_generate_text_part_bytes;
+    const parts = [_]GeneratePart{.{ .text = max_text }};
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+
+    try std.testing.expect(validateGenerateContentRequest(contents[0..], .{
+        .system_instruction = max_text,
+    }).valid());
+}
+
+test "generateContent request validation rejects too many contents" {
+    const parts = [_]GeneratePart{.{ .text = "x" }};
+    const contents = [_]GenerateContent{
+        .{ .parts = &parts },
+        .{ .parts = &parts },
+    };
+
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+}
+
+test "generateContent request validation rejects 33 total parts" {
+    var parts: [max_generate_request_parts_total]GeneratePart = undefined;
+    for (&parts) |*part| {
+        part.* = .{ .text = "x" };
+    }
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{
+        .system_instruction = "system",
+    }).valid());
+}
+
+test "generateContent request validation rejects oversized text part" {
+    const too_long_text = "a" ** (max_generate_text_part_bytes + 1);
+    const parts = [_]GeneratePart{.{ .text = too_long_text }};
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+}
+
+test "generateContent request validation rejects oversized file data fields" {
+    const too_long_file_uri = "u" ** (max_generate_file_uri_bytes + 1);
+    const too_long_mime_type = "m" ** (max_generate_mime_type_bytes + 1);
+
+    {
+        const parts = [_]GeneratePart{.{ .file_data = .{
+            .mime_type = "image/jpeg",
+            .file_uri = too_long_file_uri,
+        } }};
+        const contents = [_]GenerateContent{.{ .parts = &parts }};
+        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+    }
+
+    {
+        const parts = [_]GeneratePart{.{ .file_data = .{
+            .mime_type = too_long_mime_type,
+            .file_uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123",
+        } }};
+        const contents = [_]GenerateContent{.{ .parts = &parts }};
+        try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{}).valid());
+    }
+}
+
+test "generateContent request validation rejects oversized request field total" {
+    const gpa = std.testing.allocator;
+    const cached_content = try gpa.alloc(u8, max_generate_request_field_bytes + 1);
+    defer gpa.free(cached_content);
+    @memcpy(cached_content[0..canonical_cached_content_name_prefix.len], canonical_cached_content_name_prefix);
+    @memset(cached_content[canonical_cached_content_name_prefix.len..], 'a');
+
+    const parts = [_]GeneratePart{.{ .text = "x" }};
+    const contents = [_]GenerateContent{.{ .parts = &parts }};
+
+    try std.testing.expect(!validateGenerateContentRequest(contents[0..], .{
+        .cached_content = cached_content,
+    }).valid());
 }
 
 test "explicit block none safety settings serialize all supported harm categories" {
