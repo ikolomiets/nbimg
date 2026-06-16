@@ -132,10 +132,9 @@ shared resumable byte-upload transport, builds paginated list URLs and
 file-resource get/delete URLs, and decodes uploaded/listed/fetched File
 metadata.
 
-`src/batch.zig` owns Gemini Batch API semantics. It validates complete JSONL
-input and unique keys, enforces the 5 MiB serialized-entry and 512 MiB local
-file limits, requires object-valued request JSON without semantically
-validating the nested generateContent request, uploads bytes as
+`src/batch.zig` owns Gemini Batch API semantics. It enforces the 5 MiB
+serialized-entry and 512 MiB local file limits, counts entries, leaves submit
+entry JSON and key validation to Gemini, uploads bytes as
 `application/jsonl`, submits the uploaded `files/...` name to the fixed image
 model, builds status URLs from canonical `batches/...` names, builds paginated
 list URLs, validates listed operation names, preserves complete operation
@@ -886,16 +885,14 @@ and stdout for metadata JSON or delete `OK`.
 
 `nbimg batch submit --path PATH` reads one complete local JSONL input into
 memory with a `512 MiB` limit. Before network IO, `batch.validateInputJsonl`
-requires at least one non-empty line, valid JSON on every line, a non-empty
-unique `key`, and an object-valued `request`. LF and CRLF separators are
-accepted. Empty lines are rejected. The nested request object is not
-semantically validated; its local bound is the `5 MiB` serialized JSONL entry
-limit. The complete input is limited to `512 MiB`, and one batch is limited to
-100 entries. `gen` and `edit` reject the 101st locked append before modifying
-the file. `batch submit` rejects an input over 100 entries before upload or job
-creation.
+requires at least one non-empty line, accepts LF and CRLF separators, rejects
+empty lines, caps each serialized entry at `5 MiB`, and limits one batch to 100
+entries. It does not parse entry JSON, check keys, or validate object-valued
+requests during submit. `gen` and `edit` still reject the 101st locked append
+before modifying the file. `batch submit` rejects an input over 100 entries
+before upload or job creation.
 
-The validated bytes are uploaded through `api.uploadResumableBytes` with
+The admitted bytes are uploaded through `api.uploadResumableBytes` with
 `application/jsonl`. The shared transport owns the resumable upload start and
 finalize requests. `files.zig` continues to own image extension/MIME validation
 and image upload size policy; `batch.zig` owns Batch input MIME and limits.

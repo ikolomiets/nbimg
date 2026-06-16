@@ -97,11 +97,8 @@ pub fn buildEntryJson(
     return list.toOwnedSlice(gpa);
 }
 
-pub fn validateInputJsonl(gpa: std.mem.Allocator, bytes: []const u8) !void {
+pub fn validateInputJsonl(bytes: []const u8) !void {
     try validateInputByteCount(bytes.len);
-
-    var keys = std.BufSet.init(gpa);
-    defer keys.deinit();
 
     var entry_count: usize = 0;
     var offset: usize = 0;
@@ -114,7 +111,6 @@ pub fn validateInputJsonl(gpa: std.mem.Allocator, bytes: []const u8) !void {
         if (line.len == 0) return error.InvalidBatchInput;
         if (line.len > max_entry_bytes) return error.BatchEntryTooLong;
         if (entry_count == max_entries) return error.BatchTooManyEntries;
-        try validateEntry(gpa, &keys, line);
         entry_count += 1;
 
         if (newline_relative == null) break;
@@ -127,26 +123,6 @@ pub fn validateInputJsonl(gpa: std.mem.Allocator, bytes: []const u8) !void {
 pub fn validateInputByteCount(byte_count: usize) !void {
     if (byte_count == 0) return error.EmptyBatchInput;
     if (byte_count > max_input_bytes) return error.BatchInputTooLong;
-}
-
-fn validateEntry(gpa: std.mem.Allocator, keys: *std.BufSet, line: []const u8) !void {
-    const Entry = struct {
-        key: []const u8,
-        request: std.json.Value,
-    };
-
-    var parsed = std.json.parseFromSlice(Entry, gpa, line, .{
-        .ignore_unknown_fields = true,
-    }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return error.InvalidBatchInput,
-    };
-    defer parsed.deinit();
-
-    if (parsed.value.key.len == 0) return error.InvalidBatchInput;
-    if (parsed.value.request != .object) return error.InvalidBatchInput;
-    if (keys.contains(parsed.value.key)) return error.DuplicateBatchKey;
-    try keys.insert(parsed.value.key);
 }
 
 pub fn uploadInput(
@@ -708,7 +684,7 @@ test "validateInputJsonl accepts LF and CRLF entries" {
     const input =
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\r\n" ++
         "{\"key\":\"two\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
-    try validateInputJsonl(std.testing.allocator, input);
+    try validateInputJsonl(input);
 }
 
 test "validateInputJsonl accepts maximum entries and rejects one over maximum" {
@@ -716,50 +692,43 @@ test "validateInputJsonl accepts maximum entries and rejects one over maximum" {
 
     const one = try testInputJsonl(gpa, 1);
     defer gpa.free(one);
-    try validateInputJsonl(gpa, one);
+    try validateInputJsonl(one);
 
     const maximum = try testInputJsonl(gpa, max_entries);
     defer gpa.free(maximum);
-    try validateInputJsonl(gpa, maximum);
+    try validateInputJsonl(maximum);
 
     const over_maximum = try testInputJsonl(gpa, max_entries + 1);
     defer gpa.free(over_maximum);
     try std.testing.expectError(
         error.BatchTooManyEntries,
-        validateInputJsonl(gpa, over_maximum),
+        validateInputJsonl(over_maximum),
     );
 }
 
-test "validateInputJsonl rejects malformed and invalid entries" {
-    try std.testing.expectError(
-        error.EmptyBatchInput,
-        validateInputJsonl(std.testing.allocator, ""),
-    );
-    try std.testing.expectError(
-        error.InvalidBatchInput,
-        validateInputJsonl(std.testing.allocator, "not-json\n"),
-    );
-    try std.testing.expectError(
-        error.InvalidBatchInput,
-        validateInputJsonl(std.testing.allocator, "{\"key\":\"\",\"request\":{}}\n"),
-    );
-    try std.testing.expectError(
-        error.InvalidBatchInput,
-        validateInputJsonl(std.testing.allocator, "{\"key\":\"one\",\"request\":[]}\n"),
-    );
-    try std.testing.expectError(
-        error.InvalidBatchInput,
-        validateInputJsonl(std.testing.allocator, "{\"key\":\"one\",\"request\":{}}\n\n"),
-    );
-}
-
-test "validateInputJsonl rejects duplicate keys" {
+test "validateInputJsonl accepts entry contents without semantic validation" {
     const input =
+        "not-json\n" ++
+        "{\"key\":\"\",\"request\":{}}\n" ++
+        "{\"key\":\"one\",\"request\":[]}\n" ++
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\n" ++
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
+
+    try validateInputJsonl(input);
+}
+
+test "validateInputJsonl rejects empty input and blank entries" {
     try std.testing.expectError(
-        error.DuplicateBatchKey,
-        validateInputJsonl(std.testing.allocator, input),
+        error.EmptyBatchInput,
+        validateInputJsonl(""),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchInput,
+        validateInputJsonl("\n"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchInput,
+        validateInputJsonl("{\"key\":\"one\",\"request\":{}}\n\n"),
     );
 }
 
@@ -771,7 +740,7 @@ test "validateInputJsonl enforces per-entry limit" {
 
     try std.testing.expectError(
         error.BatchEntryTooLong,
-        validateInputJsonl(gpa, input),
+        validateInputJsonl(input),
     );
 }
 
@@ -788,14 +757,7 @@ test "validateInputJsonl accepts serialized entry at exact limit" {
     const entry = try buildEntryJson(gpa, key, request_json);
     defer gpa.free(entry);
     try std.testing.expectEqual(@as(usize, max_entry_bytes), entry.len);
-    try validateInputJsonl(gpa, entry);
-}
-
-test "validateInputJsonl accepts object-valued request without semantic validation" {
-    try validateInputJsonl(
-        std.testing.allocator,
-        "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"hello\"}]}],\"futureField\":true}}\n",
-    );
+    try validateInputJsonl(entry);
 }
 
 test "validateInputByteCount enforces local input limit" {
@@ -1162,7 +1124,7 @@ test "live API batch submit status and cancel succeeds" {
     defer gpa.free(second_entry);
     const input = try std.fmt.allocPrint(gpa, "{s}\n{s}\n", .{ first_entry, second_entry });
     defer gpa.free(input);
-    try validateInputJsonl(gpa, input);
+    try validateInputJsonl(input);
 
     const display_name = "nbimg-live-batch.jsonl";
     var upload_response = try uploadInput(gpa, std.testing.io, api_key, input, display_name);

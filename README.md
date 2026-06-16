@@ -175,12 +175,12 @@ Submit a prepared JSONL input file:
 zig-out/bin/nbimg batch submit --path requests.jsonl
 ```
 
-`batch submit` validates every JSONL line before network IO. Each entry must
-contain a non-empty unique `key` and an object-valued `request`. Empty lines
-and malformed JSON are rejected. The nested request JSON is not semantically
-validated; the serialized JSONL entry itself is capped at `5 MiB`. The complete
-local file is capped at `512 MiB`, and one batch is capped at 100 entries.
-Inputs over those limits are rejected before upload or job creation.
+`batch submit` performs only local admission checks before network IO. The
+input must contain at least one non-empty JSONL entry, each entry is capped at
+`5 MiB`, the complete local file is capped at `512 MiB`, and one batch is
+capped at 100 entries. Submit does not parse entry JSON, check keys, or validate
+the nested request shape; malformed entries are left for Gemini to reject.
+Inputs over local limits are rejected before upload or job creation.
 
 The command uploads the input through the Gemini Files API as
 `application/jsonl`, then creates exactly one job for

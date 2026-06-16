@@ -1051,7 +1051,7 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
         .limited(api_batch.max_input_bytes),
     );
     defer gpa.free(full_file);
-    try api_batch.validateInputJsonl(gpa, full_file);
+    try api_batch.validateInputJsonl(full_file);
 
     const rejected_key = try std.fmt.allocPrint(gpa, "key-{d}", .{api_batch.max_entries});
     defer gpa.free(rejected_key);
@@ -1341,7 +1341,7 @@ fn runBatchSubmit(
     };
     defer gpa.free(bytes);
 
-    api_batch.validateInputJsonl(gpa, bytes) catch |err| {
+    api_batch.validateInputJsonl(bytes) catch |err| {
         switch (err) {
             error.EmptyBatchInput => std.debug.print("error: batch input file must not be empty\n", .{}),
             error.BatchInputTooLong => std.debug.print(
@@ -1356,9 +1356,7 @@ fn runBatchSubmit(
                 "error: batch input contains more than {d} entries\n",
                 .{api_batch.max_entries},
             ),
-            error.DuplicateBatchKey => std.debug.print("error: batch input contains a duplicate key\n", .{}),
-            error.InvalidBatchInput => std.debug.print("error: batch input is not valid Batch API JSONL\n", .{}),
-            else => std.debug.print("error: failed to validate batch input: {s}\n", .{@errorName(err)}),
+            error.InvalidBatchInput => std.debug.print("error: batch input contains an empty JSONL entry\n", .{}),
         }
         return exit_usage;
     };
@@ -3475,7 +3473,7 @@ fn usageText() []const u8 {
         "       --batch-file validates with countTokens, then appends a Batch API JSONL request instead of generating\n" ++
         "       --batch-key sets the response-correlation key; otherwise nbimg derives one from the append offset\n" ++
         "       batch keys must be unique within the file; --batch-file cannot be combined with --out-dir\n" ++
-        "       batch submit validates and uploads JSONL, then creates exactly one non-idempotent Batch job\n" ++
+        "       batch submit checks JSONL size and count, uploads JSONL, then creates exactly one non-idempotent Batch job\n" ++
         "       batch status performs one GET and requires the canonical batches/ID name\n" ++
         "       batch cancel requests best-effort cancellation and prints OK when Gemini accepts it\n" ++
         "       batch download checks status once, then writes successful output images without overwriting\n" ++
