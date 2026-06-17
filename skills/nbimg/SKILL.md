@@ -1,16 +1,16 @@
 ---
 name: nbimg
-description: Use when Codex needs to operate the nbimg CLI for Gemini image generation, image editing, uploaded Gemini Files API image reference management, Batch JSONL submission/status, or command construction involving nbimg gen, nbimg edit, nbimg files upload/list/get/delete, nbimg batch submit/status, --ref ROLE[:LABEL]=files/ID,MIME references, generation controls, edit constraints, or output handling. Assumes the nbimg executable is available on PATH.
+description: Use when Codex needs to operate the nbimg CLI for Gemini image generation, image editing, uploaded Gemini Files API image reference management, Gemini Batch JSONL preparation/submission/status/cancel/download/list, or command construction involving nbimg gen, nbimg edit, nbimg files upload/list/get/delete, nbimg batch submit/status/cancel/download/list, --ref ROLE[:LABEL]=files/ID,MIME references, --batch-file workflows, generation controls, edit constraints, or output handling. Assumes the nbimg executable is available on PATH.
 ---
 
 # nbimg CLI
 
-Use `nbimg` directly from `PATH` for Gemini native image generation, image editing with uploaded file references, and Gemini Files API image-reference management.
+Use `nbimg` directly from `PATH` for Gemini native image generation, image editing with uploaded file references, Gemini Files API image-reference management, and Gemini Batch API JSONL workflows.
 
 ## Preconditions
 
-- Require `GEMINI_API_KEY` in the environment before live API calls.
-- Treat `gen`, `edit`, `files`, and `batch` commands as external API operations. Upload/list/get/delete affect remote Gemini Files API state; generation/edit produce live model output; Batch submission is billable and non-idempotent.
+- Require a Gemini API key via `GEMINI_API_KEY` or command-level `--api-key KEY`; prefer the environment variable for routine use.
+- Treat `gen`, `edit`, `files`, and `batch` commands as external API operations. Files upload/delete and Batch submit/cancel affect remote state; Files list/get and Batch status/list/download inspect remote state; generation/edit produce live model output; Batch submit creates one billable, non-idempotent job.
 - Use only the `nbimg` CLI interface. Do not infer behavior from anything outside the CLI contract.
 
 ## Command Forms
@@ -18,15 +18,18 @@ Use `nbimg` directly from `PATH` for Gemini native image generation, image editi
 ```sh
 nbimg gen [OPTIONS] [--prompt "PROMPT"]
 nbimg edit [OPTIONS] --ref ROLE=files/ID,MIME [--ref ROLE[:LABEL]=files/ID,MIME] [--preserve TEXT] [--do-not TEXT] [--prompt "PROMPT"]
-nbimg files upload [--print-request] [--display-name NAME] --path PATH
-nbimg files list [--print-request]
-nbimg files get [--print-request] --name files/ID
-nbimg files delete [--print-request] --name files/ID
-nbimg batch submit [--print-request] [--display-name NAME] --path PATH
-nbimg batch status [--print-request] --name batches/ID
+nbimg files upload [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg files list [--api-key KEY] [--print-request]
+nbimg files get [--api-key KEY] [--print-request] --name files/ID
+nbimg files delete [--api-key KEY] [--print-request] --name files/ID
+nbimg batch submit [--api-key KEY] [--print-request] [--display-name NAME] --path PATH
+nbimg batch status [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch cancel [--api-key KEY] [--print-request] --name batches/ID
+nbimg batch download [--api-key KEY] [--print-request] --name batches/ID [--out-dir DIR]
+nbimg batch list [--api-key KEY] [--print-request]
 ```
 
-`gen` creates new image output from text. `edit` edits a base uploaded image with optional additional uploaded references. `files` manages uploaded Gemini file resources used by `edit`.
+`gen` creates new image output from text. `edit` edits a base uploaded image with optional additional uploaded references. `files` manages uploaded Gemini file resources used by `edit`. `batch` submits prepared JSONL, checks job state, requests cancellation, downloads successful image outputs, and lists recent jobs.
 
 ## Shared Behavior
 
@@ -36,10 +39,10 @@ nbimg batch status [--print-request] --name batches/ID
   nbimg gen --out-dir outputs < prompt.txt
   ```
 - Prompts must be non-empty and at most 16 KiB. Prompt text is not accepted as a positional argument.
-- `--print-request` logs sanitized request traffic for debugging. Response traffic is logged to stderr by default.
-- Command results go to stdout: generated filenames, file metadata JSON, or delete `OK`.
-- Batch submit/status results are complete pretty-printed API JSON documents on stdout.
-- Generated image parts are written to the current directory unless `--out-dir DIR` is supplied. `--out-dir` is supported only for `gen` and `edit`, must be used at most once, and must name an existing directory.
+- `--api-key KEY` is accepted after each leaf command or subcommand. Prefer `GEMINI_API_KEY` because command-line keys can leak through shell history or process inspection.
+- `--print-request` logs sanitized request traffic for debugging. Response traffic is logged to stderr by default and includes whole-second response timing.
+- Command results go to stdout: generated filenames, file metadata JSON, compact batch-file receipts, Batch operation/list JSON, downloaded Batch filenames, or `OK` for delete/cancel success.
+- Generated image parts are written to the current directory unless `--out-dir DIR` is supplied. `--out-dir` is supported only for `gen`, `edit`, and `batch download`, must be used at most once, and must name an existing directory.
 - Text response parts are not written as separate files; inspect stderr response logs when text metadata matters.
 
 ## Generation
@@ -116,9 +119,26 @@ nbimg gen \
 nbimg batch submit --path requests.jsonl
 ```
 
-`batch submit` validates the complete file before network IO. Entries require
-unique non-empty `key` values and object-valued `request` fields. Current local
-limits are 4 MiB per entry and 64 MiB per file.
+`gen --batch-file` and `edit --batch-file` build the normal
+`GenerateContentRequest`, validate that shape through Gemini's non-generation
+`countTokens` endpoint, and append only after HTTP success. Each JSONL line has
+Batch API shape `{"key":"...","request":{...}}`. The file is created when
+absent and locked while existing keys are checked. Explicit `--batch-key KEY`
+values must be unique; if omitted, `nbimg` derives a deterministic key such as
+`nbimg-0` from the locked byte offset. A batch file is capped at 100 entries,
+and `--batch-file` is mutually exclusive with `--out-dir`.
+
+On batch-file append success, stdout receives a compact receipt:
+
+```json
+{"key":"hero-001","totalTokens":42,"batchFile":"requests.jsonl"}
+```
+
+`batch submit` performs local admission checks before network IO: input must be
+non-empty JSONL with no empty lines, at most 100 entries, at most 5 MiB per
+entry, and at most 512 MiB for the complete file. Submit does not parse entry
+JSON, check keys, or validate nested request objects; malformed entries are
+left for Gemini to reject.
 
 The complete basename, including `.jsonl`, is the default display name for
 both the uploaded File and Batch job. `--display-name` overrides both. The
@@ -134,8 +154,45 @@ Use the returned canonical name for one status request:
 nbimg batch status --name batches/123456789
 ```
 
-`batch status` performs one GET. It does not poll or retry. Results download,
-cancellation, and listing are outside the current CLI.
+`batch status` performs one GET without polling or retrying and prints every
+returned response field as pretty JSON.
+
+Request best-effort cancellation:
+
+```sh
+nbimg batch cancel --name batches/123456789
+```
+
+`batch cancel` performs one bodyless POST and prints `OK` when Gemini accepts
+the request. Acceptance does not prove the job has reached
+`JOB_STATE_CANCELLED`; use `batch status` to inspect current state. Cancellation
+does not delete the Batch job or its uploaded JSONL input.
+
+Download images from a completed Batch job:
+
+```sh
+nbimg batch download --name batches/123456789 --out-dir outputs
+```
+
+`batch download` checks status exactly once and proceeds only for a succeeded
+job. It rejects reported or decoded outputs over 100 records, downloads the
+output JSONL with a separate 512 MiB limit, and writes successful inline images
+to the current directory or an existing `--out-dir`. Filenames use
+`{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
+overwrite existing files. Successful filenames print to stdout; error records,
+malformed records, duplicate keys, decode failures, and write failures are
+reported while later records continue processing. Any such failure makes the
+command exit nonzero.
+
+List recent Batch jobs:
+
+```sh
+nbimg batch list
+```
+
+`batch list` requests 100 operations per page, follows every returned
+`nextPageToken`, and prints one pretty JSON object containing the aggregated
+`operations` array. Gemini's undocumented `filter` parameter is not exposed.
 
 ## Editing
 
