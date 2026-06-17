@@ -460,9 +460,9 @@ Useful edit flags:
 ```
 
 `--preserve TEXT` and `--do-not TEXT` are repeatable task-level constraints.
-Empty `--preserve ""` and `--do-not ""` values are accepted as no-ops. Omitting
-these flags renders no extra preserve or do-not section. Each list is capped at
-16 non-empty entries, and each non-empty value is capped at `16 KiB`.
+Empty `--preserve ""` and `--do-not ""` values are rejected. Omitting these
+flags renders no extra preserve or do-not section. Each list is capped at 16
+entries, and each value is capped at `16 KiB`.
 
 Generated `generateContent` request envelopes are bounded before JSON
 serialization: one content entry, 32 total content plus system-instruction

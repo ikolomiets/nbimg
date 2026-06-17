@@ -151,7 +151,7 @@ Limits:
 - Up to 14 total images including the base image.
 - Up to 4 character references including a character base.
 - Up to 10 object references including an object base.
-- Up to 16 non-empty `--preserve` entries and 16 non-empty `--do-not` entries.
+- Up to 16 `--preserve` entries and 16 `--do-not` entries; values must be non-empty.
 
 Prompts should refer to symbolic labels, not local filenames or upload display names. Later references may omit labels; `nbimg` assigns deterministic labels by role, such as `CHARACTER_A`, `OBJECT_A`, `STYLE_REFERENCE_A`, `SCENE_REFERENCE_A`, `POSE_REFERENCE_A`, `COMPOSITION_REFERENCE_A`, `BACKGROUND_REFERENCE_A`, `TEXTURE_REFERENCE_A`, or `IMAGE_REFERENCE_A`. Explicit labels are easier to read when multiple references are involved.
 

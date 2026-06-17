@@ -150,8 +150,10 @@ pub const ParseError = error{
     InvalidMime,
     MalformedImageInput,
     MissingPreserve,
+    EmptyPreserve,
     PreserveTooLong,
     MissingDoNot,
+    EmptyDoNot,
     DoNotTooLong,
     TooManyConstraints,
     MissingPath,
@@ -2015,12 +2017,14 @@ fn parseEditCommand(command_args: *CommandArgs, stdin_prompt: ?[]const u8) Parse
             }
         } else if (std.mem.eql(u8, arg, "--preserve")) {
             const value = try command_args.nextValue(error.MissingPreserve);
+            if (value.len == 0) return error.EmptyPreserve;
             if (value.len > api.max_generate_text_part_bytes) return error.PreserveTooLong;
-            if (value.len > 0) try addConstraint(&preserves, &preserve_count, value);
+            try addConstraint(&preserves, &preserve_count, value);
         } else if (std.mem.eql(u8, arg, "--do-not")) {
             const value = try command_args.nextValue(error.MissingDoNot);
+            if (value.len == 0) return error.EmptyDoNot;
             if (value.len > api.max_generate_text_part_bytes) return error.DoNotTooLong;
-            if (value.len > 0) try addConstraint(&do_nots, &do_not_count, value);
+            try addConstraint(&do_nots, &do_not_count, value);
         } else {
             return error.UnknownFlag;
         }
@@ -3339,8 +3343,10 @@ fn printUsageError(err: ParseError) void {
         error.InvalidMime => std.debug.print("error: image MIME must be image/jpeg, image/png, or image/webp\n", .{}),
         error.MalformedImageInput => std.debug.print("error: image input must have exactly one comma: files/ID,MIME\n", .{}),
         error.MissingPreserve => std.debug.print("error: missing preserve text\n", .{}),
+        error.EmptyPreserve => std.debug.print("error: preserve text must not be empty\n", .{}),
         error.PreserveTooLong => std.debug.print("error: preserve text must be at most 16 KiB\n", .{}),
         error.MissingDoNot => std.debug.print("error: missing do-not text\n", .{}),
+        error.EmptyDoNot => std.debug.print("error: do-not text must not be empty\n", .{}),
         error.DoNotTooLong => std.debug.print("error: do-not text must be at most 16 KiB\n", .{}),
         error.TooManyConstraints => std.debug.print("error: too many edit constraints\n", .{}),
         error.MissingPath => std.debug.print("error: missing input path\n", .{}),
@@ -5674,23 +5680,27 @@ test "parseArgs rejects edit too many references" {
     }));
 }
 
-test "parseArgs accepts edit empty constraints as no-ops" {
-    const parsed_command = try parseArgs(&.{
+test "parseArgs rejects empty edit constraints" {
+    try std.testing.expectError(error.EmptyPreserve, parseArgs(&.{
         "nbimg",
         "edit",
         "--ref",
         "scene=files/base,image/jpeg",
         "--preserve",
         "",
+        "--prompt",
+        "edit",
+    }));
+    try std.testing.expectError(error.EmptyDoNot, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
         "--do-not",
         "",
         "--prompt",
         "edit",
-    });
-    const edit = expectEditCommand(parsed_command);
-
-    try std.testing.expectEqual(@as(usize, 0), edit.preserve_count);
-    try std.testing.expectEqual(@as(usize, 0), edit.do_not_count);
+    }));
 }
 
 test "parseArgs accepts edit constraints at max text bytes" {
@@ -5742,8 +5752,8 @@ test "parseArgs rejects edit constraints over max text bytes" {
     }));
 }
 
-test "parseArgs keeps non-empty edit constraints when mixed with empty values" {
-    const parsed_command = try parseArgs(&.{
+test "parseArgs rejects empty edit constraints mixed with non-empty values" {
+    try std.testing.expectError(error.EmptyPreserve, parseArgs(&.{
         "nbimg",
         "edit",
         "--ref",
@@ -5758,13 +5768,19 @@ test "parseArgs keeps non-empty edit constraints when mixed with empty values" {
         "",
         "--prompt",
         "edit",
-    });
-    const edit = expectEditCommand(parsed_command);
-
-    try std.testing.expectEqual(@as(usize, 1), edit.preserve_count);
-    try std.testing.expectEqualStrings("keep the crop", edit.preserves[0]);
-    try std.testing.expectEqual(@as(usize, 1), edit.do_not_count);
-    try std.testing.expectEqualStrings("change the logo", edit.do_nots[0]);
+    }));
+    try std.testing.expectError(error.EmptyDoNot, parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--ref",
+        "scene=files/base,image/jpeg",
+        "--preserve",
+        "keep the crop",
+        "--do-not",
+        "",
+        "--prompt",
+        "edit",
+    }));
 }
 
 test "parseArgs rejects missing files subcommand" {

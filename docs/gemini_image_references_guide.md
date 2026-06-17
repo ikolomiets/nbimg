@@ -164,8 +164,7 @@ the wrong background, merging product details into the character, or treating a
 style reference as literal scene content.
 
 `--preserve TEXT` and `--do-not TEXT` are repeatable. Empty string values are
-accepted as no-ops and are not sent in the edit task. Each list is capped at 16
-non-empty entries, and each non-empty value is capped at 16 KiB.
+rejected. Each list is capped at 16 entries, and each value is capped at 16 KiB.
 
 ---
 
@@ -457,7 +456,8 @@ Before running `nbimg edit`, verify:
 10. The request stays within current limits: 14 total images, 4 character
    references including a character base, and 10 object references including an
    object base.
-11. Each `--preserve` and `--do-not` list has at most 16 non-empty entries.
+11. Each `--preserve` and `--do-not` list has at most 16 entries, and each
+    value must be non-empty.
 12. Output controls such as `--aspect-ratio`, `--image-size`, and `--out-dir`
     are set when the result needs a specific shape, resolution tier, or
     destination.

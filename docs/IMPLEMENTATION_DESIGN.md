@@ -337,10 +337,10 @@ Argument rules are intentionally narrow:
   character references including a character base, and at most 10 object
   references including an object base.
 - `edit` accepts repeatable `--preserve TEXT` and `--do-not TEXT` task-level
-  constraints. Empty string values are accepted as no-ops. Omitted flags render
-  no corresponding `PRESERVE FROM BASE_IMAGE` or `DO NOT` section, and the
-  implementation currently caps each list at 16 non-empty entries. Each
-  non-empty constraint value is capped at `16 KiB`.
+  constraints. Empty string values are rejected. Omitted flags render no
+  corresponding `PRESERVE FROM BASE_IMAGE` or `DO NOT` section, and the
+  implementation currently caps each list at 16 entries. Each constraint value
+  is capped at `16 KiB`.
 - For `files upload`, the `--path` flag is required exactly once.
 - Empty upload paths are rejected.
 - For `files upload`, `--display-name NAME` is optional and accepted at most
