@@ -66,6 +66,7 @@ Use common image and thinking controls only when they serve the task. These flag
 ## Detailed Guides
 
 - Read [Batch Operations](references/batch-operations.md) before using `--batch-file` or `nbimg batch submit/status/cancel/download/list`.
+- Read [Advanced Image References](references/advanced-image-references.md) before complex `edit` work with multiple references, character consistency, product fidelity, style transfer, pose/composition/background/texture binding, or strong preserve/do-not boundaries.
 - Read [Advanced Parameters](references/advanced-parameters.md) before using sampling, seed, token/logprob, request-level, grounding, safety, or returned-thought controls.
 - Read [Debugging Patterns](references/debugging-patterns.md) before validating command shape with `--print-request` or troubleshooting failed edit references.
 
@@ -105,7 +106,7 @@ nbimg files delete --name files/abc123
 
 ## Editing
 
-Use `edit` when at least one uploaded image is the base image to modify. The first `--ref` is always the edit target and is labeled `BASE_IMAGE` by `nbimg`; do not put a custom label on the first reference.
+Use `edit` when at least one uploaded image is the base image to modify. The first `--ref` is always the edit target and is labeled `BASE_IMAGE` by `nbimg`; do not put a custom label on the first reference. Read [Advanced Image References](references/advanced-image-references.md) before complex multi-reference edits.
 
 ```sh
 nbimg edit \
@@ -121,7 +122,7 @@ Reference syntax:
 ```
 
 - `ROLE`: one primary semantic role for the image.
-- `LABEL`: optional for later references only. Use ASCII `SCREAMING_SNAKE_CASE`, start with an uppercase letter, keep it unique, and do not use `BASE_IMAGE`.
+- `LABEL`: optional for later references only. Use unique ASCII `SCREAMING_SNAKE_CASE`, start with an uppercase letter, keep it at most 64 bytes, and do not use `BASE_IMAGE`.
 - `files/ID`: canonical file `name` from upload/list/get metadata.
 - `MIME`: `image/jpeg`, `image/png`, or `image/webp`.
 
@@ -151,7 +152,7 @@ Limits:
 - Up to 14 total images including the base image.
 - Up to 4 character references including a character base.
 - Up to 10 object references including an object base.
-- Up to 16 `--preserve` entries and 16 `--do-not` entries; values must be non-empty.
+- Up to 16 `--preserve` entries and 16 `--do-not` entries; values must be non-empty and at most 16 KiB.
 
 Prompts should refer to symbolic labels, not local filenames or upload display names. Later references may omit labels; `nbimg` assigns deterministic labels by role, such as `CHARACTER_A`, `OBJECT_A`, `STYLE_REFERENCE_A`, `SCENE_REFERENCE_A`, `POSE_REFERENCE_A`, `COMPOSITION_REFERENCE_A`, `BACKGROUND_REFERENCE_A`, `TEXTURE_REFERENCE_A`, or `IMAGE_REFERENCE_A`. Explicit labels are easier to read when multiple references are involved.
 
@@ -167,53 +168,6 @@ nbimg edit \
   --do-not "copy OBJECT_DRESS mannequin, background, or product-photo lighting" \
   --out-dir outputs \
   --prompt "Edit BASE_IMAGE so the person in the scene has CHARACTER_HERO identity and wears OBJECT_DRESS. Match BASE_IMAGE perspective and lighting."
-```
-
-For character consistency, constrain references to identity traits unless the task explicitly wants clothing, pose, lighting, or background copied:
-
-```sh
-nbimg edit \
-  --ref scene=files/group_base,image/jpeg \
-  --ref character:CHARACTER_A=files/person_a,image/jpeg \
-  --ref character:CHARACTER_B=files/person_b,image/jpeg \
-  --preserve "BASE_IMAGE group composition, camera angle, lighting, and body placement" \
-  --do-not "blend CHARACTER_A and CHARACTER_B facial features, hairstyles, clothing, or body proportions" \
-  --prompt "Edit BASE_IMAGE so the left person has CHARACTER_A identity and the right person has CHARACTER_B identity."
-```
-
-For products or props, preserve exact object details and prevent unwanted context from leaking:
-
-```sh
-nbimg edit \
-  --ref scene=files/desk_scene,image/jpeg \
-  --ref object:OBJECT_SPEAKER=files/ceramic_speaker,image/png \
-  --preserve "BASE_IMAGE desk, room, camera angle, light direction, and realistic perspective" \
-  --do-not "copy OBJECT_SPEAKER background, tabletop, shadows, or surrounding props" \
-  --prompt "Place OBJECT_SPEAKER on the desk in BASE_IMAGE. Preserve its geometry, material, color, texture, logo placement, proportions, and visible markings. Match scale, contact shadows, and lighting."
-```
-
-For style references, narrow the scope to palette, contrast, lighting mood, line weight, surface texture, grain, rendering technique, lens feel, or color grading:
-
-```sh
-nbimg edit \
-  --ref scene=files/night_street_base,image/jpeg \
-  --ref style:STYLE_CINEMA=files/cinema_reference,image/jpeg \
-  --preserve "BASE_IMAGE street layout, subject placement, and camera angle" \
-  --do-not "copy STYLE_CINEMA people, vehicles, location, or composition" \
-  --prompt "Apply STYLE_CINEMA cinematic lighting, lens feel, film grain, contrast curve, and color grading to BASE_IMAGE."
-```
-
-Use `composition`, `pose`, `background`, `texture`, and `image` for references that are not identity, product, or style sources:
-
-```sh
-nbimg edit \
-  --ref scene=files/portrait_base,image/jpeg \
-  --ref background:BACKGROUND_CITY=files/city_background,image/webp \
-  --ref image:IMAGE_BADGE=files/badge_reference,image/png \
-  --preserve "BASE_IMAGE subject identity, pose, crop, and camera angle" \
-  --do-not "copy BACKGROUND_CITY people, vehicles, foreground subjects, or unrelated objects" \
-  --do-not "copy unrelated details from IMAGE_BADGE" \
-  --prompt "Move BASE_IMAGE subject into BACKGROUND_CITY and add the badge design from IMAGE_BADGE to the jacket."
 ```
 
 Bottom line: the model needs a clear base image, typed references, symbolic labels, and explicit boundaries. It does not need hidden reference metadata.
