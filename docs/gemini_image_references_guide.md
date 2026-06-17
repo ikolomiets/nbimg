@@ -1,19 +1,19 @@
 # Best practices for using image references with `nbimg edit`
 
-For Nano Banana 2, treat image references as explicit edit inputs managed by
-`nbimg`. Upload local image files with `nbimg files upload`, copy each uploaded
-file's canonical `name` and `mimeType` from the returned metadata, then pass
-those values to `nbimg edit` with typed `--ref` flags.
+`nbimg edit` is currently wired to the fixed `gemini-3.1-flash-image` model,
+called `nano2` internally. Treat image references as explicit edit inputs
+managed by `nbimg`: upload local image files with `nbimg files upload`, copy
+each uploaded file's canonical `name` and `mimeType` from the returned
+metadata, then pass those values to `nbimg edit` with typed `--ref` flags.
 
 The first `--ref` is always the image to edit and is labeled `BASE_IMAGE` by
 `nbimg`. Later references can be labeled explicitly, such as
 `CHARACTER_HERO`, `OBJECT_BAG`, or `STYLE_POSTER`, and the final prompt should
 refer to those symbolic labels instead of local filenames.
 
-Google's current docs describe `gemini-3.1-flash-image` as Nano Banana 2 /
-Gemini 3.1 Flash Image, with image generation and editing support and up to 14
-reference images, including up to 10 object images and up to 4 character
-references for Gemini 3.1 Flash Image. ([Google AI for Developers][1])
+The current implementation enforces 14 total edit images including the base
+image, up to 4 character references including a character base, and up to 10
+object references including an object base.
 
 ---
 
@@ -53,14 +53,17 @@ nbimg edit \
 ```
 
 `files/ID` is a Gemini Files API resource name. It is not a local path, and a
-bare ID without `files/` is invalid.
+bare ID without `files/` is invalid. `nbimg edit` does not call `files get`
+before generation; it derives the request `file_uri` from the canonical
+`files/...` name and uses the MIME value you supplied as `file_data.mime_type`.
 
 ---
 
 ## 2. Think in reference roles
 
 Use one primary role per image. The CLI turns each role into model-facing
-manifest text next to the uploaded image part.
+manifest text and interleaves that text with the uploaded image `file_data`
+part.
 
 | Role | Use it for |
 | --- | --- |
@@ -121,6 +124,8 @@ The first omitted `style` label becomes `STYLE_REFERENCE_A`; the second becomes
 `STYLE_REFERENCE_B`. Other roles follow the same pattern: `SCENE_REFERENCE_A`,
 `CHARACTER_A`, `OBJECT_A`, `POSE_REFERENCE_A`, `COMPOSITION_REFERENCE_A`,
 `BACKGROUND_REFERENCE_A`, `TEXTURE_REFERENCE_A`, and `IMAGE_REFERENCE_A`.
+Custom labels must be unique ASCII `SCREAMING_SNAKE_CASE`, start with an ASCII
+uppercase letter, and be at most 64 bytes. `BASE_IMAGE` is reserved.
 
 Use `background` when the reference should contribute only setting details, and
 use `image` when the reference is general visual context:
@@ -157,6 +162,10 @@ nbimg edit \
 This prevents common failure modes: copying the whole reference photo, importing
 the wrong background, merging product details into the character, or treating a
 style reference as literal scene content.
+
+`--preserve TEXT` and `--do-not TEXT` are repeatable. Empty string values are
+accepted as no-ops and are not sent in the edit task. Each list is capped at 16
+non-empty entries, and each non-empty value is capped at 16 KiB.
 
 ---
 
@@ -224,9 +233,9 @@ nbimg edit \
   --prompt "Place OBJECT_PACKAGE on the shelf in BASE_IMAGE. Preserve all legible text from OBJECT_PACKAGE exactly where it appears on the package."
 ```
 
-Text rendering is improved in Gemini 3 image models, but for best results
-Google recommends generating text first and then asking for an image with that
-text. ([Google AI for Developers][3])
+The current CLI does not expose a separate text-fidelity control, so keep
+branded packaging and lettering requirements in the edit prompt and in
+`--do-not` constraints.
 
 ---
 
@@ -325,18 +334,37 @@ nbimg edit \
 ```
 
 Use `--out-dir` only with an existing directory. `nbimg` prints generated output
-filenames to stdout and logs response details to stderr.
+filenames to stdout and logs response details to stderr. Do not combine
+`--out-dir` with `--batch-file`; batch mode validates and appends a request
+instead of generating images immediately.
 
 ---
 
 ## 10. Request debugging
 
-Use `--print-request` when you want to inspect the request shape before relying
-on an edit result.
+Use `--print-request` when you want to inspect the sanitized request sent to
+Gemini. By itself, `--print-request` still executes the edit through
+`generateContent`.
 
 ```sh
 nbimg edit \
   --print-request \
+  --ref scene=files/base123,image/jpeg \
+  --ref object:OBJECT_BAG=files/bag789,image/png \
+  --preserve "BASE_IMAGE composition and camera angle" \
+  --do-not "copy OBJECT_BAG background or product-photo lighting" \
+  --prompt "Place OBJECT_BAG on the chair in BASE_IMAGE."
+```
+
+For request-shape validation without immediate image generation, use batch
+mode. `nbimg` builds the same `GenerateContentRequest`, sends it to
+`countTokens`, and appends a Batch API JSONL entry only after the validation
+request succeeds.
+
+```sh
+nbimg edit \
+  --batch-file requests.jsonl \
+  --batch-key bag-on-chair \
   --ref scene=files/base123,image/jpeg \
   --ref object:OBJECT_BAG=files/bag789,image/png \
   --preserve "BASE_IMAGE composition and camera angle" \
@@ -429,9 +457,12 @@ Before running `nbimg edit`, verify:
 10. The request stays within current limits: 14 total images, 4 character
    references including a character base, and 10 object references including an
    object base.
-11. Output controls such as `--aspect-ratio`, `--image-size`, and `--out-dir`
+11. Each `--preserve` and `--do-not` list has at most 16 non-empty entries.
+12. Output controls such as `--aspect-ratio`, `--image-size`, and `--out-dir`
     are set when the result needs a specific shape, resolution tier, or
     destination.
+13. Use `--batch-file` instead of `--out-dir` when you want `countTokens`
+    validation and Batch JSONL preparation rather than immediate generation.
 
 ---
 
@@ -451,7 +482,3 @@ nbimg edit \
 
 The model does not need hidden reference metadata. It needs a clear base image,
 typed references, symbolic labels, and explicit boundaries.
-
-[1]: https://ai.google.dev/gemini-api/docs/gemini-3 "Gemini 3 models  |  Google AI for Developers"
-[2]: https://ai.google.dev/gemini-api/docs/files "Files API  |  Google AI for Developers"
-[3]: https://ai.google.dev/gemini-api/docs/image-generation "Gemini API  |  Google AI for Developers"
