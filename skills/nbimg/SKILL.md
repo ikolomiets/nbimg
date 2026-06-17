@@ -57,19 +57,17 @@ nbimg gen \
   --prompt "Create a crisp editorial product photo on a neutral studio background."
 ```
 
-Use generation controls only when they serve the task:
+Use common image and thinking controls only when they serve the task. These flags are available on both `gen` and `edit`:
 
 - `--aspect-ratio RATIO`: output shape. Values: `1:1`, `1:4`, `1:8`, `2:3`, `3:2`, `3:4`, `4:1`, `4:3`, `4:5`, `5:4`, `8:1`, `9:16`, `16:9`, `21:9`.
 - `--image-size SIZE`: output resolution tier. Values: `512`, `1K`, `2K`, `4K`.
-- `--temperature FLOAT`: sampling variation, `0.0` to `2.0`.
-- `--top-p FLOAT`: nucleus sampling, `0.0` to `1.0`.
-- `--seed INT`: signed 32-bit decimal seed for best-effort reproducibility.
-- `--max-output-tokens INT`: response token budget, `1` to `32768`; not an image-resolution control.
-- `--presence-penalty FLOAT`: `-2.0` up to but not including `2.0`.
-- `--frequency-penalty FLOAT`: `-2.0` up to but not including `2.0`.
-- `--stop TEXT`: repeatable literal stop sequence; up to 5 non-empty unique values.
-- `--response-logprobs`: request chosen-token log probability diagnostics.
-- `--logprobs INT`: request top-token alternatives, `1` to `20`; requires `--response-logprobs`.
+- `--thinking-level minimal|high`: request Gemini thinking effort. Omit it to use Gemini's default.
+
+## Detailed Guides
+
+- Read [Batch Operations](references/batch-operations.md) before using `--batch-file` or `nbimg batch submit/status/cancel/download/list`.
+- Read [Advanced Parameters](references/advanced-parameters.md) before using sampling, seed, token/logprob, request-level, grounding, safety, or returned-thought controls.
+- Read [Debugging Patterns](references/debugging-patterns.md) before validating command shape with `--print-request` or troubleshooting failed edit references.
 
 ## Files Workflow
 
@@ -104,95 +102,6 @@ Delete stale uploads:
 ```sh
 nbimg files delete --name files/abc123
 ```
-
-## Batch Workflow
-
-Prepare JSONL with `gen --batch-file` or `edit --batch-file`, then submit it:
-
-```sh
-nbimg gen \
-  --batch-file requests.jsonl \
-  --batch-key hero-001 \
-  --image-size 512 \
-  --prompt "Create a clean product hero image."
-
-nbimg batch submit --path requests.jsonl
-```
-
-`gen --batch-file` and `edit --batch-file` build the normal
-`GenerateContentRequest`, validate that shape through Gemini's non-generation
-`countTokens` endpoint, and append only after HTTP success. Each JSONL line has
-Batch API shape `{"key":"...","request":{...}}`. The file is created when
-absent and locked while existing keys are checked. Explicit `--batch-key KEY`
-values must be unique; if omitted, `nbimg` derives a deterministic key such as
-`nbimg-0` from the locked byte offset. A batch file is capped at 100 entries,
-and `--batch-file` is mutually exclusive with `--out-dir`.
-
-On batch-file append success, stdout receives a compact receipt:
-
-```json
-{"key":"hero-001","totalTokens":42,"batchFile":"requests.jsonl"}
-```
-
-`batch submit` performs local admission checks before network IO: input must be
-non-empty JSONL with no empty lines, at most 100 entries, at most 5 MiB per
-entry, and at most 512 MiB for the complete file. Submit does not parse entry
-JSON, check keys, or validate nested request objects; malformed entries are
-left for Gemini to reject.
-
-The complete basename, including `.jsonl`, is the default display name for
-both the uploaded File and Batch job. `--display-name` overrides both. The
-upload uses `application/jsonl` and remains in Gemini Files storage.
-
-Batch creation happens exactly once and is never retried. If transport fails
-after upload, report the printed `files/...` name and treat the job state as
-ambiguous because a job may have been created.
-
-Use the returned canonical name for one status request:
-
-```sh
-nbimg batch status --name batches/123456789
-```
-
-`batch status` performs one GET without polling or retrying and prints every
-returned response field as pretty JSON.
-
-Request best-effort cancellation:
-
-```sh
-nbimg batch cancel --name batches/123456789
-```
-
-`batch cancel` performs one bodyless POST and prints `OK` when Gemini accepts
-the request. Acceptance does not prove the job has reached
-`JOB_STATE_CANCELLED`; use `batch status` to inspect current state. Cancellation
-does not delete the Batch job or its uploaded JSONL input.
-
-Download images from a completed Batch job:
-
-```sh
-nbimg batch download --name batches/123456789 --out-dir outputs
-```
-
-`batch download` checks status exactly once and proceeds only for a succeeded
-job. It rejects reported or decoded outputs over 100 records, downloads the
-output JSONL with a separate 512 MiB limit, and writes successful inline images
-to the current directory or an existing `--out-dir`. Filenames use
-`{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
-overwrite existing files. Successful filenames print to stdout; error records,
-malformed records, duplicate keys, decode failures, and write failures are
-reported while later records continue processing. Any such failure makes the
-command exit nonzero.
-
-List recent Batch jobs:
-
-```sh
-nbimg batch list
-```
-
-`batch list` requests 100 operations per page, follows every returned
-`nextPageToken`, and prints one pretty JSON object containing the aggregated
-`operations` array. Gemini's undocumented `filter` parameter is not exposed.
 
 ## Editing
 
@@ -308,67 +217,3 @@ nbimg edit \
 ```
 
 Bottom line: the model needs a clear base image, typed references, symbolic labels, and explicit boundaries. It does not need hidden reference metadata.
-
-## Grounding, Thinking, Safety, and Request Controls
-
-These flags are available on both `gen` and `edit`.
-
-Grounding:
-
-- `--grounding none`: no search grounding.
-- `--grounding web`: use Google Search grounding for current factual context.
-- `--grounding image`: use Image Search grounding for visual context; do not use it to search for people.
-- `--grounding web,image`: use both web and image grounding.
-
-Thinking:
-
-- `--thinking-level minimal|high`: request Gemini thinking effort.
-- `--include-thoughts`: request returned thought parts; they remain in response logs and are not written as separate sidecar files.
-
-Safety:
-
-- `--safety none|off|permissive|balanced|strict`: send one safety threshold across supported safety categories.
-- Omit `--safety` to leave request-level safety settings unset.
-
-Request-level controls:
-
-- `--system TEXT`: text-only system instruction.
-- `--cached-content cachedContents/ID`: attach existing cached content; raw IDs are invalid.
-- `--service-tier flex|standard|priority`: request a Gemini service tier. A `priority` request may still report `standard` in the response, in which case `nbimg` warns but continues.
-- `--store`: send `store:true`.
-- `--no-store`: send `store:false`.
-- Omit both `--store` and `--no-store` to use the service's default logging behavior.
-
-## Debugging Pattern
-
-Use `--print-request` when validating command shape before relying on output:
-
-```sh
-nbimg edit \
-  --print-request \
-  --ref scene=files/base123,image/jpeg \
-  --ref object:OBJECT_BAG=files/bag789,image/png \
-  --preserve "BASE_IMAGE composition and camera angle" \
-  --do-not "copy OBJECT_BAG background or product-photo lighting" \
-  --prompt "Place OBJECT_BAG on the chair in BASE_IMAGE."
-```
-
-Check stdout for command results and stderr for request/response diagnostics. If an edit reference fails, first verify:
-
-- The reference uses canonical `files/ID` form, not a local path or bare ID.
-- The MIME is exactly `image/jpeg`, `image/png`, or `image/webp`.
-- The file still exists in Gemini Files API storage; HTTP 403 `PERMISSION_DENIED` usually means the `files/ID` is inaccessible, often expired or deleted.
-- The first `--ref` has no custom label.
-- Custom labels start with an ASCII uppercase letter and contain only ASCII uppercase letters, digits, and underscores.
-- Role and label are not swapped; use `pose:POSE_MAIN=files/a,image/jpeg`, not `POSE_MAIN=files/a,image/jpeg`.
-
-Common mistakes to avoid:
-
-- Passing local paths to `edit`; upload first, then use `--ref scene=files/ID,image/jpeg`.
-- Using `--display-name` as a prompt label; label references with `--ref role:LABEL=...`.
-- Referring to first/second/third image; use `BASE_IMAGE`, auto-labels such as `CHARACTER_A`, or explicit labels.
-- Labeling the first reference; it is always `BASE_IMAGE`.
-- Not saying what to ignore; add repeatable `--do-not` boundaries.
-- Mixing style and content; use `style` references only for style qualities and exclude subject/layout.
-- Using too many unrelated references; keep only references that contribute to the output.
-- Vague object constraints; preserve geometry, material, logo/text placement, markings, and scale.
