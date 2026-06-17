@@ -52,7 +52,28 @@ Successful submission prints the complete Batch response as pretty JSON. Copy th
 nbimg batch status --name batches/123456789
 ```
 
-`batch status` performs one GET without polling or retries and prints every returned response field as pretty JSON.
+`batch status` performs one GET without polling or retries and prints every returned response field as pretty JSON. It does not normalize the response shape or interpret completion for you.
+
+To determine completion, inspect the returned `state` field. Current Gemini REST operation responses commonly expose it as `metadata.state`; `nbimg batch download` also accepts compatible status shapes where `state` appears at the top level or under `response.batch.state`.
+
+Treat these states as terminal:
+
+| State | Meaning | Next step |
+| --- | --- | --- |
+| `JOB_STATE_SUCCEEDED` | Completed successfully; results are available. | Run `nbimg batch download --name batches/ID [--out-dir DIR]`. |
+| `BATCH_STATE_SUCCEEDED` | Compatibility success state accepted by `nbimg batch download`. | Run `nbimg batch download --name batches/ID [--out-dir DIR]`. |
+| `JOB_STATE_FAILED` | The Batch job failed. | Inspect the status JSON `error` field. |
+| `JOB_STATE_CANCELLED` | The Batch job was cancelled by the user. | Do not expect output results. |
+| `JOB_STATE_EXPIRED` | The job expired after waiting or running too long. | Resubmit, usually with fewer or smaller requests. |
+
+Treat these states as unfinished:
+
+| State | Meaning |
+| --- | --- |
+| `JOB_STATE_PENDING` | The job has been created and is waiting for service processing. |
+| `JOB_STATE_RUNNING` | The job is currently processing. |
+
+If a response includes `done:false`, the job is not complete. Do not use `done:true` alone as a success signal; use the `state` value and require a succeeded state before downloading. `batch download` performs this status check once and refuses to proceed unless the status is succeeded.
 
 ## Cancel
 
