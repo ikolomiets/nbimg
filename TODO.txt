@@ -1,3 +1,2 @@
 1. Add deterministic offline tests for api.uploadResumableBytes using a local two-stage std.http.Server fixture that validates upload-start and finalize requests, responses, headers, bodies, and failure paths.
 2. Add and run a live Batch list pagination test once enough Batch jobs exist to force a nextPageToken, and verify that nbimg passes that token in the next request.
-3. Audit each module's public API surface and make declarations private unless they are used from another module.

@@ -91,6 +91,36 @@ nbimg.batch.*
 Shared controls such as `nbimg.api.traffic_log_options` remain directly under
 `nbimg.api`.
 
+The supported module interfaces are intentionally narrow:
+
+- `cli` exports only `run`.
+- `gen` exports immediate generation and generation-request construction.
+  Token-count request helpers remain module-internal.
+- `edit` exports the CLI-consumed reference/request models and limits,
+  generation and token-count operations, generation-request construction, and
+  label validation. Prompt-fragment, File URI, and countTokens-envelope
+  builders remain internal.
+- `files` exports upload/file/list models, their ownership methods,
+  upload/list/get/delete operations, response decoders, and the upload-size
+  limit. Shared uploaded-name decoding is exposed only by `api`.
+- `batch` exports the CLI-consumed models and limits, ownership/iteration
+  methods, upload/submit/status/download/cancel/list operations, response
+  decoders, and JSONL/output helpers. Wire constants, submit serialization,
+  byte-count validation, and URL construction remain internal.
+- `api` exports only shared cross-module models, bounds, validators,
+  generation/countTokens request assembly and transport, generic JSON
+  transport, resumable upload support, response decoders, output naming,
+  traffic logging controls, and ownership methods. Wire-only models,
+  serializers, endpoint URL helpers, and lower-level request machinery remain
+  internal.
+
+`src/public_api_test.zig` imports each module as an external consumer and uses
+compile-time declaration reflection to compare every module namespace against
+an exact, order-independent allowlist. It also checks public methods on
+exported container types. The test is registered with `zig build test`, so an
+added, removed, or accidentally public declaration requires an explicit
+allowlist decision.
+
 ### API Module Boundaries
 
 The CLI module owns user interaction and filesystem effects: reading upload
@@ -165,10 +195,11 @@ the build cache. The normal offline `test` step and dedicated live API test
 steps also compile Debug artifacts for faster feedback.
 
 The `test` step builds test roots from `src/api.zig`, `src/batch.zig`,
-`src/gen.zig`, `src/edit.zig`, `src/files.zig`, and `src/cli.zig` so tests
-stay close to their owning modules. Tests receive a generated `build_options` module with
-`live_api_tests = false` by default. Passing `-Dlive-api-tests` enables live
-tests for a filtered test run.
+`src/gen.zig`, `src/edit.zig`, `src/files.zig`, `src/cli.zig`, and
+`src/public_api_test.zig` so tests stay close to their owning modules and
+module API boundaries are compile-time enforced. Tests receive a generated
+`build_options` module with `live_api_tests = false` by default. Passing
+`-Dlive-api-tests` enables live tests for a filtered test run.
 
 Default builds produce the final ReleaseSafe executable:
 

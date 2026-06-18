@@ -18,7 +18,7 @@ const live_edit_upload_display_name = "nbimg live edit request validity";
 const live_edit_prompt = "change visual style to Broadway musical";
 const default_cli_traffic_log_options = api.TrafficLogOptions{ .print_response = true };
 
-pub const GenCommand = struct {
+const GenCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
@@ -31,9 +31,9 @@ pub const GenCommand = struct {
     batch_key: ?[]const u8 = null,
 };
 
-pub const max_edit_constraints = 16;
+const max_edit_constraints = 16;
 
-pub const EditCommand = struct {
+const EditCommand = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
     grounding_options: api.GroundingOptions = .{},
@@ -53,55 +53,55 @@ pub const EditCommand = struct {
     do_nots: [max_edit_constraints][]const u8 = undefined,
     do_not_count: usize = 0,
 
-    pub fn referenceSlice(command: *const EditCommand) []const api_edit.Reference {
+    fn referenceSlice(command: *const EditCommand) []const api_edit.Reference {
         return command.references[0..command.reference_count];
     }
 
-    pub fn preserveSlice(command: *const EditCommand) []const []const u8 {
+    fn preserveSlice(command: *const EditCommand) []const []const u8 {
         return command.preserves[0..command.preserve_count];
     }
 
-    pub fn doNotSlice(command: *const EditCommand) []const []const u8 {
+    fn doNotSlice(command: *const EditCommand) []const []const u8 {
         return command.do_nots[0..command.do_not_count];
     }
 };
 
-pub const FilesUploadCommand = struct {
+const FilesUploadCommand = struct {
     path: []const u8,
     display_name: ?[]const u8 = null,
 };
 
-pub const FilesListCommand = struct {};
+const FilesListCommand = struct {};
 
-pub const FilesGetCommand = struct {
+const FilesGetCommand = struct {
     name: []const u8,
 };
 
-pub const FilesDeleteCommand = struct {
+const FilesDeleteCommand = struct {
     name: []const u8,
 };
 
-pub const BatchSubmitCommand = struct {
+const BatchSubmitCommand = struct {
     path: []const u8,
     display_name: []const u8,
 };
 
-pub const BatchStatusCommand = struct {
+const BatchStatusCommand = struct {
     name: []const u8,
 };
 
-pub const BatchCancelCommand = struct {
+const BatchCancelCommand = struct {
     name: []const u8,
 };
 
-pub const BatchDownloadCommand = struct {
+const BatchDownloadCommand = struct {
     name: []const u8,
     out_dir: ?[]const u8 = null,
 };
 
-pub const BatchListCommand = struct {};
+const BatchListCommand = struct {};
 
-pub const Command = union(enum) {
+const Command = union(enum) {
     gen: GenCommand,
     edit: EditCommand,
     files_upload: FilesUploadCommand,
@@ -115,13 +115,13 @@ pub const Command = union(enum) {
     batch_list: BatchListCommand,
 };
 
-pub const ParsedCommand = struct {
+const ParsedCommand = struct {
     traffic_log_options: api.TrafficLogOptions = default_cli_traffic_log_options,
     api_key: ?[]const u8 = null,
     command: Command,
 };
 
-pub const ParseError = error{
+const ParseError = error{
     MissingCommand,
     UnknownCommand,
     MissingApiKey,

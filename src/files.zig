@@ -133,7 +133,7 @@ pub fn deleteFile(
     return api.deleteJson(gpa, io, api_key, url);
 }
 
-pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
+fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
     return api.decodeUploadedFileName(gpa, response_json);
 }
 
@@ -317,10 +317,6 @@ fn isFileIdPathSegmentChar(byte: u8) bool {
     };
 }
 
-fn buildFileUploadStartMetadata(gpa: std.mem.Allocator, display_name: ?[]const u8) ![]u8 {
-    return api.buildResumableUploadMetadata(gpa, display_name);
-}
-
 fn isValidDisplayName(display_name: []const u8) bool {
     return api.isValidDisplayName(display_name);
 }
@@ -416,45 +412,6 @@ test "decodeUploadedFileName rejects empty file name" {
         error.MissingFileName,
         decodeUploadedFileName(std.testing.allocator, "{\"file\":{\"name\":\"\"}}"),
     );
-}
-
-test "files upload display name metadata defaults to empty file object" {
-    const gpa = std.testing.allocator;
-    const metadata = try buildFileUploadStartMetadata(gpa, null);
-    defer gpa.free(metadata);
-
-    try std.testing.expectEqualStrings("{\"file\":{}}", metadata);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
-    defer parsed.deinit();
-}
-
-test "files upload display name metadata includes displayName" {
-    const gpa = std.testing.allocator;
-    const metadata = try buildFileUploadStartMetadata(gpa, "nbimg live api sample");
-    defer gpa.free(metadata);
-
-    try std.testing.expectEqualStrings(
-        "{\"file\":{\"displayName\":\"nbimg live api sample\"}}",
-        metadata,
-    );
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
-    defer parsed.deinit();
-}
-
-test "files upload display name metadata escapes JSON string content" {
-    const gpa = std.testing.allocator;
-    const metadata = try buildFileUploadStartMetadata(gpa, "quote \" slash \\ newline \n");
-    defer gpa.free(metadata);
-
-    try std.testing.expectEqualStrings(
-        "{\"file\":{\"displayName\":\"quote \\\" slash \\\\ newline \\n\"}}",
-        metadata,
-    );
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
-    defer parsed.deinit();
 }
 
 test "decodeFileListPage decodes file metadata and next page token" {

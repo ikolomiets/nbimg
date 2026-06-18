@@ -4,11 +4,11 @@ const std = @import("std");
 const assert = std.debug.assert;
 const api = @import("api.zig");
 
-pub const max_total_images = 14;
+const max_total_images = 14;
 pub const max_references = max_total_images - 1;
 pub const max_character_references = 4;
 pub const max_object_references = 10;
-pub const max_label_bytes = 64;
+const max_label_bytes = 64;
 
 const max_edit_content_parts = 2 + max_references * 2 + 1;
 const max_edit_total_parts_with_system = max_edit_content_parts + 1;
@@ -141,7 +141,7 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
     });
 }
 
-pub fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
+fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
     assertValidEditRequest(request);
 
     const generate_request_json = try buildGenerateRequest(gpa, request);
@@ -165,7 +165,7 @@ pub fn isValidLabel(label: []const u8) bool {
     return true;
 }
 
-pub fn buildFileUri(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
+fn buildFileUri(gpa: std.mem.Allocator, name: []const u8) ![]u8 {
     assert(api.isCanonicalFileName(name));
     return std.fmt.allocPrint(gpa, "{s}{s}", .{ file_uri_prefix, name });
 }

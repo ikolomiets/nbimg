@@ -9,8 +9,8 @@ pub const max_entry_bytes = api.max_generate_request_field_bytes;
 pub const max_input_bytes = 512 * 1024 * 1024;
 pub const max_output_bytes = 512 * 1024 * 1024;
 pub const max_entries = 100;
-pub const input_content_type = "application/jsonl";
-pub const canonical_batch_name_prefix = "batches/";
+const input_content_type = "application/jsonl";
+const canonical_batch_name_prefix = "batches/";
 const max_safe_key_bytes = 160;
 const truncated_safe_key_prefix_bytes = 120;
 
@@ -120,7 +120,7 @@ pub fn validateInputJsonl(bytes: []const u8) !void {
     if (entry_count == 0) return error.EmptyBatchInput;
 }
 
-pub fn validateInputByteCount(byte_count: usize) !void {
+fn validateInputByteCount(byte_count: usize) !void {
     if (byte_count == 0) return error.EmptyBatchInput;
     if (byte_count > max_input_bytes) return error.BatchInputTooLong;
 }
@@ -144,7 +144,7 @@ pub fn uploadInput(
     });
 }
 
-pub fn buildSubmitRequestJson(gpa: std.mem.Allocator, request: SubmitRequest) ![]u8 {
+fn buildSubmitRequestJson(gpa: std.mem.Allocator, request: SubmitRequest) ![]u8 {
     assert(api.isCanonicalFileName(request.file_name));
     assert(api.isValidDisplayName(request.display_name));
 

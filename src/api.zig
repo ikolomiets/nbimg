@@ -3,17 +3,17 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const max_response_bytes = 64 * 1024 * 1024;
+const max_response_bytes = 64 * 1024 * 1024;
 pub const http_request_timeout_seconds: i64 = 180;
 pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
-pub const canonical_cached_content_name_prefix = "cachedContents/";
-pub const max_display_name_codepoints = 512;
-pub const max_generate_content_count = 1;
+const canonical_cached_content_name_prefix = "cachedContents/";
+const max_display_name_codepoints = 512;
+const max_generate_content_count = 1;
 pub const max_generate_request_parts_total = 32;
 pub const max_generate_text_part_bytes = 16 * 1024;
-pub const max_generate_file_uri_bytes = 512;
-pub const max_generate_mime_type_bytes = 64;
+const max_generate_file_uri_bytes = 512;
+const max_generate_mime_type_bytes = 64;
 pub const max_generate_request_field_bytes = 5 * 1024 * 1024;
 
 pub const ApiKeyError = error{
@@ -24,24 +24,24 @@ pub const ApiKeyError = error{
 pub const Model = enum {
     nano2,
 
-    pub fn apiName(model: Model) []const u8 {
+    fn apiName(model: Model) []const u8 {
         return switch (model) {
             .nano2 => "gemini-3.1-flash-image",
         };
     }
 
-    pub fn resourceName(model: Model) []const u8 {
+    fn resourceName(model: Model) []const u8 {
         return switch (model) {
             .nano2 => "models/gemini-3.1-flash-image",
         };
     }
 };
 
-pub const ResponseModality = enum {
+const ResponseModality = enum {
     text,
     image,
 
-    pub fn apiName(modality: ResponseModality) []const u8 {
+    fn apiName(modality: ResponseModality) []const u8 {
         return switch (modality) {
             .text => "TEXT",
             .image => "IMAGE",
@@ -53,13 +53,13 @@ pub const ResponseModality = enum {
     }
 };
 
-pub const default_response_modalities = [_]ResponseModality{ .text, .image };
+const default_response_modalities = [_]ResponseModality{ .text, .image };
 
-pub const TextPart = struct {
+const TextPart = struct {
     text: []const u8,
 };
 
-pub const TextContent = struct {
+const TextContent = struct {
     parts: []const TextPart,
 };
 
@@ -89,7 +89,7 @@ pub const ServiceTier = enum {
         return null;
     }
 
-    pub fn apiName(service_tier: ServiceTier) []const u8 {
+    fn apiName(service_tier: ServiceTier) []const u8 {
         return switch (service_tier) {
             .flex => "flex",
             .standard => "standard",
@@ -150,7 +150,7 @@ pub const ImageAspectRatio = enum {
         return null;
     }
 
-    pub fn apiName(aspect_ratio: ImageAspectRatio) []const u8 {
+    fn apiName(aspect_ratio: ImageAspectRatio) []const u8 {
         return switch (aspect_ratio) {
             .r1_1 => "1:1",
             .r1_4 => "1:4",
@@ -169,7 +169,7 @@ pub const ImageAspectRatio = enum {
         };
     }
 
-    pub fn jsonStringify(aspect_ratio: ImageAspectRatio, writer: anytype) !void {
+    fn jsonStringify(aspect_ratio: ImageAspectRatio, writer: anytype) !void {
         try writer.write(aspect_ratio.apiName());
     }
 };
@@ -188,7 +188,7 @@ pub const ImageSize = enum {
         return null;
     }
 
-    pub fn apiName(image_size: ImageSize) []const u8 {
+    fn apiName(image_size: ImageSize) []const u8 {
         return switch (image_size) {
             .px512 => "512",
             .k1 => "1K",
@@ -197,7 +197,7 @@ pub const ImageSize = enum {
         };
     }
 
-    pub fn jsonStringify(image_size: ImageSize, writer: anytype) !void {
+    fn jsonStringify(image_size: ImageSize, writer: anytype) !void {
         try writer.write(image_size.apiName());
     }
 };
@@ -238,7 +238,7 @@ pub const ThinkingLevel = enum {
         return null;
     }
 
-    pub fn apiName(level: ThinkingLevel) []const u8 {
+    fn apiName(level: ThinkingLevel) []const u8 {
         return switch (level) {
             .minimal => "minimal",
             .high => "high",
@@ -259,7 +259,7 @@ pub const ThinkingOptions = struct {
     }
 };
 
-pub const ThinkingConfig = struct {
+const ThinkingConfig = struct {
     thinkingLevel: ?ThinkingLevel = null,
     includeThoughts: ?bool = null,
 };
@@ -305,7 +305,7 @@ pub const GenerationOptions = struct {
     }
 };
 
-pub const GenerationConfig = struct {
+const GenerationConfig = struct {
     responseModalities: []const ResponseModality,
     thinkingConfig: ?ThinkingConfig = null,
     responseFormat: ?ResponseFormatConfig = null,
@@ -320,7 +320,7 @@ pub const GenerationConfig = struct {
     stopSequences: ?[]const []const u8 = null,
 };
 
-pub fn thinkingConfigFromOptions(options: ThinkingOptions) ?ThinkingConfig {
+fn thinkingConfigFromOptions(options: ThinkingOptions) ?ThinkingConfig {
     if (!options.hasAny()) return null;
     return .{
         .thinkingLevel = options.level,
@@ -328,7 +328,7 @@ pub fn thinkingConfigFromOptions(options: ThinkingOptions) ?ThinkingConfig {
     };
 }
 
-pub fn generationConfigFromOptions(
+fn generationConfigFromOptions(
     output_options: ImageOutputOptions,
     thinking_options: ThinkingOptions,
     generation_options: *const GenerationOptions,
@@ -412,22 +412,22 @@ pub fn assertValidRequestOptions(options: RequestOptions) void {
     }
 }
 
-pub const SearchType = struct {};
+const SearchType = struct {};
 
-pub const SearchTypes = struct {
+const SearchTypes = struct {
     webSearch: ?SearchType = null,
     imageSearch: ?SearchType = null,
 };
 
-pub const GoogleSearch = struct {
+const GoogleSearch = struct {
     searchTypes: ?SearchTypes = null,
 };
 
-pub const Tool = struct {
+const Tool = struct {
     google_search: GoogleSearch,
 };
 
-pub fn googleSearchToolFromGroundingOptions(options: GroundingOptions) ?Tool {
+fn googleSearchToolFromGroundingOptions(options: GroundingOptions) ?Tool {
     if (!options.hasAny()) return null;
 
     if (options.web and !options.image) {
@@ -634,16 +634,16 @@ fn validateGenerateContentRequest(
     return validation;
 }
 
-pub const ResponseFormatConfig = struct {
+const ResponseFormatConfig = struct {
     image: ?ImageResponseFormat = null,
 };
 
-pub const ImageResponseFormat = struct {
+const ImageResponseFormat = struct {
     aspectRatio: ?ImageResponseAspectRatio = null,
     imageSize: ?ImageResponseSize = null,
 };
 
-pub const ImageResponseAspectRatio = enum {
+const ImageResponseAspectRatio = enum {
     one_by_one,
     one_by_four,
     one_by_eight,
@@ -659,7 +659,7 @@ pub const ImageResponseAspectRatio = enum {
     sixteen_by_nine,
     twenty_one_by_nine,
 
-    pub fn fromImageAspectRatio(aspect_ratio: ImageAspectRatio) ImageResponseAspectRatio {
+    fn fromImageAspectRatio(aspect_ratio: ImageAspectRatio) ImageResponseAspectRatio {
         return switch (aspect_ratio) {
             .r1_1 => .one_by_one,
             .r1_4 => .one_by_four,
@@ -678,7 +678,7 @@ pub const ImageResponseAspectRatio = enum {
         };
     }
 
-    pub fn apiName(aspect_ratio: ImageResponseAspectRatio) []const u8 {
+    fn apiName(aspect_ratio: ImageResponseAspectRatio) []const u8 {
         return switch (aspect_ratio) {
             .one_by_one => "ASPECT_RATIO_ONE_BY_ONE",
             .one_by_four => "ASPECT_RATIO_ONE_BY_FOUR",
@@ -702,13 +702,13 @@ pub const ImageResponseAspectRatio = enum {
     }
 };
 
-pub const ImageResponseSize = enum {
+const ImageResponseSize = enum {
     five_twelve,
     one_k,
     two_k,
     four_k,
 
-    pub fn fromImageSize(image_size: ImageSize) ImageResponseSize {
+    fn fromImageSize(image_size: ImageSize) ImageResponseSize {
         return switch (image_size) {
             .px512 => .five_twelve,
             .k1 => .one_k,
@@ -717,7 +717,7 @@ pub const ImageResponseSize = enum {
         };
     }
 
-    pub fn apiName(image_size: ImageResponseSize) []const u8 {
+    fn apiName(image_size: ImageResponseSize) []const u8 {
         return switch (image_size) {
             .five_twelve => "IMAGE_SIZE_FIVE_TWELVE",
             .one_k => "IMAGE_SIZE_ONE_K",
@@ -731,7 +731,7 @@ pub const ImageResponseSize = enum {
     }
 };
 
-pub fn responseFormatFromOutputOptions(options: ImageOutputOptions) ?ResponseFormatConfig {
+fn responseFormatFromOutputOptions(options: ImageOutputOptions) ?ResponseFormatConfig {
     if (!options.hasAny()) return null;
     return .{
         .image = .{
@@ -747,13 +747,13 @@ pub fn responseFormatFromOutputOptions(options: ImageOutputOptions) ?ResponseFor
     };
 }
 
-pub const HarmCategory = enum {
+const HarmCategory = enum {
     harassment,
     hate_speech,
     sexually_explicit,
     dangerous_content,
 
-    pub fn apiName(category: HarmCategory) []const u8 {
+    fn apiName(category: HarmCategory) []const u8 {
         return switch (category) {
             .harassment => "HARM_CATEGORY_HARASSMENT",
             .hate_speech => "HARM_CATEGORY_HATE_SPEECH",
@@ -775,7 +775,7 @@ pub const HarmBlockThreshold = enum {
     off,
     harm_block_threshold_unspecified,
 
-    pub fn apiName(threshold: HarmBlockThreshold) []const u8 {
+    fn apiName(threshold: HarmBlockThreshold) []const u8 {
         return switch (threshold) {
             .block_low_and_above => "BLOCK_LOW_AND_ABOVE",
             .block_medium_and_above => "BLOCK_MEDIUM_AND_ABOVE",
@@ -791,7 +791,7 @@ pub const HarmBlockThreshold = enum {
     }
 };
 
-pub const SafetySetting = struct {
+const SafetySetting = struct {
     category: HarmCategory,
     threshold: HarmBlockThreshold,
 };
@@ -809,14 +809,14 @@ pub const SafetyOptions = struct {
     }
 };
 
-pub const supported_harm_categories = [_]HarmCategory{
+const supported_harm_categories = [_]HarmCategory{
     .harassment,
     .hate_speech,
     .sexually_explicit,
     .dangerous_content,
 };
 
-pub fn safetySettingsFromOptions(options: SafetyOptions) [supported_harm_categories.len]SafetySetting {
+fn safetySettingsFromOptions(options: SafetyOptions) [supported_harm_categories.len]SafetySetting {
     var settings: [supported_harm_categories.len]SafetySetting = undefined;
 
     for (supported_harm_categories, 0..) |category, index| {
@@ -869,7 +869,7 @@ pub const OutputMime = enum {
     jpeg,
     webp,
 
-    pub fn fromName(name: []const u8) ?OutputMime {
+    fn fromName(name: []const u8) ?OutputMime {
         if (std.mem.eql(u8, name, "image/png")) return .png;
         if (std.mem.eql(u8, name, "image/jpeg")) return .jpeg;
         if (std.mem.eql(u8, name, "image/webp")) return .webp;
@@ -919,11 +919,11 @@ pub const HttpResponse = struct {
     }
 };
 
-pub const HttpResponseWithUploadUrl = struct {
+const HttpResponseWithUploadUrl = struct {
     response: HttpResponse,
     upload_url: ?[]u8 = null,
 
-    pub fn deinit(response: *HttpResponseWithUploadUrl, gpa: std.mem.Allocator) void {
+    fn deinit(response: *HttpResponseWithUploadUrl, gpa: std.mem.Allocator) void {
         response.response.deinit(gpa);
         if (response.upload_url) |upload_url| gpa.free(upload_url);
         response.* = undefined;
@@ -949,13 +949,13 @@ pub fn apiKeyFromMap(environ_map: *const std.process.Environ.Map) ApiKeyError![]
     return api_key;
 }
 
-pub fn generateContentUrl(model: Model) []const u8 {
+fn generateContentUrl(model: Model) []const u8 {
     return switch (model) {
         .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent",
     };
 }
 
-pub fn countTokensUrl(model: Model) []const u8 {
+fn countTokensUrl(model: Model) []const u8 {
     return switch (model) {
         .nano2 => "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:countTokens",
     };
@@ -1742,18 +1742,18 @@ fn expectAllowedCommandModuleImports(path: []const u8) !void {
     }
 }
 
-pub const RequestBodyLog = union(enum) {
+const RequestBodyLog = union(enum) {
     empty,
     text: []const u8,
     binary: BinaryRequestBodyLog,
 };
 
-pub const BinaryRequestBodyLog = struct {
+const BinaryRequestBodyLog = struct {
     byte_count: usize,
     mime: []const u8,
 };
 
-pub const RequestWithBodyOptions = struct {
+const RequestWithBodyOptions = struct {
     capture_upload_url: bool = false,
     request_body_log: RequestBodyLog = .empty,
 };
@@ -1867,7 +1867,7 @@ fn finalizeResumableUpload(
     return result.response;
 }
 
-pub fn buildResumableUploadMetadata(
+fn buildResumableUploadMetadata(
     gpa: std.mem.Allocator,
     display_name: ?[]const u8,
 ) ![]u8 {
@@ -1891,6 +1891,45 @@ pub fn buildResumableUploadMetadata(
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
     return list.toOwnedSlice(gpa);
+}
+
+test "resumable upload metadata defaults to empty file object" {
+    const gpa = std.testing.allocator;
+    const metadata = try buildResumableUploadMetadata(gpa, null);
+    defer gpa.free(metadata);
+
+    try std.testing.expectEqualStrings("{\"file\":{}}", metadata);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
+    defer parsed.deinit();
+}
+
+test "resumable upload metadata includes displayName" {
+    const gpa = std.testing.allocator;
+    const metadata = try buildResumableUploadMetadata(gpa, "nbimg live api sample");
+    defer gpa.free(metadata);
+
+    try std.testing.expectEqualStrings(
+        "{\"file\":{\"displayName\":\"nbimg live api sample\"}}",
+        metadata,
+    );
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
+    defer parsed.deinit();
+}
+
+test "resumable upload metadata escapes JSON string content" {
+    const gpa = std.testing.allocator;
+    const metadata = try buildResumableUploadMetadata(gpa, "quote \" slash \\ newline \n");
+    defer gpa.free(metadata);
+
+    try std.testing.expectEqualStrings(
+        "{\"file\":{\"displayName\":\"quote \\\" slash \\\\ newline \\n\"}}",
+        metadata,
+    );
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, metadata, .{});
+    defer parsed.deinit();
 }
 
 pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
@@ -2186,7 +2225,7 @@ fn requestJsonWithoutBodyRaw(
     };
 }
 
-pub fn requestWithBody(
+fn requestWithBody(
     gpa: std.mem.Allocator,
     client: *std.http.Client,
     method: std.http.Method,

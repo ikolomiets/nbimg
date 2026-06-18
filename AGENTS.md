@@ -25,6 +25,17 @@ At public boundaries, prefer complete signatures, explicit error sets when calle
 
 Use TigerStyle assertions consistently for programmer errors: preconditions, postconditions, invariants, and boundary assumptions. Expected operating errors still use Zig errors. Split compound assertions (`assert(a); assert(b);`), write implications as `if (a) assert(b);`, add compile-time assertions for constant/layout relationships, and pair important checks across boundaries such as request serialization and response parsing.
 
+## Module API Boundaries
+
+Declarations default to private. Same-file tests, possible future use, and
+convenience aliases do not justify `pub`. Public concrete structs expose their
+fields, so keep implementation-state and wire-only types private.
+
+Treat changes to a module's public declarations or public container methods as
+deliberate interface changes. Update the exact allowlists in
+`src/public_api_test.zig` with the implementation, and update
+`docs/IMPLEMENTATION_DESIGN.md` when module boundaries change.
+
 ## Testing Guidelines
 
 Add tests with each functional change, close to the module they exercise. Favor golden CLI-to-JSON tests, response fixtures, and snapshots for verbose output. Cover invalid states when assertions encode invariants. For randomized or stateful tests, record replay data such as seed and size. Always run `zig build test`.

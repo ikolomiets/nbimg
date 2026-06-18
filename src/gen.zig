@@ -7,9 +7,6 @@ const build_options = @import("build_options");
 
 const live_prompt = "My fair lady";
 
-pub const CountTokensResult = api.CountTokensResult;
-pub const decodeCountTokensResponse = api.decodeCountTokensResponse;
-
 pub fn generateContent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -42,7 +39,7 @@ pub fn generateContent(
     return api.postGenerateContentJson(gpa, io, api_key, .nano2, request_json);
 }
 
-pub fn countGenerateContentRequestTokens(
+fn countGenerateContentRequestTokens(
     gpa: std.mem.Allocator,
     io: std.Io,
     api_key: []const u8,
@@ -100,7 +97,7 @@ pub fn buildGenerateRequest(
     });
 }
 
-pub fn buildCountTokensRequest(
+fn buildCountTokensRequest(
     gpa: std.mem.Allocator,
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
