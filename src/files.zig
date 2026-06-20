@@ -9,12 +9,20 @@ pub const max_upload_bytes = 64 * 1024 * 1024;
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
 
+/// Describes borrowed image bytes and metadata for a Files API upload.
+///
+/// - All slices remain caller-owned and must outlive the upload call.
+/// - The value allocates nothing and mutates no state.
 pub const FileUpload = struct {
     mime: api.ImageMime,
     bytes: []const u8,
     display_name: ?[]const u8 = null,
 };
 
+/// Owns a decoded Files API resource and its optional metadata strings.
+///
+/// - Every populated slice must be released with `deinit` using the originating allocator.
+/// - The value otherwise owns no external state.
 pub const File = struct {
     name: []u8,
     display_name: ?[]u8 = null,
@@ -28,6 +36,10 @@ pub const File = struct {
     state: ?[]u8 = null,
     source: ?[]u8 = null,
 
+    /// Frees a decoded file and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
+    /// - Mutates only `file` and allocator state.
     pub fn deinit(file: *File, gpa: std.mem.Allocator) void {
         gpa.free(file.name);
         file.deinitMetadata(gpa);
@@ -59,10 +71,18 @@ pub const File = struct {
     }
 };
 
+/// Owns one page of decoded file resources and an optional continuation token.
+///
+/// - All nested allocations must be released with `deinit` using their originating allocator.
+/// - The value otherwise owns no external state.
 pub const FileListPage = struct {
     files: []File,
     next_page_token: ?[]u8 = null,
 
+    /// Frees a file-list page and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
+    /// - Mutates only `page` and allocator state.
     pub fn deinit(page: *FileListPage, gpa: std.mem.Allocator) void {
         for (page.files) |*file| file.deinit(gpa);
         gpa.free(page.files);
@@ -71,6 +91,10 @@ pub const FileListPage = struct {
     }
 };
 
+/// Uploads borrowed image bytes through the Gemini Files API.
+///
+/// - Borrows upload fields for the call; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP, protocol, timeout, or logging errors and creates remote file state.
 pub fn uploadFile(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -88,6 +112,10 @@ pub fn uploadFile(
     });
 }
 
+/// Fetches one Files API page using an optional borrowed continuation token.
+///
+/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn listFilesPage(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -103,6 +131,10 @@ pub fn listFilesPage(
     return api.getJson(gpa, io, api_key, url);
 }
 
+/// Fetches one canonical Files API resource.
+///
+/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn getFile(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -118,6 +150,10 @@ pub fn getFile(
     return api.getJson(gpa, io, api_key, url);
 }
 
+/// Deletes one canonical Files API resource.
+///
+/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates remote file state.
 pub fn deleteFile(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -137,6 +173,10 @@ fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]
     return api.decodeUploadedFileName(gpa, response_json);
 }
 
+/// Decodes an upload response into an owned file resource.
+///
+/// - Borrows `response_json`; all returned strings are owned by `gpa` and require `File.deinit`.
+/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
 pub fn decodeUploadedFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
     const Response = struct {
         file: ?ResponseFile = null,
@@ -168,6 +208,10 @@ pub fn decodeUploadedFile(gpa: std.mem.Allocator, response_json: []const u8) !Fi
     return ownedFileFromResponse(gpa, file);
 }
 
+/// Decodes a file response into an owned file resource.
+///
+/// - Borrows `response_json`; all returned strings are owned by `gpa` and require `File.deinit`.
+/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
 pub fn decodeFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
     const Response = struct {
         name: ?[]const u8 = null,
@@ -191,6 +235,10 @@ pub fn decodeFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
     return ownedFileFromResponse(gpa, parsed.value);
 }
 
+/// Decodes a file-list response into an owned page.
+///
+/// - Borrows `response_json`; all returned slices are owned by `gpa` and require `FileListPage.deinit`.
+/// - Returns allocation, JSON parsing, or missing-name errors and mutates no input or global state.
 pub fn decodeFileListPage(gpa: std.mem.Allocator, response_json: []const u8) !FileListPage {
     const Response = struct {
         files: []const ResponseFile = &.{},

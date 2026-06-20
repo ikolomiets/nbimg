@@ -294,6 +294,10 @@ const CommandArgs = struct {
     }
 };
 
+/// Runs the CLI once and returns its process exit code.
+///
+/// - Borrows process initialization state and uses its allocators and I/O for temporary work.
+/// - Converts command, allocation, filesystem, and network errors to exit codes and may mutate files, remote state, and traffic-log configuration.
 pub fn run(init: std.process.Init) u8 {
     const gpa = init.gpa;
     const arena = init.arena.allocator();

@@ -33,6 +33,9 @@ pub const ReferenceRole = enum {
     texture,
     image,
 
+    /// Parses a CLI image-reference role name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?ReferenceRole {
         if (std.mem.eql(u8, name, "scene")) return .scene;
         if (std.mem.eql(u8, name, "character")) return .character;
@@ -47,17 +50,29 @@ pub const ReferenceRole = enum {
     }
 };
 
+/// Identifies a borrowed uploaded image for an edit request.
+///
+/// - `name` remains caller-owned and must outlive request construction.
+/// - The value allocates nothing and mutates no state.
 pub const UploadedImage = struct {
     name: []const u8,
     mime: api.ImageMime,
 };
 
+/// Associates a borrowed uploaded image with an edit role and label.
+///
+/// - `label` and nested image data remain caller-owned through request construction.
+/// - The value allocates nothing and mutates no state.
 pub const Reference = struct {
     role: ReferenceRole,
     label: []const u8,
     image: UploadedImage,
 };
 
+/// Describes a complete image-edit request using borrowed prompts and references.
+///
+/// - All slices and nested values remain caller-owned through request construction or submission.
+/// - The value allocates nothing and mutates no state.
 pub const EditRequest = struct {
     prompt: []const u8,
     output_options: api.ImageOutputOptions = .{},
@@ -73,6 +88,10 @@ pub const EditRequest = struct {
     do_nots: []const []const u8 = &.{},
 };
 
+/// Submits a borrowed image-edit request to the Gemini API.
+///
+/// - Borrows request data; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
 pub fn generateContent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -88,6 +107,10 @@ pub fn generateContent(
     return api.postGenerateContentJson(gpa, io, api_key, .nano2, request_json);
 }
 
+/// Counts tokens for a borrowed image-edit request through the Gemini API.
+///
+/// - Borrows request data; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote request.
 pub fn countGenerateContentRequestTokens(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -103,6 +126,10 @@ pub fn countGenerateContentRequestTokens(
     return api.postCountTokensJson(gpa, io, api_key, .nano2, request_json);
 }
 
+/// Builds an owned Gemini generate-content JSON request for an image edit.
+///
+/// - Borrows all request slices for the call; the returned JSON is owned by `gpa`.
+/// - Returns allocation or serialization errors and mutates no input or global state.
 pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
     assertValidEditRequest(request);
 
@@ -150,6 +177,9 @@ fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
     return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
+/// Reports whether a reference label follows the bounded uppercase identifier format.
+///
+/// - Borrows `label`, allocates nothing, returns no errors, and mutates no state.
 pub fn isValidLabel(label: []const u8) bool {
     if (label.len == 0) return false;
     if (label.len > max_label_bytes) return false;

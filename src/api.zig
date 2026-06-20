@@ -63,16 +63,28 @@ const TextContent = struct {
     parts: []const TextPart,
 };
 
+/// Identifies an uploaded file part by MIME type and URI.
+///
+/// - Both fields borrow caller-owned strings for the lifetime of the request.
+/// - The value allocates nothing and mutates no state.
 pub const GenerateFileData = struct {
     mime_type: []const u8,
     file_uri: []const u8,
 };
 
+/// Describes one borrowed text or uploaded-file request part.
+///
+/// - Any populated slice borrows caller-owned storage for the lifetime of the request.
+/// - The value allocates nothing and mutates no state.
 pub const GeneratePart = struct {
     text: ?[]const u8 = null,
     file_data: ?GenerateFileData = null,
 };
 
+/// Groups borrowed request parts into one Gemini content entry.
+///
+/// - `parts` and its nested slices must remain valid while the request is serialized.
+/// - The value allocates nothing and mutates no state.
 pub const GenerateContent = struct {
     parts: []const GeneratePart,
 };
@@ -82,6 +94,9 @@ pub const ServiceTier = enum {
     standard,
     priority,
 
+    /// Parses a CLI service-tier name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?ServiceTier {
         if (std.mem.eql(u8, name, "flex")) return .flex;
         if (std.mem.eql(u8, name, "standard")) return .standard;
@@ -97,17 +112,27 @@ pub const ServiceTier = enum {
         };
     }
 
+    /// Writes the Gemini API spelling of a service tier.
+    ///
+    /// - Borrows the writer, allocates only if the writer does, propagates writer errors, and mutates only the writer.
     pub fn jsonStringify(service_tier: ServiceTier, writer: anytype) !void {
         try writer.write(service_tier.apiName());
     }
 };
 
+/// Configures request-level Gemini options.
+///
+/// - Optional string fields borrow caller-owned storage through request serialization.
+/// - The value allocates nothing and mutates no state.
 pub const RequestOptions = struct {
     system_instruction: ?[]const u8 = null,
     cached_content: ?[]const u8 = null,
     service_tier: ?ServiceTier = null,
     store: ?bool = null,
 
+    /// Reports whether any request-level option is set.
+    ///
+    /// - Borrows no storage, allocates nothing, returns no errors, and mutates no state.
     pub fn hasAny(options: RequestOptions) bool {
         return options.system_instruction != null or
             options.cached_content != null or
@@ -132,6 +157,9 @@ pub const ImageAspectRatio = enum {
     r16_9,
     r21_9,
 
+    /// Parses a CLI image aspect-ratio name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?ImageAspectRatio {
         if (std.mem.eql(u8, name, "1:1")) return .r1_1;
         if (std.mem.eql(u8, name, "1:4")) return .r1_4;
@@ -180,6 +208,9 @@ pub const ImageSize = enum {
     k2,
     k4,
 
+    /// Parses a CLI image-size name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?ImageSize {
         if (std.mem.eql(u8, name, "512")) return .px512;
         if (std.mem.eql(u8, name, "1K")) return .k1;
@@ -202,23 +233,38 @@ pub const ImageSize = enum {
     }
 };
 
+/// Configures image dimensions for generated output.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const ImageOutputOptions = struct {
     aspect_ratio: ?ImageAspectRatio = null,
     image_size: ?ImageSize = null,
 
+    /// Reports whether any image output option is set.
+    ///
+    /// - Allocates nothing, returns no errors, and mutates no state.
     pub fn hasAny(options: ImageOutputOptions) bool {
         return options.aspect_ratio != null or options.image_size != null;
     }
 };
 
+/// Selects optional web and image grounding sources.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const GroundingOptions = struct {
     web: bool = false,
     image: bool = false,
 
+    /// Reports whether any grounding source is enabled.
+    ///
+    /// - Allocates nothing, returns no errors, and mutates no state.
     pub fn hasAny(options: GroundingOptions) bool {
         return options.web or options.image;
     }
 
+    /// Parses a CLI grounding-source name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?GroundingOptions {
         if (std.mem.eql(u8, name, "none")) return .{};
         if (std.mem.eql(u8, name, "web")) return .{ .web = true };
@@ -232,6 +278,9 @@ pub const ThinkingLevel = enum {
     minimal,
     high,
 
+    /// Parses a CLI thinking-level name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?ThinkingLevel {
         if (std.mem.eql(u8, name, "minimal")) return .minimal;
         if (std.mem.eql(u8, name, "high")) return .high;
@@ -245,15 +294,24 @@ pub const ThinkingLevel = enum {
         };
     }
 
+    /// Writes the Gemini API spelling of a thinking level.
+    ///
+    /// - Borrows the writer, allocates only if the writer does, propagates writer errors, and mutates only the writer.
     pub fn jsonStringify(level: ThinkingLevel, writer: anytype) !void {
         try writer.write(level.apiName());
     }
 };
 
+/// Configures model thinking behavior.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const ThinkingOptions = struct {
     level: ?ThinkingLevel = null,
     include_thoughts: bool = false,
 
+    /// Reports whether any thinking option is set.
+    ///
+    /// - Allocates nothing, returns no errors, and mutates no state.
     pub fn hasAny(options: ThinkingOptions) bool {
         return options.level != null or options.include_thoughts;
     }
@@ -267,6 +325,10 @@ const ThinkingConfig = struct {
 pub const max_stop_sequences = 5;
 pub const max_output_tokens = 32768;
 
+/// Configures sampling, token limits, and borrowed stop sequences.
+///
+/// - Appended stop-sequence slices remain caller-owned and must outlive request serialization.
+/// - The value allocates nothing; only its explicit mutating methods change it.
 pub const GenerationOptions = struct {
     max_output_tokens: ?u32 = null,
     temperature: ?f64 = null,
@@ -279,6 +341,9 @@ pub const GenerationOptions = struct {
     stop_sequences: [max_stop_sequences][]const u8 = [_][]const u8{""} ** max_stop_sequences,
     stop_sequence_count: usize = 0,
 
+    /// Reports whether any advanced generation option is set.
+    ///
+    /// - Borrows nested stop-sequence slices, allocates nothing, returns no errors, and mutates no state.
     pub fn hasAny(options: GenerationOptions) bool {
         return options.max_output_tokens != null or
             options.temperature != null or
@@ -291,11 +356,19 @@ pub const GenerationOptions = struct {
             options.stop_sequence_count > 0;
     }
 
+    /// Returns a borrowed view of the configured stop sequences.
+    ///
+    /// - The returned slice and strings remain owned by `options`; no allocation or mutation occurs.
+    /// - Asserts that the stored count is within capacity.
     pub fn stopSequenceSlice(options: *const GenerationOptions) []const []const u8 {
         assert(options.stop_sequence_count <= max_stop_sequences);
         return options.stop_sequences[0..options.stop_sequence_count];
     }
 
+    /// Appends a borrowed stop sequence to the fixed-capacity options value.
+    ///
+    /// - `value` remains caller-owned and must outlive uses of `options`; no allocation occurs.
+    /// - Asserts that `value` is non-empty and capacity remains; mutates only `options`.
     pub fn appendStopSequence(options: *GenerationOptions, value: []const u8) void {
         assert(value.len > 0);
         assert(options.stop_sequence_count < max_stop_sequences);
@@ -354,6 +427,9 @@ fn generationConfigFromOptions(
     };
 }
 
+/// Asserts all generation-option invariants.
+///
+/// - Borrows nested stop-sequence strings, allocates nothing, returns no errors, and mutates no state.
 pub fn assertValidGenerationOptions(options: GenerationOptions) void {
     assert(options.stop_sequence_count <= max_stop_sequences);
 
@@ -401,6 +477,9 @@ pub fn assertValidGenerationOptions(options: GenerationOptions) void {
     }
 }
 
+/// Asserts all request-option invariants.
+///
+/// - Borrows optional strings, allocates nothing, returns no errors, and mutates no state.
 pub fn assertValidRequestOptions(options: RequestOptions) void {
     if (options.system_instruction) |system_instruction| {
         assert(system_instruction.len > 0);
@@ -446,6 +525,10 @@ fn googleSearchToolFromGroundingOptions(options: GroundingOptions) ?Tool {
     };
 }
 
+/// Combines all option groups used to build a generate-content request.
+///
+/// - Nested string slices remain caller-owned through request serialization.
+/// - The value allocates nothing and mutates no state.
 pub const GenerateContentRequestOptions = struct {
     output_options: ImageOutputOptions = .{},
     grounding_options: GroundingOptions = .{},
@@ -466,6 +549,10 @@ const GenerateContentRequest = struct {
     store: ?bool = null,
 };
 
+/// Serializes generate-content inputs into an owned JSON request.
+///
+/// - Borrows all inputs for the call; the returned slice is owned by `gpa`.
+/// - Allocates with `gpa`, returns allocation or writer errors, and mutates no input or global state.
 pub fn buildGenerateContentRequestJson(
     gpa: std.mem.Allocator,
     contents: []const GenerateContent,
@@ -786,6 +873,9 @@ pub const HarmBlockThreshold = enum {
         };
     }
 
+    /// Writes the Gemini API spelling of a harm-block threshold.
+    ///
+    /// - Borrows the writer, allocates only if the writer does, propagates writer errors, and mutates only the writer.
     pub fn jsonStringify(threshold: HarmBlockThreshold, writer: anytype) !void {
         try writer.write(threshold.apiName());
     }
@@ -796,9 +886,15 @@ const SafetySetting = struct {
     threshold: HarmBlockThreshold,
 };
 
+/// Applies one harm-block threshold to every supported category.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const SafetyOptions = struct {
     threshold: HarmBlockThreshold = .block_none,
 
+    /// Parses a CLI safety preset name.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unknown names, and mutates no state.
     pub fn fromName(name: []const u8) ?SafetyOptions {
         if (std.mem.eql(u8, name, "none")) return .{ .threshold = .block_none };
         if (std.mem.eql(u8, name, "off")) return .{ .threshold = .off };
@@ -829,6 +925,9 @@ fn safetySettingsFromOptions(options: SafetyOptions) [supported_harm_categories.
     return settings;
 }
 
+/// Holds token counts decoded from a count-tokens response.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const CountTokensResult = struct {
     total_tokens: u64,
     cached_content_token_count: ?u64 = null,
@@ -839,6 +938,9 @@ pub const ImageMime = enum {
     png,
     webp,
 
+    /// Parses a supported image MIME type.
+    ///
+    /// - Borrows `name`, allocates nothing, returns `null` for unsupported names, and mutates no state.
     pub fn fromName(name: []const u8) ?ImageMime {
         if (std.mem.eql(u8, name, "image/jpeg")) return .jpeg;
         if (std.mem.eql(u8, name, "image/png")) return .png;
@@ -846,6 +948,9 @@ pub const ImageMime = enum {
         return null;
     }
 
+    /// Infers a supported image MIME type from a path extension.
+    ///
+    /// - Borrows `path`, allocates nothing, returns `null` for unsupported extensions, and mutates no state.
     pub fn fromPath(path: []const u8) ?ImageMime {
         const extension = std.fs.path.extension(path);
         if (std.ascii.eqlIgnoreCase(extension, ".jpg")) return .jpeg;
@@ -855,6 +960,9 @@ pub const ImageMime = enum {
         return null;
     }
 
+    /// Returns the static Gemini API name for an image MIME type.
+    ///
+    /// - Returns static storage, allocates nothing, returns no errors, and mutates no state.
     pub fn apiName(mime: ImageMime) []const u8 {
         return switch (mime) {
             .jpeg => "image/jpeg",
@@ -876,6 +984,9 @@ pub const OutputMime = enum {
         return null;
     }
 
+    /// Returns the static filename extension for an output MIME type.
+    ///
+    /// - Returns static storage, allocates nothing, returns no errors, and mutates no state.
     pub fn extension(mime: OutputMime) []const u8 {
         return switch (mime) {
             .png => "png",
@@ -885,22 +996,38 @@ pub const OutputMime = enum {
     }
 };
 
+/// Owns one decoded generated-image byte buffer.
+///
+/// - `bytes` must be released with `deinit` using the allocator that created it.
+/// - The value otherwise owns no external state.
 pub const GeneratedFile = struct {
     candidate_index: usize,
     part_index: usize,
     mime: OutputMime,
     bytes: []u8,
 
+    /// Frees a generated file's bytes and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created `bytes`; no errors are returned.
+    /// - Mutates only `file` and allocator state.
     pub fn deinit(file: *GeneratedFile, gpa: std.mem.Allocator) void {
         gpa.free(file.bytes);
         file.* = undefined;
     }
 };
 
+/// Owns a response ID and all decoded generated files.
+///
+/// - All owned slices must be released with `deinit` using their originating allocator.
+/// - The value otherwise owns no external state.
 pub const GeneratedFiles = struct {
     response_id: []u8,
     items: []GeneratedFile,
 
+    /// Frees a generated-files result and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
+    /// - Mutates only `files` and allocator state.
     pub fn deinit(files: *GeneratedFiles, gpa: std.mem.Allocator) void {
         for (files.items) |*file| file.deinit(gpa);
         gpa.free(files.items);
@@ -909,10 +1036,18 @@ pub const GeneratedFiles = struct {
     }
 };
 
+/// Owns an HTTP status and response body.
+///
+/// - `body` must be released with `deinit` using the allocator that created it.
+/// - The value does not itself mutate global state.
 pub const HttpResponse = struct {
     status: std.http.Status,
     body: []u8,
 
+    /// Frees an HTTP response body and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created `body`; no errors are returned.
+    /// - Mutates only `response` and allocator state.
     pub fn deinit(response: *HttpResponse, gpa: std.mem.Allocator) void {
         gpa.free(response.body);
         response.* = undefined;
@@ -930,12 +1065,19 @@ const HttpResponseWithUploadUrl = struct {
     }
 };
 
+/// Describes borrowed content for a resumable Files API upload.
+///
+/// - All slices remain caller-owned and must outlive the upload call.
+/// - The value allocates nothing and mutates no state.
 pub const ResumableUpload = struct {
     content_type: []const u8,
     bytes: []const u8,
     display_name: ?[]const u8 = null,
 };
 
+/// Selects whether HTTP request and response details are printed.
+///
+/// - The value owns no heap storage, allocates nothing, and mutates no state.
 pub const TrafficLogOptions = struct {
     print_request: bool = false,
     print_response: bool = false,
@@ -943,6 +1085,10 @@ pub const TrafficLogOptions = struct {
 
 pub var traffic_log_options: TrafficLogOptions = .{};
 
+/// Returns the borrowed Gemini API key stored in an environment map.
+///
+/// - The returned slice remains owned by `environ_map`; no allocation or mutation occurs.
+/// - Returns `MissingApiKey` or `EmptyApiKey` when the configured entry is unusable.
 pub fn apiKeyFromMap(environ_map: *const std.process.Environ.Map) ApiKeyError![]const u8 {
     const api_key = environ_map.get(api_key_env_name) orelse return error.MissingApiKey;
     if (api_key.len == 0) return error.EmptyApiKey;
@@ -961,6 +1107,10 @@ fn countTokensUrl(model: Model) []const u8 {
     };
 }
 
+/// Posts a borrowed JSON body to the selected model's generate-content endpoint.
+///
+/// - Borrows request inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may update remote service state.
 pub fn postGenerateContentJson(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -974,6 +1124,10 @@ pub fn postGenerateContentJson(
     return postJson(gpa, io, api_key, generateContentUrl(model), request_json);
 }
 
+/// Posts a borrowed JSON body to the selected model's count-tokens endpoint.
+///
+/// - Borrows request inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and performs a remote request.
 pub fn postCountTokensJson(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -987,22 +1141,35 @@ pub fn postCountTokensJson(
     return postJson(gpa, io, api_key, countTokensUrl(model), request_json);
 }
 
+/// Reports whether a string is a canonical non-empty Files API resource name.
+///
+/// - Borrows `name`, allocates nothing, returns no errors, and mutates no state.
 pub fn isCanonicalFileName(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, canonical_file_name_prefix)) return false;
     return name.len > canonical_file_name_prefix.len;
 }
 
+/// Reports whether a string is a canonical non-empty cached-content resource name.
+///
+/// - Borrows `name`, allocates nothing, returns no errors, and mutates no state.
 pub fn isCanonicalCachedContentName(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, canonical_cached_content_name_prefix)) return false;
     return name.len > canonical_cached_content_name_prefix.len;
 }
 
+/// Reports whether a display name is non-empty, valid UTF-8, and within the API limit.
+///
+/// - Borrows `display_name`, allocates nothing, returns no errors, and mutates no state.
 pub fn isValidDisplayName(display_name: []const u8) bool {
     if (display_name.len == 0) return false;
     const codepoints = std.unicode.utf8CountCodepoints(display_name) catch return false;
     return codepoints <= max_display_name_codepoints;
 }
 
+/// Wraps a generate-content JSON object in an owned count-tokens request.
+///
+/// - Borrows the input JSON for the call; the returned slice is owned by `gpa`.
+/// - Allocates with `gpa`, returns allocation or writer errors, and mutates no input or global state.
 pub fn buildCountTokensRequestFromGenerateContentJson(
     gpa: std.mem.Allocator,
     model: Model,
@@ -1026,6 +1193,10 @@ pub fn buildCountTokensRequestFromGenerateContentJson(
     return list.toOwnedSlice(gpa);
 }
 
+/// Decodes token counts from a borrowed JSON response.
+///
+/// - Uses `gpa` only for temporary parsing storage and returns no owned allocation.
+/// - Returns allocation, JSON parsing, or `MissingTotalTokens` errors and mutates no input or global state.
 pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const u8) !CountTokensResult {
     const Response = struct {
         totalTokens: ?u64 = null,
@@ -1043,6 +1214,10 @@ pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const 
     };
 }
 
+/// Decodes an optional service tier from a borrowed response body.
+///
+/// - Uses `gpa` only for temporary parsing storage and returns no owned allocation.
+/// - Returns allocation or JSON parsing errors and mutates no input or global state.
 pub fn decodeResponseServiceTier(gpa: std.mem.Allocator, response_json: []const u8) !?ServiceTier {
     const Response = struct {
         usageMetadata: ?UsageMetadata = null,
@@ -1062,6 +1237,10 @@ pub fn decodeResponseServiceTier(gpa: std.mem.Allocator, response_json: []const 
     return ServiceTier.fromName(service_tier_name);
 }
 
+/// Decodes and owns generated image files from a borrowed JSON response.
+///
+/// - Allocates the result with `gpa`; the caller must invoke `GeneratedFiles.deinit`.
+/// - Returns allocation, JSON, base64, or unsupported-response errors and mutates no input or global state.
 pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !GeneratedFiles {
     const Response = struct {
         candidates: []const Candidate = &.{},
@@ -1167,6 +1346,10 @@ fn decodeGeneratedPart(
     };
 }
 
+/// Formats a generated file's deterministic name into caller-provided storage.
+///
+/// - Returns a slice borrowed from `buffer`; allocates nothing.
+/// - Returns formatting errors such as insufficient buffer space and mutates only the written portion of `buffer`.
 pub fn generatedFileName(buffer: []u8, response_id: []const u8, file: GeneratedFile) ![]const u8 {
     return std.fmt.bufPrint(
         buffer,
@@ -1758,6 +1941,10 @@ const RequestWithBodyOptions = struct {
     request_body_log: RequestBodyLog = .empty,
 };
 
+/// Uploads borrowed bytes through the Gemini resumable upload protocol.
+///
+/// - Borrows upload fields for the call; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, protocol, timeout, or logging errors and creates remote upload state.
 pub fn uploadResumableBytes(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -1932,6 +2119,10 @@ test "resumable upload metadata escapes JSON string content" {
     defer parsed.deinit();
 }
 
+/// Decodes and copies a canonical file name from an upload response.
+///
+/// - Borrows `response_json`; the returned slice is owned by `gpa`.
+/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
 pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
     const Response = struct {
         file: ?ResponseFile = null,
@@ -1956,6 +2147,10 @@ fn fileUploadStartUrl() []const u8 {
     return "https://generativelanguage.googleapis.com/upload/v1beta/files";
 }
 
+/// Sends a JSON POST request and returns an owned response body.
+///
+/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may mutate remote service state.
 pub fn postJson(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2033,6 +2228,10 @@ fn postJsonRaw(
     };
 }
 
+/// Sends a JSON GET request and returns an owned response body.
+///
+/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and mutates no input or local global state.
 pub fn getJson(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2042,6 +2241,10 @@ pub fn getJson(
     return requestJsonWithoutBody(gpa, io, api_key, url, .GET);
 }
 
+/// Sends a GET request and reads at most the configured number of body bytes.
+///
+/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, size-limit, or logging errors and mutates no input.
 pub fn getBytesBounded(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2132,6 +2335,10 @@ fn getBytesBoundedRaw(
     };
 }
 
+/// Sends a bodyless POST request and returns an owned response body.
+///
+/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may mutate remote service state.
 pub fn postJsonWithoutBody(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -2141,6 +2348,10 @@ pub fn postJsonWithoutBody(
     return requestJsonWithoutBody(gpa, io, api_key, url, .POST);
 }
 
+/// Sends a DELETE request and returns an owned response body.
+///
+/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and mutates remote service state.
 pub fn deleteJson(
     gpa: std.mem.Allocator,
     io: std.Io,

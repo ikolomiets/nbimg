@@ -7,6 +7,10 @@ const build_options = @import("build_options");
 
 const live_prompt = "My fair lady";
 
+/// Generates images from a borrowed text prompt through the Gemini API.
+///
+/// - Borrows all inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
 pub fn generateContent(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -71,6 +75,10 @@ fn countGenerateContentRequestTokens(
     return api.postCountTokensJson(gpa, io, api_key, .nano2, request_json);
 }
 
+/// Builds an owned Gemini generate-content JSON request for a text prompt.
+///
+/// - Borrows all input slices for the call; the returned JSON is owned by `gpa`.
+/// - Returns allocation or serialization errors and mutates no input or global state.
 pub fn buildGenerateRequest(
     gpa: std.mem.Allocator,
     prompt: []const u8,
