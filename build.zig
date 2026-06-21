@@ -111,23 +111,16 @@ fn addNbimgExecutable(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
-    const nbimg = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    addBuildOptions(b, nbimg, false);
+    addBuildOptions(b, module, false);
 
     return b.addExecutable(.{
         .name = "nbimg",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "nbimg", .module = nbimg },
-            },
-        }),
+        .root_module = module,
     });
 }
 

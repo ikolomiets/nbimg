@@ -51,10 +51,10 @@ Batch streaming uploads.
 
 The code is split into eight source files:
 
-- `src/main.zig` is the executable entrypoint. It calls `nbimg.cli.run(init)`
-  and exits with the returned process status.
-- `src/root.zig` exposes the package modules as `api`, `batch`, `cli`, `gen`,
-  `edit`, and `files`.
+- `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
+  directly, calls `cli.run(init)`, and exits with the returned process status.
+- `src/root.zig` exposes the package modules as `api`, `batch`, `gen`, `edit`,
+  and `files`. CLI implementation declarations are not package-accessible.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -79,7 +79,7 @@ The code is split into eight source files:
   construction, upload/list/get response decoding, and
   Files API endpoint handling.
 
-The public API namespace is intentionally split by command domain:
+The package API namespace is currently split by command domain:
 
 ```zig
 nbimg.gen.*
@@ -91,9 +91,9 @@ nbimg.batch.*
 Shared controls such as `nbimg.api.traffic_log_options` remain directly under
 `nbimg.api`.
 
-The supported module interfaces are intentionally narrow:
+The internal module interfaces are intentionally narrow:
 
-- `cli` exports only `run`.
+- `cli` exports only `run` for executable assembly.
 - `gen` exports immediate generation and generation-request construction.
   Token-count request helpers remain module-internal.
 - `edit` exports the CLI-consumed reference/request models and limits,
@@ -190,11 +190,13 @@ ownership type, `Model` constants, and global traffic logging switch. Headers
 are not exposed through the logging path, so API keys stay out of diagnostic
 output.
 
-`build.zig` defines separate `nbimg` modules and executables for installed and
-development artifacts. The installed `zig-out/bin/nbimg` executable is built in
-ReleaseSafe. The `run` step builds and executes a separate Debug executable from
-the build cache. The normal offline `test` step and dedicated live API test
-steps also compile Debug artifacts for faster feedback.
+`build.zig` defines separate executable root modules for installed and
+development artifacts. Each root is `src/main.zig`, receives `build_options`
+directly, and imports `src/cli.zig` without going through the package root. The
+installed `zig-out/bin/nbimg` executable is built in ReleaseSafe. The `run`
+step builds and executes a separate Debug executable from the build cache. The
+normal offline `test` step and dedicated live API test steps also compile Debug
+artifacts for faster feedback.
 
 The `test` step builds test roots from `src/api.zig`, `src/batch.zig`,
 `src/gen.zig`, `src/edit.zig`, `src/files.zig`, `src/cli.zig`,

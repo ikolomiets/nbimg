@@ -50,7 +50,6 @@ comptime {
     assertExactPublicDecls("root", root, &.{
         "api",
         "batch",
-        "cli",
         "edit",
         "files",
         "gen",
