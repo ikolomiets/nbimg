@@ -90,40 +90,36 @@ pub const EditRequest = struct {
 
 /// Submits a borrowed image-edit request to the Gemini API.
 ///
-/// - Borrows request data; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows request data; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
 pub fn generateContent(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     request: EditRequest,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assertValidEditRequest(request);
 
-    const request_json = try buildGenerateRequest(gpa, request);
-    defer gpa.free(request_json);
+    const request_json = try buildGenerateRequest(context.gpa, request);
+    defer context.gpa.free(request_json);
 
-    return api.postGenerateContentJson(gpa, io, api_key, .nano2, request_json);
+    return api.postGenerateContentJson(context, .nano2, request_json);
 }
 
 /// Counts tokens for a borrowed image-edit request through the Gemini API.
 ///
-/// - Borrows request data; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows request data; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote request.
 pub fn countGenerateContentRequestTokens(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     request: EditRequest,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assertValidEditRequest(request);
 
-    const request_json = try buildCountTokensRequest(gpa, request);
-    defer gpa.free(request_json);
+    const request_json = try buildCountTokensRequest(context.gpa, request);
+    defer context.gpa.free(request_json);
 
-    return api.postCountTokensJson(gpa, io, api_key, .nano2, request_json);
+    return api.postCountTokensJson(context, .nano2, request_json);
 }
 
 /// Builds an owned Gemini generate-content JSON request for an image edit.

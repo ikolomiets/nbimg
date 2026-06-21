@@ -134,6 +134,7 @@ comptime {
         "ImageSize",
         "Model",
         "OutputMime",
+        "RequestContext",
         "RequestOptions",
         "ResumableUpload",
         "SafetyOptions",
@@ -156,7 +157,6 @@ comptime {
         "generatedFileName",
         "getBytesBounded",
         "getJson",
-        "http_request_timeout_seconds",
         "isCanonicalCachedContentName",
         "isCanonicalFileName",
         "isValidDisplayName",
@@ -169,7 +169,6 @@ comptime {
         "postGenerateContentJson",
         "postJson",
         "postJsonWithoutBody",
-        "traffic_log_options",
         "uploadResumableBytes",
     });
 
@@ -235,6 +234,7 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("api.ResumableUpload", api.ResumableUpload, &.{});
+    assertExactPublicDecls("api.RequestContext", api.RequestContext, &.{});
     assertExactPublicDecls("api.TrafficLogOptions", api.TrafficLogOptions, &.{});
 
     assertExactPublicDecls("edit.ReferenceRole", edit.ReferenceRole, &.{

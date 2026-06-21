@@ -93,19 +93,17 @@ pub const FileListPage = struct {
 
 /// Uploads borrowed image bytes through the Gemini Files API.
 ///
-/// - Borrows upload fields for the call; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows upload fields for the call; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, protocol, timeout, or logging errors and creates remote file state.
 pub fn uploadFile(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     file: FileUpload,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(file.bytes.len > 0);
     if (file.display_name) |display_name| assert(isValidDisplayName(display_name));
 
-    return api.uploadResumableBytes(gpa, io, api_key, .{
+    return api.uploadResumableBytes(context, .{
         .content_type = file.mime.apiName(),
         .bytes = file.bytes,
         .display_name = file.display_name,
@@ -114,59 +112,53 @@ pub fn uploadFile(
 
 /// Fetches one Files API page using an optional borrowed continuation token.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn listFilesPage(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     page_token: ?[]const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     if (page_token) |token| assert(token.len > 0);
 
-    const url = try buildListFilesUrl(gpa, page_token);
-    defer gpa.free(url);
+    const url = try buildListFilesUrl(context.gpa, page_token);
+    defer context.gpa.free(url);
 
-    return api.getJson(gpa, io, api_key, url);
+    return api.getJson(context, url);
 }
 
 /// Fetches one canonical Files API resource.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn getFile(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(api.isCanonicalFileName(name));
 
-    const url = try buildGetFileUrl(gpa, name);
-    defer gpa.free(url);
+    const url = try buildGetFileUrl(context.gpa, name);
+    defer context.gpa.free(url);
 
-    return api.getJson(gpa, io, api_key, url);
+    return api.getJson(context, url);
 }
 
 /// Deletes one canonical Files API resource.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates remote file state.
 pub fn deleteFile(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(api.isCanonicalFileName(name));
 
-    const url = try buildFileResourceUrl(gpa, name);
-    defer gpa.free(url);
+    const url = try buildFileResourceUrl(context.gpa, name);
+    defer context.gpa.free(url);
 
-    return api.deleteJson(gpa, io, api_key, url);
+    return api.deleteJson(context, url);
 }
 
 fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
@@ -546,14 +538,9 @@ test "live API files upload is visible in file list" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
+    const context = liveRequestContext(gpa, api_key);
 
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
-    };
-    defer api.traffic_log_options = .{};
-
-    var uploaded_file = try uploadSampleImage(gpa, api_key);
+    var uploaded_file = try uploadSampleImage(&context);
     defer uploaded_file.deinit(gpa);
 
     if (!std.mem.startsWith(u8, uploaded_file.name, "files/")) {
@@ -565,7 +552,7 @@ test "live API files upload is visible in file list" {
         try std.testing.expectEqualStrings(live_upload_display_name, display_name);
     }
 
-    const found_uploaded_file = try fileListContains(gpa, api_key, uploaded_file.name);
+    const found_uploaded_file = try fileListContains(&context, uploaded_file.name);
     if (!found_uploaded_file) {
         std.debug.print("error: uploaded file id was not found by files list: {s}\n", .{uploaded_file.name});
         return error.UploadedFileNotListed;
@@ -579,17 +566,12 @@ test "live API files get returns uploaded file metadata" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
+    const context = liveRequestContext(gpa, api_key);
 
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
-    };
-    defer api.traffic_log_options = .{};
-
-    var uploaded_file = try uploadSampleImage(gpa, api_key);
+    var uploaded_file = try uploadSampleImage(&context);
     defer uploaded_file.deinit(gpa);
 
-    var response = try getFile(gpa, std.testing.io, api_key, uploaded_file.name);
+    var response = try getFile(&context, uploaded_file.name);
     defer response.deinit(gpa);
 
     if (response.status != .ok) {
@@ -619,17 +601,12 @@ test "live API files delete removes uploaded file and reports missing files" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
+    const context = liveRequestContext(gpa, api_key);
 
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
-    };
-    defer api.traffic_log_options = .{};
-
-    var uploaded_file = try uploadSampleImage(gpa, api_key);
+    var uploaded_file = try uploadSampleImage(&context);
     defer uploaded_file.deinit(gpa);
 
-    var delete_response = try deleteFile(gpa, std.testing.io, api_key, uploaded_file.name);
+    var delete_response = try deleteFile(&context, uploaded_file.name);
     defer delete_response.deinit(gpa);
 
     if (delete_response.status != .ok) {
@@ -641,7 +618,7 @@ test "live API files delete removes uploaded file and reports missing files" {
     }
     try expectEmptyJsonObjectBody(gpa, delete_response.body);
 
-    var get_deleted_response = try getFile(gpa, std.testing.io, api_key, uploaded_file.name);
+    var get_deleted_response = try getFile(&context, uploaded_file.name);
     defer get_deleted_response.deinit(gpa);
     if (get_deleted_response.status != .forbidden) {
         std.debug.print(
@@ -651,7 +628,7 @@ test "live API files delete removes uploaded file and reports missing files" {
         return error.DeletedFileGetUnexpectedStatus;
     }
 
-    var delete_again_response = try deleteFile(gpa, std.testing.io, api_key, uploaded_file.name);
+    var delete_again_response = try deleteFile(&context, uploaded_file.name);
     defer delete_again_response.deinit(gpa);
     if (delete_again_response.status != .forbidden) {
         std.debug.print(
@@ -662,7 +639,7 @@ test "live API files delete removes uploaded file and reports missing files" {
     }
 
     const missing_file_name = "files/nbimg-delete-missing-probe";
-    var missing_probe_response = try getFile(gpa, std.testing.io, api_key, missing_file_name);
+    var missing_probe_response = try getFile(&context, missing_file_name);
     defer missing_probe_response.deinit(gpa);
     if (missing_probe_response.status != .forbidden) {
         std.debug.print(
@@ -672,7 +649,7 @@ test "live API files delete removes uploaded file and reports missing files" {
         return error.MissingFileProbeUnexpectedStatus;
     }
 
-    var delete_missing_response = try deleteFile(gpa, std.testing.io, api_key, missing_file_name);
+    var delete_missing_response = try deleteFile(&context, missing_file_name);
     defer delete_missing_response.deinit(gpa);
     if (delete_missing_response.status != .forbidden) {
         std.debug.print(
@@ -683,7 +660,20 @@ test "live API files delete removes uploaded file and reports missing files" {
     }
 }
 
-fn uploadSampleImage(gpa: std.mem.Allocator, api_key: []const u8) !File {
+fn liveRequestContext(gpa: std.mem.Allocator, api_key: []const u8) api.RequestContext {
+    return .{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .api_key = api_key,
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
+    };
+}
+
+fn uploadSampleImage(context: *const api.RequestContext) !File {
+    const gpa = context.gpa;
     const mime = api.ImageMime.fromPath(sample_image_path) orelse return error.UnsupportedInputMime;
     const bytes = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
@@ -694,7 +684,7 @@ fn uploadSampleImage(gpa: std.mem.Allocator, api_key: []const u8) !File {
     defer gpa.free(bytes);
     if (bytes.len == 0) return error.EmptyUploadFile;
 
-    var response = try uploadFile(gpa, std.testing.io, api_key, .{
+    var response = try uploadFile(context, .{
         .mime = mime,
         .bytes = bytes,
         .display_name = live_upload_display_name,
@@ -725,15 +715,15 @@ fn expectEmptyJsonObjectBody(gpa: std.mem.Allocator, body: []const u8) !void {
 }
 
 fn fileListContains(
-    gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     wanted_name: []const u8,
 ) !bool {
+    const gpa = context.gpa;
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
     while (true) {
-        var response = try listFilesPage(gpa, std.testing.io, api_key, page_token);
+        var response = try listFilesPage(context, page_token);
         defer response.deinit(gpa);
 
         if (page_token) |token| {

@@ -297,7 +297,7 @@ const CommandArgs = struct {
 /// Runs the CLI once and returns its process exit code.
 ///
 /// - Borrows process initialization state and uses its allocators and I/O for temporary work.
-/// - Converts command, allocation, filesystem, and network errors to exit codes and may mutate files, remote state, and traffic-log configuration.
+/// - Converts command, allocation, filesystem, and network errors to exit codes and may mutate files and remote state.
 pub fn run(init: std.process.Init) u8 {
     const gpa = init.gpa;
     const arena = init.arena.allocator();
@@ -337,9 +337,6 @@ pub fn run(init: std.process.Init) u8 {
         };
     };
 
-    api.traffic_log_options = parsed_command.traffic_log_options;
-    defer api.traffic_log_options = .{};
-
     const api_key = resolveApiKey(parsed_command.api_key, init.environ_map) catch |err| switch (err) {
         error.MissingApiKey => {
             std.debug.print("error: GEMINI_API_KEY is not set\n", .{});
@@ -350,19 +347,25 @@ pub fn run(init: std.process.Init) u8 {
             return exit_usage;
         },
     };
+    const request_context = api.RequestContext{
+        .gpa = gpa,
+        .io = init.io,
+        .api_key = api_key,
+        .traffic_log_options = parsed_command.traffic_log_options,
+    };
 
     return switch (parsed_command.command) {
-        .gen => |gen| runGen(init, gpa, api_key, gen),
-        .edit => |edit| runEdit(init, gpa, api_key, edit),
-        .files_upload => |files_upload| runFilesUpload(init, gpa, api_key, files_upload),
-        .files_list => runFilesList(init, gpa, api_key),
-        .files_get => |files_get| runFilesGet(init, gpa, api_key, files_get),
-        .files_delete => |files_delete| runFilesDelete(init, gpa, api_key, files_delete),
-        .batch_submit => |batch_submit| runBatchSubmit(init, gpa, api_key, batch_submit),
-        .batch_status => |batch_status| runBatchStatus(init, gpa, api_key, batch_status),
-        .batch_cancel => |batch_cancel| runBatchCancel(init, gpa, api_key, batch_cancel),
-        .batch_download => |batch_download| runBatchDownload(init, gpa, api_key, batch_download),
-        .batch_list => runBatchList(init, gpa, api_key),
+        .gen => |gen| runGen(init, gpa, &request_context, gen),
+        .edit => |edit| runEdit(init, gpa, &request_context, edit),
+        .files_upload => |files_upload| runFilesUpload(init, gpa, &request_context, files_upload),
+        .files_list => runFilesList(init, gpa, &request_context),
+        .files_get => |files_get| runFilesGet(init, gpa, &request_context, files_get),
+        .files_delete => |files_delete| runFilesDelete(init, gpa, &request_context, files_delete),
+        .batch_submit => |batch_submit| runBatchSubmit(init, gpa, &request_context, batch_submit),
+        .batch_status => |batch_status| runBatchStatus(init, gpa, &request_context, batch_status),
+        .batch_cancel => |batch_cancel| runBatchCancel(init, gpa, &request_context, batch_cancel),
+        .batch_download => |batch_download| runBatchDownload(init, gpa, &request_context, batch_download),
+        .batch_list => runBatchList(init, gpa, &request_context),
     };
 }
 
@@ -378,7 +381,12 @@ fn resolveApiKey(
     return api.apiKeyFromMap(environ_map);
 }
 
-fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: GenCommand) u8 {
+fn runGen(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+    command: GenCommand,
+) u8 {
     if (command.batch_file) |batch_file| {
         const generate_request_json = api_gen.buildGenerateRequest(
             gpa,
@@ -398,7 +406,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         return runBatchRequest(
             init,
             gpa,
-            api_key,
+            context,
             batch_file,
             command.batch_key,
             generate_request_json,
@@ -406,9 +414,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
     }
 
     var response = api_gen.generateContent(
-        gpa,
-        init.io,
-        api_key,
+        context,
         command.prompt,
         command.output_options,
         command.grounding_options,
@@ -417,7 +423,7 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
         command.generation_options,
         command.request_options,
     ) catch |err| {
-        printApiRequestError(err);
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -445,7 +451,12 @@ fn runGen(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, c
     return exit_success;
 }
 
-fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: EditCommand) u8 {
+fn runEdit(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+    command: EditCommand,
+) u8 {
     const edit_request = api_edit.EditRequest{
         .prompt = command.prompt,
         .output_options = command.output_options,
@@ -471,15 +482,15 @@ fn runEdit(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, 
         return runBatchRequest(
             init,
             gpa,
-            api_key,
+            context,
             batch_file,
             command.batch_key,
             generate_request_json,
         );
     }
 
-    var response = api_edit.generateContent(gpa, init.io, api_key, edit_request) catch |err| {
-        printApiRequestError(err);
+    var response = api_edit.generateContent(context, edit_request) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -519,7 +530,7 @@ const BatchAppendResult = struct {
 fn runBatchRequest(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     batch_file: []const u8,
     batch_key: ?[]const u8,
     generate_request_json: []const u8,
@@ -535,13 +546,11 @@ fn runBatchRequest(
     defer gpa.free(count_tokens_json);
 
     var response = api.postCountTokensJson(
-        gpa,
-        init.io,
-        api_key,
+        context,
         .nano2,
         count_tokens_json,
     ) catch |err| {
-        printApiRequestError(err);
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1100,11 +1109,11 @@ fn warnIfPriorityDowngraded(
     );
 }
 
-fn printApiRequestError(err: anyerror) void {
+fn printApiRequestError(context: *const api.RequestContext, err: anyerror) void {
     if (err == error.Timeout) {
         std.debug.print(
             "error: API request timed out after {d} seconds\n",
-            .{api.http_request_timeout_seconds},
+            .{context.timeout.toSeconds()},
         );
         return;
     }
@@ -1148,7 +1157,7 @@ fn readPromptFromReader(gpa: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
 fn runFilesUpload(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     command: FilesUploadCommand,
 ) u8 {
     const mime = api.ImageMime.fromPath(command.path) orelse {
@@ -1168,12 +1177,12 @@ fn runFilesUpload(
         return exit_usage;
     }
 
-    var response = api_files.uploadFile(gpa, init.io, api_key, .{
+    var response = api_files.uploadFile(context, .{
         .mime = mime,
         .bytes = bytes,
         .display_name = command.display_name,
     }) catch |err| {
-        printApiRequestError(err);
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1206,7 +1215,11 @@ fn runFilesUpload(
     return exit_success;
 }
 
-fn runFilesList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8) u8 {
+fn runFilesList(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+) u8 {
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
@@ -1217,8 +1230,8 @@ fn runFilesList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const
     }
 
     while (true) {
-        var response = api_files.listFilesPage(gpa, init.io, api_key, page_token) catch |err| {
-            printApiRequestError(err);
+        var response = api_files.listFilesPage(context, page_token) catch |err| {
+            printApiRequestError(context, err);
             return exit_failure;
         };
         defer response.deinit(gpa);
@@ -1265,9 +1278,14 @@ fn runFilesList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const
     return exit_success;
 }
 
-fn runFilesGet(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: FilesGetCommand) u8 {
-    var response = api_files.getFile(gpa, init.io, api_key, command.name) catch |err| {
-        printApiRequestError(err);
+fn runFilesGet(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+    command: FilesGetCommand,
+) u8 {
+    var response = api_files.getFile(context, command.name) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1300,9 +1318,14 @@ fn runFilesGet(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const 
     return exit_success;
 }
 
-fn runFilesDelete(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8, command: FilesDeleteCommand) u8 {
-    var response = api_files.deleteFile(gpa, init.io, api_key, command.name) catch |err| {
-        printApiRequestError(err);
+fn runFilesDelete(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+    command: FilesDeleteCommand,
+) u8 {
+    var response = api_files.deleteFile(context, command.name) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1326,7 +1349,7 @@ fn runFilesDelete(init: std.process.Init, gpa: std.mem.Allocator, api_key: []con
 fn runBatchSubmit(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     command: BatchSubmitCommand,
 ) u8 {
     const bytes = std.Io.Dir.cwd().readFileAlloc(
@@ -1368,13 +1391,11 @@ fn runBatchSubmit(
     };
 
     var upload_response = api_batch.uploadInput(
-        gpa,
-        init.io,
-        api_key,
+        context,
         bytes,
         command.display_name,
     ) catch |err| {
-        printApiRequestError(err);
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer upload_response.deinit(gpa);
@@ -1393,7 +1414,7 @@ fn runBatchSubmit(
     };
     defer gpa.free(uploaded_file_name);
 
-    var submit_response = api_batch.submit(gpa, init.io, api_key, .{
+    var submit_response = api_batch.submit(context, .{
         .file_name = uploaded_file_name,
         .display_name = command.display_name,
     }) catch |err| {
@@ -1422,11 +1443,11 @@ fn runBatchSubmit(
 fn runBatchStatus(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     command: BatchStatusCommand,
 ) u8 {
-    var response = api_batch.status(gpa, init.io, api_key, command.name) catch |err| {
-        printApiRequestError(err);
+    var response = api_batch.status(context, command.name) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1445,11 +1466,11 @@ fn runBatchStatus(
 fn runBatchCancel(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     command: BatchCancelCommand,
 ) u8 {
-    var response = api_batch.cancel(gpa, init.io, api_key, command.name) catch |err| {
-        printApiRequestError(err);
+    var response = api_batch.cancel(context, command.name) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer response.deinit(gpa);
@@ -1472,11 +1493,11 @@ fn runBatchCancel(
 fn runBatchDownload(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     command: BatchDownloadCommand,
 ) u8 {
-    var status_response = api_batch.status(gpa, init.io, api_key, command.name) catch |err| {
-        printApiRequestError(err);
+    var status_response = api_batch.status(context, command.name) catch |err| {
+        printApiRequestError(context, err);
         return exit_failure;
     };
     defer status_response.deinit(gpa);
@@ -1513,9 +1534,7 @@ fn runBatchDownload(
     defer download_info.deinit(gpa);
 
     var download_response = api_batch.downloadOutput(
-        gpa,
-        init.io,
-        api_key,
+        context,
         download_info.file_name,
     ) catch |err| {
         if (err == error.ResponseTooLong) {
@@ -1524,7 +1543,7 @@ fn runBatchDownload(
                 .{api_batch.max_output_bytes},
             );
         } else {
-            printApiRequestError(err);
+            printApiRequestError(context, err);
         }
         return exit_failure;
     };
@@ -1646,7 +1665,11 @@ fn batchOutputExistingFileDiagnostic(
     );
 }
 
-fn runBatchList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const u8) u8 {
+fn runBatchList(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+    context: *const api.RequestContext,
+) u8 {
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
@@ -1657,8 +1680,8 @@ fn runBatchList(init: std.process.Init, gpa: std.mem.Allocator, api_key: []const
     }
 
     while (true) {
-        var response = api_batch.listPage(gpa, init.io, api_key, page_token) catch |err| {
-            printApiRequestError(err);
+        var response = api_batch.listPage(context, page_token) catch |err| {
+            printApiRequestError(context, err);
             return exit_failure;
         };
         defer response.deinit(gpa);
@@ -6440,17 +6463,20 @@ test "live API edit request shape is valid" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
-
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
+    const context = api.RequestContext{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .api_key = api_key,
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
     };
-    defer api.traffic_log_options = .{};
 
     const upload_mime = api.ImageMime.fromPath(live_edit_sample_image_path) orelse return error.UnsupportedInputMime;
-    var uploaded_file = try uploadLiveEditSampleImage(gpa, api_key, upload_mime);
+    var uploaded_file = try uploadLiveEditSampleImage(&context, upload_mime);
     defer uploaded_file.deinit(gpa);
-    defer deleteLiveEditSampleImage(gpa, api_key, uploaded_file.name);
+    defer deleteLiveEditSampleImage(&context, uploaded_file.name);
 
     var generation_options = api.GenerationOptions{
         .max_output_tokens = 4096,
@@ -6465,9 +6491,7 @@ test "live API edit request shape is valid" {
     generation_options.appendStopSequence("END");
 
     var response = api_edit.countGenerateContentRequestTokens(
-        gpa,
-        std.testing.io,
-        api_key,
+        &context,
         .{
             .prompt = live_edit_prompt,
             .output_options = .{
@@ -6520,10 +6544,10 @@ test "live API edit request shape is valid" {
 }
 
 fn uploadLiveEditSampleImage(
-    gpa: std.mem.Allocator,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     mime: api.ImageMime,
 ) !api_files.File {
+    const gpa = context.gpa;
     const bytes = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         live_edit_sample_image_path,
@@ -6533,7 +6557,7 @@ fn uploadLiveEditSampleImage(
     defer gpa.free(bytes);
     if (bytes.len == 0) return error.EmptyUploadFile;
 
-    var response = try api_files.uploadFile(gpa, std.testing.io, api_key, .{
+    var response = try api_files.uploadFile(context, .{
         .mime = mime,
         .bytes = bytes,
         .display_name = live_edit_upload_display_name,
@@ -6551,15 +6575,15 @@ fn uploadLiveEditSampleImage(
     return api_files.decodeUploadedFile(gpa, response.body);
 }
 
-fn deleteLiveEditSampleImage(gpa: std.mem.Allocator, api_key: []const u8, name: []const u8) void {
-    var response = api_files.deleteFile(gpa, std.testing.io, api_key, name) catch |err| {
+fn deleteLiveEditSampleImage(context: *const api.RequestContext, name: []const u8) void {
+    var response = api_files.deleteFile(context, name) catch |err| {
         std.debug.print(
             "warning: failed to delete live edit fixture {s}: {s}\n",
             .{ name, @errorName(err) },
         );
         return;
     };
-    defer response.deinit(gpa);
+    defer response.deinit(context.gpa);
 
     if (response.status != .ok) {
         std.debug.print(

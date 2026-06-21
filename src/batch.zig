@@ -171,21 +171,19 @@ fn validateInputByteCount(byte_count: usize) !void {
 
 /// Uploads borrowed batch JSONL bytes through the Gemini Files API.
 ///
-/// - Borrows upload fields for the call; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows upload fields for the call; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, protocol, timeout, or logging errors and creates remote file state.
 pub fn uploadInput(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     bytes: []const u8,
     display_name: []const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(bytes.len > 0);
     assert(bytes.len <= max_input_bytes);
     assert(api.isValidDisplayName(display_name));
 
-    return api.uploadResumableBytes(gpa, io, api_key, .{
+    return api.uploadResumableBytes(context, .{
         .content_type = input_content_type,
         .bytes = bytes,
         .display_name = display_name,
@@ -225,36 +223,32 @@ fn buildSubmitRequestJson(gpa: std.mem.Allocator, request: SubmitRequest) ![]u8 
 
 /// Creates a remote batch from a borrowed uploaded-file request.
 ///
-/// - Borrows request fields; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows request fields; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns serialization, allocation, I/O, HTTP, timeout, or logging errors and creates non-idempotent remote state.
 pub fn submit(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     request: SubmitRequest,
 ) !api.HttpResponse {
-    const request_json = try buildSubmitRequestJson(gpa, request);
-    defer gpa.free(request_json);
+    const request_json = try buildSubmitRequestJson(context.gpa, request);
+    defer context.gpa.free(request_json);
 
     // Batch creation is non-idempotent. This call is intentionally made once.
-    return api.postJson(gpa, io, api_key, submitUrl(), request_json);
+    return api.postJson(context, submitUrl(), request_json);
 }
 
 /// Fetches the status of a canonical batch resource.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn status(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
     assert(isCanonicalBatchName(name));
 
-    const url = try buildStatusUrl(gpa, name);
-    defer gpa.free(url);
-    return api.getJson(gpa, io, api_key, url);
+    const url = try buildStatusUrl(context.gpa, name);
+    defer context.gpa.free(url);
+    return api.getJson(context, url);
 }
 
 /// Decodes completed-batch output metadata into an owned result.
@@ -315,55 +309,49 @@ pub fn decodeDownloadInfo(gpa: std.mem.Allocator, response_json: []const u8) !Do
 
 /// Downloads a canonical batch output file with a fixed response-size bound.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, size-limit, or logging errors and mutates no input or remote state.
 pub fn downloadOutput(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     file_name: []const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(api.isCanonicalFileName(file_name));
 
-    const url = try buildOutputDownloadUrl(gpa, file_name);
-    defer gpa.free(url);
-    return api.getBytesBounded(gpa, io, api_key, url, max_output_bytes);
+    const url = try buildOutputDownloadUrl(context.gpa, file_name);
+    defer context.gpa.free(url);
+    return api.getBytesBounded(context, url, max_output_bytes);
 }
 
 /// Cancels a canonical remote batch.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates remote batch state.
 pub fn cancel(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
     assert(isCanonicalBatchName(name));
 
-    const url = try buildCancelUrl(gpa, name);
-    defer gpa.free(url);
-    return api.postJsonWithoutBody(gpa, io, api_key, url);
+    const url = try buildCancelUrl(context.gpa, name);
+    defer context.gpa.free(url);
+    return api.postJsonWithoutBody(context, url);
 }
 
 /// Fetches one batch-list page using an optional borrowed continuation token.
 ///
-/// - Borrows inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
 pub fn listPage(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     page_token: ?[]const u8,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     if (page_token) |token| assert(token.len > 0);
 
-    const url = try buildListUrl(gpa, page_token);
-    defer gpa.free(url);
-    return api.getJson(gpa, io, api_key, url);
+    const url = try buildListUrl(context.gpa, page_token);
+    defer context.gpa.free(url);
+    return api.getJson(context, url);
 }
 
 /// Reports whether a string is a canonical non-empty batch resource name.
@@ -1204,12 +1192,15 @@ test "live API batch submit status and cancel succeeds" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
-
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
+    const context = api.RequestContext{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .api_key = api_key,
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
     };
-    defer api.traffic_log_options = .{};
 
     const first_request = try buildLiveGenerateRequest(gpa, "Create a simple red circle on a white background.");
     defer gpa.free(first_request);
@@ -1230,7 +1221,7 @@ test "live API batch submit status and cancel succeeds" {
     try validateInputJsonl(input);
 
     const display_name = "nbimg-live-batch.jsonl";
-    var upload_response = try uploadInput(gpa, std.testing.io, api_key, input, display_name);
+    var upload_response = try uploadInput(&context, input, display_name);
     defer upload_response.deinit(gpa);
     if (upload_response.status != .ok) {
         std.debug.print(
@@ -1244,7 +1235,7 @@ test "live API batch submit status and cancel succeeds" {
     defer gpa.free(uploaded_file_name);
 
     // BILLABLE and non-idempotent: this creates exactly one Batch job.
-    var submit_response = try submit(gpa, std.testing.io, api_key, .{
+    var submit_response = try submit(&context, .{
         .file_name = uploaded_file_name,
         .display_name = display_name,
     });
@@ -1262,7 +1253,7 @@ test "live API batch submit status and cancel succeeds" {
     const pretty_submit = try prettyJson(gpa, submit_response.body);
     defer gpa.free(pretty_submit);
 
-    var status_response = try status(gpa, std.testing.io, api_key, batch_name);
+    var status_response = try status(&context, batch_name);
     defer status_response.deinit(gpa);
     if (status_response.status != .ok) {
         std.debug.print(
@@ -1275,7 +1266,7 @@ test "live API batch submit status and cancel succeeds" {
     const pretty_status = try prettyJson(gpa, status_response.body);
     defer gpa.free(pretty_status);
 
-    var cancel_response = try cancel(gpa, std.testing.io, api_key, batch_name);
+    var cancel_response = try cancel(&context, batch_name);
     defer cancel_response.deinit(gpa);
     if (cancel_response.status != .ok) {
         std.debug.print(
@@ -1286,7 +1277,7 @@ test "live API batch submit status and cancel succeeds" {
     }
     try expectEmptyJsonObjectBody(gpa, cancel_response.body);
 
-    var cancelled_status_response = try status(gpa, std.testing.io, api_key, batch_name);
+    var cancelled_status_response = try status(&context, batch_name);
     defer cancelled_status_response.deinit(gpa);
     if (cancelled_status_response.status != .ok) {
         std.debug.print(
@@ -1307,12 +1298,15 @@ test "live API batch list succeeds" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
-
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
+    const context = api.RequestContext{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .api_key = api_key,
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
     };
-    defer api.traffic_log_options = .{};
 
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
@@ -1324,7 +1318,7 @@ test "live API batch list succeeds" {
     }
 
     while (true) {
-        var response = try listPage(gpa, std.testing.io, api_key, page_token);
+        var response = try listPage(&context, page_token);
         defer response.deinit(gpa);
 
         if (page_token) |token| {

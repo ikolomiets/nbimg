@@ -74,10 +74,12 @@ an intermediate state that requires the next item to build or pass tests.
 
 3. **Replace mutable traffic logging state with explicit request context**
 
+   **Status:** Completed.
+
    **Result:** Network behavior no longer depends on
    `api.traffic_log_options`.
 
-   **Proposed changes:**
+   **Completed changes:**
 
    - Introduce an internal request context containing allocator, `std.Io`,
      borrowed API key, positive `std.Io.Duration` timeout, and internal
@@ -97,9 +99,11 @@ an intermediate state that requires the next item to build or pass tests.
    **Compatibility:** Internal signatures change. CLI behavior and wire
    requests do not.
 
-   **Validation:** Add tests proving independent contexts can select different
-   logging and timeout options without shared state. Run offline validation;
-   live tests are unnecessary unless transport behavior changes.
+   **Validation completed:** Added tests proving independent contexts select
+   different logging and timeout options without shared state. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live tests were unnecessary because request fields and
+   wire transport behavior did not change.
 
    **Complete when:** No request behavior reads or mutates process-global
    configuration, and every network timeout comes from an explicit context.
@@ -113,33 +117,55 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Proposed changes:**
 
-   - Add a named `nbimg` module in `build.zig` rooted at `src/root.zig` so
-     package consumers can import the library through the Zig build graph.
-   - Export `Client`, `ClientOptions`, `Outcome(T)`, and `ApiFailure`.
-     `Client` contains allocator, `std.Io`, a borrowed API key, and timeout;
-     public traffic logging is out of scope.
+   - Register the supported library with
+     `b.addModule("nbimg", .{ .root_source_file = b.path("src/root.zig"), ... })`.
+     Supply its required `build_options` import while legacy root exports still
+     reach implementation modules that import it.
+   - Export `Client`, `ClientOptions`, `Outcome(T)`, `ApiFailure`,
+     `GenerationRequest`, `GenerationResult`, `GeneratedImage`,
+     `CountTokensResult`, and the deliberate generation option and enum types.
+   - Define `ClientOptions` with borrowed `api_key: []const u8` and
+     `timeout: std.Io.Duration = .fromSeconds(180)`. Define
+     `Client.init(allocator, io, options) !Client`; `Client` stores those
+     values without allocating or copying the API key. Public traffic logging
+     is out of scope.
    - Have public client methods create a quiet internal request context. Have
      the CLI call the same typed operation core with its logging-enabled
      internal context, without exposing that context through `src/root.zig`.
-   - Reject empty API keys and non-positive timeouts during client
-     initialization. Document that the API key remains caller-owned for the
-     client lifetime.
+   - Have `Client.init` return `error.EmptyApiKey` for an empty key and
+     `error.InvalidTimeout` for a non-positive timeout. Document that the API
+     key remains caller-owned for the client lifetime.
    - Define `Outcome(T)` as `.success: T` or `.api_failure: ApiFailure`.
-     `ApiFailure` owns an HTTP status and response body and provides
+     `ApiFailure` owns `status: std.http.Status` and `body: []u8` and provides
      `deinit(allocator)`. Operation success types that allocate provide their
      own `deinit(allocator)`; `Outcome(T)` has no generic deinitializer.
-   - Bound API-failure bodies by the existing transport response limit. If the
-     body exceeds the bound, return `error.ResponseTooLong` rather than a
-     partial failure body.
+   - Apply the existing transport response limit to every response body. If a
+     success or failure body exceeds the bound, return `error.ResponseTooLong`;
+     never return a partial body. Preserve the complete bounded non-success
+     body in `ApiFailure`.
    - Use Zig errors for allocation, IO, timeout, input validation, oversized
      responses, and successful-response decoding failures. Reserve
      `ApiFailure` for completed non-success HTTP responses.
-   - Introduce public generation request and option types separate from Gemini
-     wire structures. Represent stop sequences as borrowed slices and separate
-     public domain enums from private wire serialization enums.
+   - Define `GenerationRequest` as a borrowed prompt plus public output,
+     grounding, thinking, safety, generation, and request options. Represent
+     stop sequences as `[]const []const u8`, and separate public domain enums
+     from private wire serialization enums.
+   - Export `GenerationValidationError` containing `EmptyPrompt`,
+     `PromptTooLong`, `InvalidMaxOutputTokens`, `InvalidTemperature`,
+     `InvalidTopP`, `InvalidPresencePenalty`, `InvalidFrequencyPenalty`,
+     `LogprobsRequireResponseLogprobs`, `InvalidLogprobs`,
+     `TooManyStopSequences`, `EmptyStopSequence`, `DuplicateStopSequence`,
+     `EmptySystemInstruction`, `SystemInstructionTooLong`, and
+     `InvalidCachedContentName`. Both generation methods return these errors
+     for invalid caller input before network IO.
+   - Define `GeneratedImage` with candidate index, part index, output MIME, and
+     owned bytes. Define `GenerationResult` with owned response ID, owned image
+     slice, and optional reported service tier; both owning types provide
+     allocator-based `deinit`. Define `CountTokensResult` with total tokens and
+     optional cached-content token count.
    - Add `Client.generate` and `Client.countGenerateTokens`. Return owned
-     generated images, response ID, reported service tier, and other metadata
-     required by existing CLI behavior.
+     `Outcome(GenerationResult)` and `Outcome(CountTokensResult)`,
+     respectively.
    - Validate all public inputs with returned errors rather than assertions.
      Keep CLI spelling parsers and output-file naming in `src/cli.zig`.
    - Migrate immediate CLI generation to the same typed operation core without
@@ -147,8 +173,11 @@ an intermediate state that requires the next item to build or pass tests.
      downgrade warning, or exit codes. Batch preparation remains on the
      existing internal path until Item 7.
    - Remove `gen` from the package root after the replacement is in use.
-   - Add package-contract tests and compile-only external-consumer tests using
-     the named `nbimg` module.
+   - Add exact package-root and public-container method allowlists. Add a
+     compile-only consumer root that imports `nbimg` through the build graph,
+     never by importing `src/root.zig` directly. Verify the façade does not
+     expose `RequestContext`, Gemini wire types, raw transport types, or
+     implementation modules beyond the explicitly retained legacy root paths.
    - Add README and implementation-design examples for client initialization,
      generation, token counting, outcome handling, and deinitialization.
 
@@ -156,10 +185,11 @@ an intermediate state that requires the next item to build or pass tests.
    the undocumented `nbimg.gen` path. Existing `api`, `edit`, `files`, and
    `batch` package paths remain temporarily available.
 
-   **Validation:** Cover client initialization, borrowed lifetimes,
-   independent configuration, every generation option, invalid values,
-   success and API-failure ownership, oversized failure bodies, malformed
-   successful responses, reported service tier, and CLI parity. Run the
+   **Validation:** Cover initialization without allocation or API-key copying,
+   independent configuration, every generation option, exact validation
+   errors, success and API-failure ownership, oversized success and failure
+   bodies, malformed successful responses, reported service tier, exact
+   allowlists, external-consumer compilation, and CLI parity. Run the
    non-billable live generation request-validity target if request fields
    change.
 
@@ -178,8 +208,10 @@ an intermediate state that requires the next item to build or pass tests.
 
    - Export deliberate `EditRequest`, `UploadedImage`, `Reference`, and
      `ReferenceRole` types using the public generation option types.
-   - Add `Client.edit` and `Client.countEditTokens`. Batch preparation remains
-     deferred to Item 7.
+   - Add `Client.edit` returning `Outcome(GenerationResult)` and
+     `Client.countEditTokens` returning `Outcome(CountTokensResult)`. Reuse
+     the public generation result and token-count types. Batch preparation
+     remains deferred to Item 7.
    - Return errors for invalid prompts, file names, labels, reference counts,
      role-specific limits, constraints, and option combinations.
    - Keep CLI role-name parsing, Gemini prompt-manifest construction, File URI
@@ -213,9 +245,11 @@ an intermediate state that requires the next item to build or pass tests.
 
    - Export deliberate `FileUpload`, `File`, and `FileListPage` types with
      explicit allocator-based ownership methods.
-   - Add `Client.uploadFile`, `Client.getFile`, `Client.listFilesPage`, and
-     `Client.deleteFile`.
-   - Return typed outcomes and decode successful responses internally.
+   - Add `Client.uploadFile` and `Client.getFile` returning `Outcome(File)`,
+     `Client.listFilesPage` returning `Outcome(FileListPage)`, and
+     `Client.deleteFile` returning `Outcome(void)`.
+   - Decode successful responses internally; successful delete discards the
+     response body after validating the completed response.
    - Validate MIME, display name, resource name, page token, and upload size
      before network IO. Keep path-extension parsing in the CLI.
    - Keep pagination explicit; a convenience iterator remains a separate
@@ -249,8 +283,10 @@ an intermediate state that requires the next item to build or pass tests.
    - Add `Client.prepareGenerationBatchEntry` and
      `Client.prepareEditBatchEntry` for explicit non-empty caller-provided
      keys. Each operation performs count-token validation and returns an owned
-     `PreparedBatchEntry` containing the key, complete JSONL line, and token
-     count.
+     `Outcome(PreparedBatchEntry)` so completed count-token API failures remain
+     distinguishable from Zig errors. `PreparedBatchEntry` contains the owned
+     key, one complete JSONL record without a trailing newline, and token count,
+     and provides `deinit(allocator)`.
    - Keep automatic CLI key generation separate from public preparation.
      Automatic keys depend on the locked file offset and must be generated
      while the destination file is exclusively locked.
@@ -258,10 +294,10 @@ an intermediate state that requires the next item to build or pass tests.
      lock, format the entry with internal helpers, preserve duplicate-key
      detection, and emit the existing receipt without exposing raw request JSON
      publicly.
-   - Expose local Batch-input validation returning a non-owning summary with
-     entry count and byte count. Preserve the existing structural validation:
-     byte, line, entry-size, and entry-count limits without revalidating the
-     semantics of existing request objects.
+   - Expose `validateBatchInput(bytes) !BatchInputSummary`, returning a
+     non-owning summary with entry count and byte count. Preserve the existing
+     structural validation: byte, line, entry-size, and entry-count limits
+     without revalidating the semantics of existing request objects.
    - Document only the entry-size, entry-count, and total-input limits callers
      need for admission. Keep JSON builders and envelope composition internal.
    - Add README and implementation-design examples for explicit-key
@@ -294,11 +330,28 @@ an intermediate state that requires the next item to build or pass tests.
      `Client.downloadBatchOutput`.
    - Keep upload and creation separate so callers retain the uploaded file name
      when non-idempotent creation fails or has an ambiguous transport outcome.
-   - Export typed `BatchOperation`, `BatchListPage`, download metadata, and
-     Batch-output record types with explicit allocator-based ownership.
-   - Represent Batch output as a tagged success or failure result. Preserve
-     owned failure details instead of reducing a failed record to a missing
-     response.
+     Treat every transport error from `Client.createBatch` as ambiguous: do not
+     retry automatically, and document that a remote job may have been created.
+   - Define `BatchState` as a tagged union with `queued`, `pending`, `running`,
+     `succeeded`, `failed`, `cancelling`, `cancelled`, `expired`, and
+     `unknown: []u8`. Normalize equivalent `JOB_STATE_*` and `BATCH_STATE_*`
+     spellings to the known tags; own the original string only for `.unknown`.
+   - Define owned `RemoteError` with optional integer code, required message,
+     and optional compact JSON details. Define owned `BatchOperation` with
+     canonical name, optional display name, `BatchState`, optional request
+     count, optional output file name, and optional `RemoteError`. Define
+     `BatchListPage` as owned operations plus optional continuation token.
+     Define `BatchDownloadInfo` as owned output file name plus optional request
+     count. Every owning type provides `deinit(allocator)`.
+   - Define `BatchOutputRecord` with an owned key and a tagged result:
+     `.success: GenerationResult` or `.failure: RemoteError`. Do not reduce a
+     failed record to a missing response.
+   - Return typed outcomes consistently: uploads return `Outcome(File)`,
+     create/get return `Outcome(BatchOperation)`, cancel returns
+     `Outcome(void)`, listing returns `Outcome(BatchListPage)`, and download
+     returns `Outcome(BatchDownloadResult)`. `BatchDownloadResult` owns
+     `BatchDownloadInfo` and a slice of decoded `BatchOutputRecord` values and
+     provides `deinit(allocator)`.
    - Keep an internal raw-response path for CLI `batch submit`, `status`, and
      `list` presentation so their complete pretty-printed JSON remains
      unchanged. This path is not package-visible.
@@ -314,11 +367,13 @@ an intermediate state that requires the next item to build or pass tests.
    the typed methods cover its supported workflows. CLI commands retain their
    current pretty-printed JSON output.
 
-   **Validation:** Cover pagination, canonical names, status states,
-   cancellation, output bounds, typed success and failure records, malformed
-   records, duplicate keys, ownership, ambiguous creation failure, internal
-   raw-output parity, and CLI behavior. Never run the billable submit/status
-   live target without explicit authorization.
+   **Validation:** Cover pagination, canonical names, both known wire prefixes
+   for every applicable state, unknown-state preservation, bodyless successful
+   cancellation, output bounds, typed success and failure records, preserved
+   failure details, malformed records, duplicate keys, ownership, no automatic
+   retry after ambiguous creation failure, internal raw-output parity, and CLI
+   behavior. Never run the billable submit/status live target without explicit
+   authorization.
 
    **Complete when:** Package consumers require no raw Batch response bodies,
    decoders, iterators, or presentation helpers, while the CLI retains its
@@ -446,10 +501,15 @@ referenced path and command.
   after supported replacements exist.
 - API keys and request input slices remain caller-owned and borrowed for their
   documented lifetimes.
+- `Client.init` stores its API key slice without allocating or copying it and
+  rejects empty keys and non-positive timeouts with the named validation
+  errors.
 - Allocated success values and API-failure bodies use explicit allocator-based
   ownership.
 - Non-success Gemini responses remain available to consumers through typed
   outcomes with HTTP status and a bounded owned body.
+- The transport response bound applies equally to success and non-success
+  bodies; oversized bodies return `error.ResponseTooLong` without truncation.
 - Public client calls are quiet by default. Existing CLI traffic logging uses
   internal request-context configuration and is not a supported library
   interface.
@@ -457,6 +517,12 @@ referenced path and command.
   silently truncated.
 - The supported package is importable through a named `nbimg` build module from
   the first public client increment onward.
+- External-consumer tests import that named module through the build graph and
+  do not bypass the package boundary with direct source-file imports.
+- Batch JSONL prepared-entry values omit the trailing newline; callers or the
+  CLI writer add record separators when persisting multiple entries.
+- Transport failures from non-idempotent Batch creation are always reported as
+  ambiguous and are never retried automatically.
 - CLI behavior remains stable throughout the sequence unless a separate
   user-facing change is explicitly approved.
 - The project remains Zig standard-library-only and retains a flat module

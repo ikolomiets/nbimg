@@ -4,7 +4,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const max_response_bytes = 64 * 1024 * 1024;
-pub const http_request_timeout_seconds: i64 = 180;
+const default_request_timeout = std.Io.Duration.fromSeconds(180);
 pub const api_key_env_name = "GEMINI_API_KEY";
 pub const canonical_file_name_prefix = "files/";
 const canonical_cached_content_name_prefix = "cachedContents/";
@@ -1083,7 +1083,22 @@ pub const TrafficLogOptions = struct {
     print_response: bool = false,
 };
 
-pub var traffic_log_options: TrafficLogOptions = .{};
+/// Supplies explicit dependencies and options for one or more HTTP requests.
+///
+/// - `api_key` remains caller-owned and must outlive every request using the context.
+/// - The value owns no resources and may be shared by concurrent requests.
+pub const RequestContext = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+    timeout: std.Io.Duration = default_request_timeout,
+    traffic_log_options: TrafficLogOptions = .{},
+};
+
+fn assertValidRequestContext(context: *const RequestContext) void {
+    assert(context.api_key.len > 0);
+    assert(context.timeout.nanoseconds > 0);
+}
 
 /// Returns the borrowed Gemini API key stored in an environment map.
 ///
@@ -1109,36 +1124,32 @@ fn countTokensUrl(model: Model) []const u8 {
 
 /// Posts a borrowed JSON body to the selected model's generate-content endpoint.
 ///
-/// - Borrows request inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may update remote service state.
 pub fn postGenerateContentJson(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     model: Model,
     request_json: []const u8,
 ) !HttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(request_json.len > 0);
 
-    return postJson(gpa, io, api_key, generateContentUrl(model), request_json);
+    return postJson(context, generateContentUrl(model), request_json);
 }
 
 /// Posts a borrowed JSON body to the selected model's count-tokens endpoint.
 ///
-/// - Borrows request inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and performs a remote request.
 pub fn postCountTokensJson(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     model: Model,
     request_json: []const u8,
 ) !HttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(request_json.len > 0);
 
-    return postJson(gpa, io, api_key, countTokensUrl(model), request_json);
+    return postJson(context, countTokensUrl(model), request_json);
 }
 
 /// Reports whether a string is a canonical non-empty Files API resource name.
@@ -1943,45 +1954,42 @@ const RequestWithBodyOptions = struct {
 
 /// Uploads borrowed bytes through the Gemini resumable upload protocol.
 ///
-/// - Borrows upload fields for the call; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows upload fields for the call; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, protocol, timeout, or logging errors and creates remote upload state.
 pub fn uploadResumableBytes(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     upload: ResumableUpload,
 ) !HttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(upload.content_type.len > 0);
     assert(upload.bytes.len > 0);
     if (upload.display_name) |display_name| assert(isValidDisplayName(display_name));
 
     var client: std.http.Client = .{
-        .allocator = gpa,
-        .io = io,
+        .allocator = context.gpa,
+        .io = context.io,
     };
     defer client.deinit();
 
-    var start = try startResumableUpload(gpa, &client, api_key, upload);
+    var start = try startResumableUpload(context, &client, upload);
     if (start.response.status != .ok) {
-        if (start.upload_url) |upload_url| gpa.free(upload_url);
+        if (start.upload_url) |upload_url| context.gpa.free(upload_url);
         return start.response;
     }
-    defer start.response.deinit(gpa);
+    defer start.response.deinit(context.gpa);
 
     const upload_url = start.upload_url orelse return error.MissingUploadUrl;
-    defer gpa.free(upload_url);
+    defer context.gpa.free(upload_url);
 
-    return finalizeResumableUpload(gpa, &client, api_key, upload_url, upload);
+    return finalizeResumableUpload(context, &client, upload_url, upload);
 }
 
 fn startResumableUpload(
-    gpa: std.mem.Allocator,
+    context: *const RequestContext,
     client: *std.http.Client,
-    api_key: []const u8,
     upload: ResumableUpload,
 ) !HttpResponseWithUploadUrl {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(upload.content_type.len > 0);
     assert(upload.bytes.len > 0);
     if (upload.display_name) |display_name| assert(isValidDisplayName(display_name));
@@ -1990,18 +1998,18 @@ fn startResumableUpload(
     const content_length = try std.fmt.bufPrint(&content_length_buffer, "{d}", .{upload.bytes.len});
 
     const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "x-goog-api-key", .value = context.api_key },
         .{ .name = "X-Goog-Upload-Protocol", .value = "resumable" },
         .{ .name = "X-Goog-Upload-Command", .value = "start" },
         .{ .name = "X-Goog-Upload-Header-Content-Length", .value = content_length },
         .{ .name = "X-Goog-Upload-Header-Content-Type", .value = upload.content_type },
     };
 
-    const metadata_json = try buildResumableUploadMetadata(gpa, upload.display_name);
-    defer gpa.free(metadata_json);
+    const metadata_json = try buildResumableUploadMetadata(context.gpa, upload.display_name);
+    defer context.gpa.free(metadata_json);
 
     return requestWithBody(
-        gpa,
+        context,
         client,
         .POST,
         fileUploadStartUrl(),
@@ -2016,25 +2024,24 @@ fn startResumableUpload(
 }
 
 fn finalizeResumableUpload(
-    gpa: std.mem.Allocator,
+    context: *const RequestContext,
     client: *std.http.Client,
-    api_key: []const u8,
     upload_url: []const u8,
     upload: ResumableUpload,
 ) !HttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(upload_url.len > 0);
     assert(upload.content_type.len > 0);
     assert(upload.bytes.len > 0);
 
     const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "x-goog-api-key", .value = context.api_key },
         .{ .name = "X-Goog-Upload-Offset", .value = "0" },
         .{ .name = "X-Goog-Upload-Command", .value = "upload, finalize" },
     };
 
     const result = try requestWithBody(
-        gpa,
+        context,
         client,
         .POST,
         upload_url,
@@ -2149,27 +2156,26 @@ fn fileUploadStartUrl() []const u8 {
 
 /// Sends a JSON POST request and returns an owned response body.
 ///
-/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may mutate remote service state.
 pub fn postJson(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     request_json: []const u8,
 ) !HttpResponse {
+    assertValidRequestContext(context);
+
     var timed_response = try runRequestWithTimeout(
-        gpa,
-        io,
-        httpRequestTimeoutDuration(),
+        context.gpa,
+        context.io,
+        context.timeout,
         postJsonRaw,
-        .{ gpa, io, api_key, url, request_json },
+        .{ context, url, request_json },
     );
-    errdefer timed_response.response.deinit(gpa);
+    errdefer timed_response.response.deinit(context.gpa);
 
     try logResponseBody(
-        gpa,
-        io,
+        context,
         timed_response.response_time_seconds,
         timed_response.response.status,
         timed_response.response.body,
@@ -2178,32 +2184,30 @@ pub fn postJson(
 }
 
 fn postJsonRaw(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     request_json: []const u8,
 ) !TimedHttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(url.len > 0);
     assert(request_json.len > 0);
 
     var client: std.http.Client = .{
-        .allocator = gpa,
-        .io = io,
+        .allocator = context.gpa,
+        .io = context.io,
     };
     defer client.deinit();
 
     const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "x-goog-api-key", .value = context.api_key },
     };
 
-    const response_buffer = try gpa.alloc(u8, max_response_bytes);
-    defer gpa.free(response_buffer);
+    const response_buffer = try context.gpa.alloc(u8, max_response_bytes);
+    defer context.gpa.free(response_buffer);
 
-    try logRequest(io, url, .{ .text = request_json });
+    try logRequest(context, url, .{ .text = request_json });
 
-    const started = responseTimerStart(io);
+    const started = responseTimerStart(context.io);
     var response_writer: std.Io.Writer = .fixed(response_buffer);
     const result = try client.fetch(.{
         .location = .{ .url = url },
@@ -2218,11 +2222,11 @@ fn postJsonRaw(
     });
 
     const response_body = response_writer.buffered();
-    const response_time_seconds = roundedResponseTimeSeconds(io, started);
+    const response_time_seconds = roundedResponseTimeSeconds(context.io, started);
     return .{
         .response = .{
             .status = result.status,
-            .body = try gpa.dupe(u8, response_body),
+            .body = try context.gpa.dupe(u8, response_body),
         },
         .response_time_seconds = response_time_seconds,
     };
@@ -2230,43 +2234,39 @@ fn postJsonRaw(
 
 /// Sends a JSON GET request and returns an owned response body.
 ///
-/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and mutates no input or local global state.
 pub fn getJson(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
 ) !HttpResponse {
-    return requestJsonWithoutBody(gpa, io, api_key, url, .GET);
+    return requestJsonWithoutBody(context, url, .GET);
 }
 
 /// Sends a GET request and reads at most the configured number of body bytes.
 ///
-/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, size-limit, or logging errors and mutates no input.
 pub fn getBytesBounded(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     max_body_bytes: usize,
 ) !HttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(url.len > 0);
     assert(max_body_bytes > 0);
 
     var timed_response = try runRequestWithTimeout(
-        gpa,
-        io,
-        httpRequestTimeoutDuration(),
+        context.gpa,
+        context.io,
+        context.timeout,
         getBytesBoundedRaw,
-        .{ gpa, io, api_key, url, max_body_bytes },
+        .{ context, url, max_body_bytes },
     );
-    errdefer timed_response.response.deinit(gpa);
+    errdefer timed_response.response.deinit(context.gpa);
 
     try logResponseBodyOmitted(
-        io,
+        context,
         timed_response.response_time_seconds,
         timed_response.response.status,
         timed_response.response.body.len,
@@ -2275,24 +2275,22 @@ pub fn getBytesBounded(
 }
 
 fn getBytesBoundedRaw(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     max_body_bytes: usize,
 ) !TimedHttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(url.len > 0);
     assert(max_body_bytes > 0);
 
     var client: std.http.Client = .{
-        .allocator = gpa,
-        .io = io,
+        .allocator = context.gpa,
+        .io = context.io,
     };
     defer client.deinit();
 
     const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "x-goog-api-key", .value = context.api_key },
     };
     const uri = try std.Uri.parse(url);
     var request = try client.request(.GET, uri, .{
@@ -2304,9 +2302,9 @@ fn getBytesBoundedRaw(
     });
     defer request.deinit();
 
-    try logRequest(io, url, .empty);
+    try logRequest(context, url, .empty);
 
-    const started = responseTimerStart(io);
+    const started = responseTimerStart(context.io);
     try request.sendBodiless();
 
     var redirect_buffer: [8 * 1024]u8 = undefined;
@@ -2317,7 +2315,7 @@ fn getBytesBoundedRaw(
     var transfer_buffer: [64 * 1024]u8 = undefined;
     const reader = response.reader(&transfer_buffer);
     const body_result = readBoundedBody(
-        gpa,
+        context.gpa,
         reader,
         content_length,
         max_body_bytes,
@@ -2331,55 +2329,50 @@ fn getBytesBoundedRaw(
             .status = status,
             .body = body_result.bytes,
         },
-        .response_time_seconds = roundedResponseTimeSeconds(io, started),
+        .response_time_seconds = roundedResponseTimeSeconds(context.io, started),
     };
 }
 
 /// Sends a bodyless POST request and returns an owned response body.
 ///
-/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may mutate remote service state.
 pub fn postJsonWithoutBody(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
 ) !HttpResponse {
-    return requestJsonWithoutBody(gpa, io, api_key, url, .POST);
+    return requestJsonWithoutBody(context, url, .POST);
 }
 
 /// Sends a DELETE request and returns an owned response body.
 ///
-/// - Borrows request inputs; the returned body is owned by `gpa` and requires `deinit`.
+/// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and mutates remote service state.
 pub fn deleteJson(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
 ) !HttpResponse {
-    return requestJsonWithoutBody(gpa, io, api_key, url, .DELETE);
+    return requestJsonWithoutBody(context, url, .DELETE);
 }
 
 fn requestJsonWithoutBody(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     method: std.http.Method,
 ) !HttpResponse {
+    assertValidRequestContext(context);
+
     var timed_response = try runRequestWithTimeout(
-        gpa,
-        io,
-        httpRequestTimeoutDuration(),
+        context.gpa,
+        context.io,
+        context.timeout,
         requestJsonWithoutBodyRaw,
-        .{ gpa, io, api_key, url, method },
+        .{ context, url, method },
     );
-    errdefer timed_response.response.deinit(gpa);
+    errdefer timed_response.response.deinit(context.gpa);
 
     try logResponseBody(
-        gpa,
-        io,
+        context,
         timed_response.response_time_seconds,
         timed_response.response.status,
         timed_response.response.body,
@@ -2388,31 +2381,29 @@ fn requestJsonWithoutBody(
 }
 
 fn requestJsonWithoutBodyRaw(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const RequestContext,
     url: []const u8,
     method: std.http.Method,
 ) !TimedHttpResponse {
-    assert(api_key.len > 0);
+    assertValidRequestContext(context);
     assert(url.len > 0);
 
     var client: std.http.Client = .{
-        .allocator = gpa,
-        .io = io,
+        .allocator = context.gpa,
+        .io = context.io,
     };
     defer client.deinit();
 
     const headers = [_]std.http.Header{
-        .{ .name = "x-goog-api-key", .value = api_key },
+        .{ .name = "x-goog-api-key", .value = context.api_key },
     };
 
-    const response_buffer = try gpa.alloc(u8, max_response_bytes);
-    defer gpa.free(response_buffer);
+    const response_buffer = try context.gpa.alloc(u8, max_response_bytes);
+    defer context.gpa.free(response_buffer);
 
-    try logRequest(io, url, .empty);
+    try logRequest(context, url, .empty);
 
-    const started = responseTimerStart(io);
+    const started = responseTimerStart(context.io);
     var response_writer: std.Io.Writer = .fixed(response_buffer);
     const result = try client.fetch(.{
         .location = .{ .url = url },
@@ -2426,18 +2417,18 @@ fn requestJsonWithoutBodyRaw(
     });
 
     const response_body = response_writer.buffered();
-    const response_time_seconds = roundedResponseTimeSeconds(io, started);
+    const response_time_seconds = roundedResponseTimeSeconds(context.io, started);
     return .{
         .response = .{
             .status = result.status,
-            .body = try gpa.dupe(u8, response_body),
+            .body = try context.gpa.dupe(u8, response_body),
         },
         .response_time_seconds = response_time_seconds,
     };
 }
 
 fn requestWithBody(
-    gpa: std.mem.Allocator,
+    context: *const RequestContext,
     client: *std.http.Client,
     method: std.http.Method,
     url: []const u8,
@@ -2446,18 +2437,19 @@ fn requestWithBody(
     body: []const u8,
     options: RequestWithBodyOptions,
 ) !HttpResponseWithUploadUrl {
+    assertValidRequestContext(context);
+
     var timed_response = try runRequestWithTimeout(
-        gpa,
-        client.io,
-        httpRequestTimeoutDuration(),
+        context.gpa,
+        context.io,
+        context.timeout,
         requestWithBodyRaw,
-        .{ gpa, client, method, url, content_type, extra_headers, body, options },
+        .{ context, client, method, url, content_type, extra_headers, body, options },
     );
-    errdefer timed_response.response.deinit(gpa);
+    errdefer timed_response.response.deinit(context.gpa);
 
     try logResponseBody(
-        gpa,
-        client.io,
+        context,
         timed_response.response_time_seconds,
         timed_response.response.response.status,
         timed_response.response.response.body,
@@ -2466,7 +2458,7 @@ fn requestWithBody(
 }
 
 fn requestWithBodyRaw(
-    gpa: std.mem.Allocator,
+    context: *const RequestContext,
     client: *std.http.Client,
     method: std.http.Method,
     url: []const u8,
@@ -2475,6 +2467,7 @@ fn requestWithBodyRaw(
     body: []const u8,
     options: RequestWithBodyOptions,
 ) !TimedHttpResponseWithUploadUrl {
+    assertValidRequestContext(context);
     assert(url.len > 0);
     assert(content_type.len > 0);
     assert(body.len > 0);
@@ -2491,9 +2484,9 @@ fn requestWithBodyRaw(
     });
     defer req.deinit();
 
-    try logRequest(client.io, url, options.request_body_log);
+    try logRequest(context, url, options.request_body_log);
 
-    const started = responseTimerStart(client.io);
+    const started = responseTimerStart(context.io);
     req.transfer_encoding = .{ .content_length = body.len };
     var body_writer = try req.sendBodyUnflushed(&.{});
     try body_writer.writer.writeAll(body);
@@ -2504,7 +2497,7 @@ fn requestWithBodyRaw(
     const status = response.head.status;
 
     var upload_url: ?[]u8 = null;
-    errdefer if (upload_url) |url_copy| gpa.free(url_copy);
+    errdefer if (upload_url) |url_copy| context.gpa.free(url_copy);
 
     if (options.capture_upload_url) {
         var header_iterator = response.head.iterateHeaders();
@@ -2512,15 +2505,15 @@ fn requestWithBodyRaw(
             if (!std.ascii.eqlIgnoreCase(header.name, "x-goog-upload-url")) continue;
             const value = std.mem.trim(u8, header.value, " \t");
             if (value.len == 0) return error.MissingUploadUrl;
-            upload_url = try gpa.dupe(u8, value);
+            upload_url = try context.gpa.dupe(u8, value);
             break;
         }
     }
 
-    const response_body = try readHttpBody(gpa, &response);
-    errdefer gpa.free(response_body);
+    const response_body = try readHttpBody(context.gpa, &response);
+    errdefer context.gpa.free(response_body);
 
-    const response_time_seconds = roundedResponseTimeSeconds(client.io, started);
+    const response_time_seconds = roundedResponseTimeSeconds(context.io, started);
     return .{
         .response = .{
             .response = .{
@@ -2552,10 +2545,6 @@ const TimedHttpResponseWithUploadUrl = struct {
         response.* = undefined;
     }
 };
-
-fn httpRequestTimeoutDuration() std.Io.Duration {
-    return .fromSeconds(http_request_timeout_seconds);
-}
 
 fn httpTimeoutTask(io: std.Io, timeout: std.Io.Duration) anyerror!void {
     try std.Io.sleep(io, timeout, .awake);
@@ -2761,20 +2750,20 @@ test "readBoundedBody enforces absent content length incrementally" {
     );
 }
 
-fn logRequest(io: std.Io, url: []const u8, body: RequestBodyLog) !void {
-    if (!traffic_log_options.print_request) return;
+fn logRequest(context: *const RequestContext, url: []const u8, body: RequestBodyLog) !void {
+    if (!context.traffic_log_options.print_request) return;
 
-    try writeStderr(io, "--- nbimg api request ---\nurl: ");
-    try writeStderr(io, url);
-    try writeStderr(io, "\nbody:\n");
+    try writeStderr(context.io, "--- nbimg api request ---\nurl: ");
+    try writeStderr(context.io, url);
+    try writeStderr(context.io, "\nbody:\n");
     switch (body) {
-        .empty => try writeStderr(io, "<none>\n"),
+        .empty => try writeStderr(context.io, "<none>\n"),
         .text => |text| {
-            try writeStderr(io, text);
-            try writeStderr(io, "\n");
+            try writeStderr(context.io, text);
+            try writeStderr(context.io, "\n");
         },
         .binary => |binary| try writeStderrFormat(
-            io,
+            context.io,
             "<binary omitted: {d} bytes; mime: {s}>\n",
             .{ binary.byte_count, binary.mime },
         ),
@@ -2782,45 +2771,44 @@ fn logRequest(io: std.Io, url: []const u8, body: RequestBodyLog) !void {
 }
 
 fn logResponseBody(
-    gpa: std.mem.Allocator,
-    io: std.Io,
+    context: *const RequestContext,
     response_time_seconds: u64,
     status: std.http.Status,
     response_body: []const u8,
 ) !void {
-    if (!traffic_log_options.print_response) return;
+    if (!context.traffic_log_options.print_response) return;
 
     var response_log_header_buffer: [128]u8 = undefined;
-    try writeStderr(io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
+    try writeStderr(context.io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
     if (response_body.len == 0) {
-        try writeStderr(io, "<empty>\n");
+        try writeStderr(context.io, "<empty>\n");
         return;
     }
 
-    const log_body = sanitizeResponseLogBody(gpa, response_body) catch |err| {
+    const log_body = sanitizeResponseLogBody(context.gpa, response_body) catch |err| {
         try writeStderrFormat(
-            io,
+            context.io,
             "<response body omitted: {d} bytes; failed to sanitize JSON: {s}>\n",
             .{ response_body.len, @errorName(err) },
         );
         return;
     };
-    defer gpa.free(log_body);
-    try writeStderr(io, log_body);
-    try writeStderr(io, "\n");
+    defer context.gpa.free(log_body);
+    try writeStderr(context.io, log_body);
+    try writeStderr(context.io, "\n");
 }
 
 fn logResponseBodyOmitted(
-    io: std.Io,
+    context: *const RequestContext,
     response_time_seconds: u64,
     status: std.http.Status,
     body_bytes: usize,
 ) !void {
-    if (!traffic_log_options.print_response) return;
+    if (!context.traffic_log_options.print_response) return;
 
     var response_log_header_buffer: [128]u8 = undefined;
-    try writeStderr(io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
-    try writeStderrFormat(io, "<download body omitted: {d} bytes>\n", .{body_bytes});
+    try writeStderr(context.io, responseLogHeader(&response_log_header_buffer, response_time_seconds, status));
+    try writeStderrFormat(context.io, "<download body omitted: {d} bytes>\n", .{body_bytes});
 }
 
 fn responseLogHeader(
@@ -3132,6 +3120,12 @@ fn cancelServerFuture(io: std.Io, future: anytype) void {
 test "runRequestWithTimeout completes against local HTTP response" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
+    const context = RequestContext{
+        .gpa = gpa,
+        .io = io,
+        .api_key = "test-key",
+        .timeout = .fromSeconds(2),
+    };
 
     var server = try listenLocalHttp(io);
     defer server.deinit(io);
@@ -3145,9 +3139,9 @@ test "runRequestWithTimeout completes against local HTTP response" {
     var response = try runRequestWithTimeout(
         gpa,
         io,
-        .fromSeconds(2),
+        context.timeout,
         postJsonRaw,
-        .{ gpa, io, "test-key", url, "{}" },
+        .{ &context, url, "{}" },
     );
     defer response.deinit(gpa);
 
@@ -3159,6 +3153,11 @@ test "runRequestWithTimeout completes against local HTTP response" {
 test "postJsonWithoutBody sends zero-length POST payload" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
+    const context = RequestContext{
+        .gpa = gpa,
+        .io = io,
+        .api_key = "test-key",
+    };
 
     var server = try listenLocalHttp(io);
     defer server.deinit(io);
@@ -3169,7 +3168,7 @@ test "postJsonWithoutBody sends zero-length POST payload" {
     var url_buffer: [128]u8 = undefined;
     const url = try localHttpUrl(&url_buffer, &server);
 
-    var response = try postJsonWithoutBody(gpa, io, "test-key", url);
+    var response = try postJsonWithoutBody(&context, url);
     defer response.deinit(gpa);
 
     try server_future.await(io);
@@ -3180,6 +3179,12 @@ test "postJsonWithoutBody sends zero-length POST payload" {
 test "runRequestWithTimeout times out against silent local HTTP connection" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
+    const context = RequestContext{
+        .gpa = gpa,
+        .io = io,
+        .api_key = "test-key",
+        .timeout = .fromMilliseconds(100),
+    };
 
     var server = try listenLocalHttp(io);
     defer server.deinit(io);
@@ -3195,11 +3200,36 @@ test "runRequestWithTimeout times out against silent local HTTP connection" {
         runRequestWithTimeout(
             gpa,
             io,
-            .fromSeconds(2),
+            context.timeout,
             postJsonRaw,
-            .{ gpa, io, "test-key", url, "{}" },
+            .{ &context, url, "{}" },
         ),
     );
+}
+
+test "request contexts keep independent timeout and traffic logging options" {
+    const quiet = RequestContext{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .api_key = "quiet-key",
+        .timeout = .fromMilliseconds(100),
+    };
+    const verbose = RequestContext{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .api_key = "verbose-key",
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
+    };
+
+    try std.testing.expectEqual(@as(i64, 100), quiet.timeout.toMilliseconds());
+    try std.testing.expect(!quiet.traffic_log_options.print_request);
+    try std.testing.expect(!quiet.traffic_log_options.print_response);
+    try std.testing.expectEqual(@as(i64, 180), verbose.timeout.toSeconds());
+    try std.testing.expect(verbose.traffic_log_options.print_request);
+    try std.testing.expect(verbose.traffic_log_options.print_response);
 }
 
 test "sanitizeResponseLogBody redacts inlineData data" {

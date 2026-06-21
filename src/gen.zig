@@ -9,12 +9,10 @@ const live_prompt = "My fair lady";
 
 /// Generates images from a borrowed text prompt through the Gemini API.
 ///
-/// - Borrows all inputs; the returned response body is owned by `gpa` and requires `deinit`.
+/// - Borrows all inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
 pub fn generateContent(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
@@ -23,13 +21,13 @@ pub fn generateContent(
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(prompt.len > 0);
     assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const request_json = try buildGenerateRequest(
-        gpa,
+        context.gpa,
         prompt,
         output_options,
         grounding_options,
@@ -38,15 +36,13 @@ pub fn generateContent(
         generation_options,
         request_options,
     );
-    defer gpa.free(request_json);
+    defer context.gpa.free(request_json);
 
-    return api.postGenerateContentJson(gpa, io, api_key, .nano2, request_json);
+    return api.postGenerateContentJson(context, .nano2, request_json);
 }
 
 fn countGenerateContentRequestTokens(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    api_key: []const u8,
+    context: *const api.RequestContext,
     prompt: []const u8,
     output_options: api.ImageOutputOptions,
     grounding_options: api.GroundingOptions,
@@ -55,13 +51,13 @@ fn countGenerateContentRequestTokens(
     generation_options: api.GenerationOptions,
     request_options: api.RequestOptions,
 ) !api.HttpResponse {
-    assert(api_key.len > 0);
+    assert(context.api_key.len > 0);
     assert(prompt.len > 0);
     assert(prompt.len <= api.max_generate_text_part_bytes);
     api.assertValidRequestOptions(request_options);
 
     const request_json = try buildCountTokensRequest(
-        gpa,
+        context.gpa,
         prompt,
         output_options,
         grounding_options,
@@ -70,9 +66,9 @@ fn countGenerateContentRequestTokens(
         generation_options,
         request_options,
     );
-    defer gpa.free(request_json);
+    defer context.gpa.free(request_json);
 
-    return api.postCountTokensJson(gpa, io, api_key, .nano2, request_json);
+    return api.postCountTokensJson(context, .nano2, request_json);
 }
 
 /// Builds an owned Gemini generate-content JSON request for a text prompt.
@@ -343,12 +339,15 @@ test "live API generateContent request shape is valid" {
     var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
     defer environ_map.deinit();
     const api_key = try api.apiKeyFromMap(&environ_map);
-
-    api.traffic_log_options = .{
-        .print_request = true,
-        .print_response = true,
+    const context = api.RequestContext{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .api_key = api_key,
+        .traffic_log_options = .{
+            .print_request = true,
+            .print_response = true,
+        },
     };
-    defer api.traffic_log_options = .{};
 
     var generation_options = api.GenerationOptions{
         .max_output_tokens = 4096,
@@ -363,9 +362,7 @@ test "live API generateContent request shape is valid" {
     generation_options.appendStopSequence("END");
 
     var response = countGenerateContentRequestTokens(
-        gpa,
-        std.testing.io,
-        api_key,
+        &context,
         live_prompt,
         .{
             .aspect_ratio = .r16_9,

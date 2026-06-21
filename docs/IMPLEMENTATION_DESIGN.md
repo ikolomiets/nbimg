@@ -59,8 +59,8 @@ The code is split into eight source files:
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
-  HTTP response ownership, canonical `files/...` name validation, traffic
-  logging options, transport helpers, image MIME parsing and serialization,
+  HTTP response ownership, canonical `files/...` name validation, explicit
+  request contexts, transport helpers, image MIME parsing and serialization,
   Thinking/output/generation/grounding wire helpers, shared generateContent
   request bounds and envelope assembly, generateContent/countTokens JSON posting,
   generic resumable byte uploads, generated response decoding and output
@@ -88,8 +88,8 @@ nbimg.files.*
 nbimg.batch.*
 ```
 
-Shared controls such as `nbimg.api.traffic_log_options` remain directly under
-`nbimg.api`.
+Network operations use an internal `nbimg.api.RequestContext`; pure builders
+and decoders remain independent of transport configuration.
 
 The internal module interfaces are intentionally narrow:
 
@@ -110,9 +110,9 @@ The internal module interfaces are intentionally narrow:
 - `api` exports only shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
   transport, resumable upload support, response decoders, output naming,
-  traffic logging controls, and ownership methods. Wire-only models,
-  serializers, endpoint URL helpers, and lower-level request machinery remain
-  internal.
+  request context and traffic logging options, and ownership methods.
+  Wire-only models, serializers, endpoint URL helpers, and lower-level request
+  machinery remain internal.
 
 The package contract and internal module seams have separate compile-time API
 tests. `src/public_api_test.zig` imports `src/root.zig` and compares its
@@ -186,8 +186,8 @@ generated response decoding, generated file metadata, output naming, safety
 setting helpers, and logging.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
-ownership type, `Model` constants, and global traffic logging switch. Headers
-are not exposed through the logging path, so API keys stay out of diagnostic
+ownership type, `Model` constants, and explicit `RequestContext`. Headers are
+not exposed through the logging path, so API keys stay out of diagnostic
 output.
 
 `build.zig` defines separate executable root modules for installed and
@@ -760,16 +760,17 @@ The full response body is buffered in memory. The current hard limit is:
 
 That limit is represented by `api.max_response_bytes`.
 
-Each Gemini HTTP transaction has a hardcoded 180 second timeout, represented by
-`api.http_request_timeout_seconds`. The timeout covers the network request and
-response body read. If no complete response is available before the deadline,
-transport helpers return `error.Timeout`.
+Each Gemini HTTP transaction receives its timeout from an explicit
+`api.RequestContext`. The context defaults to 180 seconds, and the timeout
+covers the network request and response body read. If no complete response is
+available before the deadline, transport helpers return `error.Timeout`.
 
-`api.traffic_log_options` is a mutable global switch for API traffic logging.
-The CLI enables response logging by default and request logging from
-`--print-request`; API module defaults stay quiet for direct API callers and
-tests. When enabled, the shared JSON transport logs framed request and response
-data to stderr:
+`api.RequestContext` contains the allocator, `std.Io`, borrowed API key,
+positive timeout, and per-context traffic logging options. The CLI constructs
+one context per invocation, enables response logging by default, and enables
+request logging from `--print-request`. Quiet contexts perform no traffic
+logging, and independent contexts do not share configuration. When enabled,
+the shared JSON transport logs framed request and response data to stderr:
 
 ```text
 --- nbimg api request ---
@@ -909,7 +910,7 @@ diagnostics; live validation currently observes HTTP 403 `PERMISSION_DENIED`
 for those cases. The same status is expected for expired uploads that are no
 longer usable as edit references.
 
-Files API traffic logging uses the same global logging switch as `gen`.
+Files API traffic logging uses the same request-context options as `gen`.
 Headers are not logged. JSON request and response bodies are logged to stderr
 with the same response sanitization path. Binary upload bodies are never
 printed; the request log uses an omission marker containing the byte count and
@@ -1374,13 +1375,12 @@ test name before asserting deleting that missing name also returns 403. Request
 logging confirms the upload-start body uses `displayName` and file-resource
 endpoints use `/v1beta/files/{id}`; response logging shows the actual File
 fields and delete response bodies returned by Gemini for the current API
-behavior. Live tests enable `api.traffic_log_options` for request and response
-logging, require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an
-uploaded file in the Gemini Files API until Google expires it if a delete test
-fails before cleanup, intentionally retain Batch input uploads, and can fail
-due to quota or remote API errors. The Batch list target is read-only and
-non-billable. The Batch submit/status target creates one billable
-non-idempotent job.
+behavior. Live tests construct logging-enabled `api.RequestContext` values,
+require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an uploaded
+file in the Gemini Files API until Google expires it if a delete test fails
+before cleanup, intentionally retain Batch input uploads, and can fail due to
+quota or remote API errors. The Batch list target is read-only and non-billable.
+The Batch submit/status target creates one billable non-idempotent job.
 
 ## Known Gaps
 
