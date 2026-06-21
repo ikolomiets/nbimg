@@ -51,6 +51,68 @@ zig-out/bin/nbimg
 Development executions through `zig build run -- <args>` compile and run a
 separate Debug artifact from the build cache.
 
+## Zig Library API
+
+The package registers a supported module named `nbimg`. Its first typed
+workflow counts tokens for an image-generation request without generating
+content:
+
+```zig
+const std = @import("std");
+const nbimg = @import("nbimg");
+
+fn countTokens(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+) !void {
+    const client = try nbimg.Client.init(allocator, io, .{
+        .api_key = api_key,
+    });
+
+    var outcome = try client.countGenerateTokens(.{
+        .prompt = "Create a cinematic product hero image",
+        .output_options = .{
+            .aspect_ratio = .r16_9,
+            .image_size = .k2,
+        },
+        .generation_options = .{
+            .temperature = 0.7,
+            .stop_sequences = &.{"END"},
+        },
+    });
+
+    switch (outcome) {
+        .success => |result| {
+            std.debug.print("total tokens: {d}\n", .{result.total_tokens});
+        },
+        .api_failure => |*failure| {
+            defer failure.deinit(allocator);
+            std.debug.print(
+                "Gemini returned HTTP {d}: {s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+        },
+    }
+}
+```
+
+`Client` borrows the API key and does not allocate during initialization. The
+key must remain valid for the client lifetime. The default request timeout is
+180 seconds and can be replaced through `ClientOptions.timeout`. Public client
+requests are quiet: CLI request and response traffic logging is not part of
+the library contract.
+
+Invalid `GenerationRequest` values return `GenerationValidationError` before
+network IO. Transport, allocation, timeout, oversized-response, and malformed
+successful-response failures are Zig errors. A completed non-success HTTP
+response is returned as `.api_failure`; its complete bounded body is owned and
+must be released with `ApiFailure.deinit`.
+
+The existing `api`, `gen`, `edit`, `files`, and `batch` package paths remain
+available temporarily for compatibility. They are implementation-oriented
+legacy APIs rather than the supported typed client contract.
+
 ## Usage
 
 The CLI accepts these command forms:

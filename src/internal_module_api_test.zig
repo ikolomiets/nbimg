@@ -2,6 +2,7 @@ const std = @import("std");
 
 const api = @import("api.zig");
 const batch = @import("batch.zig");
+const client = @import("client.zig");
 const cli = @import("cli.zig");
 const edit = @import("edit.zig");
 const files = @import("files.zig");
@@ -56,6 +57,26 @@ comptime {
 
     assertExactPublicDecls("cli", cli, &.{
         "run",
+    });
+    assertExactPublicDecls("client", client, &.{
+        "ApiFailure",
+        "Client",
+        "ClientOptions",
+        "CountTokensResult",
+        "GenerationOptions",
+        "GenerationRequest",
+        "GenerationValidationError",
+        "GroundingOptions",
+        "HarmBlockThreshold",
+        "ImageAspectRatio",
+        "ImageOutputOptions",
+        "ImageSize",
+        "Outcome",
+        "RequestOptions",
+        "SafetyOptions",
+        "ServiceTier",
+        "ThinkingLevel",
+        "ThinkingOptions",
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
@@ -236,6 +257,29 @@ comptime {
     assertExactPublicDecls("api.ResumableUpload", api.ResumableUpload, &.{});
     assertExactPublicDecls("api.RequestContext", api.RequestContext, &.{});
     assertExactPublicDecls("api.TrafficLogOptions", api.TrafficLogOptions, &.{});
+
+    assertExactPublicDecls("client.ApiFailure", client.ApiFailure, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.Client", client.Client, &.{
+        "countGenerateTokens",
+        "init",
+    });
+    assertExactPublicDecls("client.ClientOptions", client.ClientOptions, &.{});
+    assertExactPublicDecls("client.CountTokensResult", client.CountTokensResult, &.{});
+    assertExactPublicDecls("client.GenerationOptions", client.GenerationOptions, &.{});
+    assertExactPublicDecls("client.GenerationRequest", client.GenerationRequest, &.{});
+    assertExactPublicDecls("client.GroundingOptions", client.GroundingOptions, &.{});
+    assertExactPublicDecls("client.HarmBlockThreshold", client.HarmBlockThreshold, &.{});
+    assertExactPublicDecls("client.ImageAspectRatio", client.ImageAspectRatio, &.{});
+    assertExactPublicDecls("client.ImageOutputOptions", client.ImageOutputOptions, &.{});
+    assertExactPublicDecls("client.ImageSize", client.ImageSize, &.{});
+    assertExactPublicDecls("client.Outcome(CountTokensResult)", client.Outcome(client.CountTokensResult), &.{});
+    assertExactPublicDecls("client.RequestOptions", client.RequestOptions, &.{});
+    assertExactPublicDecls("client.SafetyOptions", client.SafetyOptions, &.{});
+    assertExactPublicDecls("client.ServiceTier", client.ServiceTier, &.{});
+    assertExactPublicDecls("client.ThinkingLevel", client.ThinkingLevel, &.{});
+    assertExactPublicDecls("client.ThinkingOptions", client.ThinkingOptions, &.{});
 
     assertExactPublicDecls("edit.ReferenceRole", edit.ReferenceRole, &.{
         "fromName",

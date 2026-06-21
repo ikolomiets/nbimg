@@ -47,13 +47,56 @@ fn containsDeclaration(
 }
 
 comptime {
+    @setEvalBranchQuota(100_000);
+
     assertExactPublicDecls("root", root, &.{
+        "ApiFailure",
+        "Client",
+        "ClientOptions",
+        "CountTokensResult",
+        "GenerationOptions",
+        "GenerationRequest",
+        "GenerationValidationError",
+        "GroundingOptions",
+        "HarmBlockThreshold",
+        "ImageAspectRatio",
+        "ImageOutputOptions",
+        "ImageSize",
+        "Outcome",
+        "RequestOptions",
+        "SafetyOptions",
+        "ServiceTier",
+        "ThinkingLevel",
+        "ThinkingOptions",
         "api",
         "batch",
         "edit",
         "files",
         "gen",
     });
+
+    assertExactPublicDecls("root.ApiFailure", root.ApiFailure, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.Client", root.Client, &.{
+        "countGenerateTokens",
+        "init",
+    });
+    assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
+    assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
+    assertExactPublicDecls("root.GenerationOptions", root.GenerationOptions, &.{});
+    assertExactPublicDecls("root.GenerationRequest", root.GenerationRequest, &.{});
+    assertExactPublicDecls("root.GroundingOptions", root.GroundingOptions, &.{});
+    assertExactPublicDecls("root.HarmBlockThreshold", root.HarmBlockThreshold, &.{});
+    assertExactPublicDecls("root.ImageAspectRatio", root.ImageAspectRatio, &.{});
+    assertExactPublicDecls("root.ImageOutputOptions", root.ImageOutputOptions, &.{});
+    assertExactPublicDecls("root.ImageSize", root.ImageSize, &.{});
+    assertExactPublicDecls("root.Outcome(CountTokensResult)", root.Outcome(root.CountTokensResult), &.{});
+    assertExactPublicDecls("root.RequestOptions", root.RequestOptions, &.{});
+    assertExactPublicDecls("root.SafetyOptions", root.SafetyOptions, &.{});
+    assertExactPublicDecls("root.ServiceTier", root.ServiceTier, &.{});
+    assertExactPublicDecls("root.ThinkingLevel", root.ThinkingLevel, &.{});
+    assertExactPublicDecls("root.ThinkingOptions", root.ThinkingOptions, &.{});
 }
 
 test "package API matches exact allowlist" {}

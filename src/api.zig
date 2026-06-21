@@ -1140,7 +1140,7 @@ pub fn postGenerateContentJson(
 /// Posts a borrowed JSON body to the selected model's count-tokens endpoint.
 ///
 /// - Borrows request inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and performs a remote request.
+/// - Returns allocation, I/O, HTTP-client, timeout, response-size, or logging errors and performs a remote request.
 pub fn postCountTokensJson(
     context: *const RequestContext,
     model: Model,
@@ -2157,7 +2157,7 @@ fn fileUploadStartUrl() []const u8 {
 /// Sends a JSON POST request and returns an owned response body.
 ///
 /// - Borrows request inputs; the returned body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP-client, timeout, or logging errors and may mutate remote service state.
+/// - Returns allocation, I/O, HTTP-client, timeout, response-size, or logging errors and may mutate remote service state.
 pub fn postJson(
     context: *const RequestContext,
     url: []const u8,
@@ -2188,9 +2188,19 @@ fn postJsonRaw(
     url: []const u8,
     request_json: []const u8,
 ) !TimedHttpResponse {
+    return postJsonRawBounded(context, url, request_json, max_response_bytes);
+}
+
+fn postJsonRawBounded(
+    context: *const RequestContext,
+    url: []const u8,
+    request_json: []const u8,
+    max_body_bytes: usize,
+) !TimedHttpResponse {
     assertValidRequestContext(context);
     assert(url.len > 0);
     assert(request_json.len > 0);
+    assert(max_body_bytes > 0);
 
     var client: std.http.Client = .{
         .allocator = context.gpa,
@@ -2202,14 +2212,14 @@ fn postJsonRaw(
         .{ .name = "x-goog-api-key", .value = context.api_key },
     };
 
-    const response_buffer = try context.gpa.alloc(u8, max_response_bytes);
+    const response_buffer = try context.gpa.alloc(u8, max_body_bytes);
     defer context.gpa.free(response_buffer);
 
     try logRequest(context, url, .{ .text = request_json });
 
     const started = responseTimerStart(context.io);
     var response_writer: std.Io.Writer = .fixed(response_buffer);
-    const result = try client.fetch(.{
+    const result = client.fetch(.{
         .location = .{ .url = url },
         .method = .POST,
         .payload = request_json,
@@ -2219,7 +2229,15 @@ fn postJsonRaw(
         },
         .extra_headers = &headers,
         .response_writer = &response_writer,
-    });
+    }) catch |err| switch (err) {
+        error.WriteFailed => {
+            if (response_writer.end == response_writer.buffer.len) {
+                return error.ResponseTooLong;
+            }
+            return err;
+        },
+        else => |e| return e,
+    };
 
     const response_body = response_writer.buffered();
     const response_time_seconds = roundedResponseTimeSeconds(context.io, started);
@@ -3103,6 +3121,29 @@ fn acceptAndWriteHttpResponse(io: std.Io, server: *std.Io.net.Server) !void {
     try writer.interface.flush();
 }
 
+const TestHttpResponse = struct {
+    status: u16,
+    reason: []const u8,
+    body: []const u8,
+};
+
+fn acceptAndWriteConfiguredHttpResponse(
+    io: std.Io,
+    server: *std.Io.net.Server,
+    response: TestHttpResponse,
+) !void {
+    var stream = try server.accept(io);
+    defer stream.close(io);
+
+    var write_buffer: [256]u8 = undefined;
+    var writer = stream.writer(io, &write_buffer);
+    try writer.interface.print(
+        "HTTP/1.1 {d} {s}\r\ncontent-length: {d}\r\nconnection: close\r\n\r\n{s}",
+        .{ response.status, response.reason, response.body.len, response.body },
+    );
+    try writer.interface.flush();
+}
+
 fn acceptAndStaySilent(io: std.Io, server: *std.Io.net.Server) !void {
     var stream = try server.accept(io);
     defer stream.close(io);
@@ -3148,6 +3189,41 @@ test "runRequestWithTimeout completes against local HTTP response" {
     try server_future.await(io);
     try std.testing.expectEqual(std.http.Status.ok, response.response.status);
     try std.testing.expectEqualStrings("{}", response.response.body);
+}
+
+test "postJsonRawBounded rejects oversized success and failure bodies" {
+    const cases = [_]TestHttpResponse{
+        .{ .status = 200, .reason = "OK", .body = "123456789" },
+        .{ .status = 400, .reason = "Bad Request", .body = "123456789" },
+    };
+
+    for (cases) |test_response| {
+        const gpa = std.testing.allocator;
+        const io = std.testing.io;
+        const context = RequestContext{
+            .gpa = gpa,
+            .io = io,
+            .api_key = "test-key",
+        };
+
+        var server = try listenLocalHttp(io);
+        defer server.deinit(io);
+
+        var server_future = try io.concurrent(
+            acceptAndWriteConfiguredHttpResponse,
+            .{ io, &server, test_response },
+        );
+        defer cancelServerFuture(io, &server_future);
+
+        var url_buffer: [128]u8 = undefined;
+        const url = try localHttpUrl(&url_buffer, &server);
+
+        try std.testing.expectError(
+            error.ResponseTooLong,
+            postJsonRawBounded(&context, url, "{}", 8),
+        );
+        try server_future.await(io);
+    }
 }
 
 test "postJsonWithoutBody sends zero-length POST payload" {

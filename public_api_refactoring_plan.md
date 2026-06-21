@@ -108,30 +108,32 @@ an intermediate state that requires the next item to build or pass tests.
    **Complete when:** No request behavior reads or mutates process-global
    configuration, and every network timeout comes from an explicit context.
 
-4. **Introduce the public client with typed generation operations**
+4. **Introduce the public client with typed generation token counting**
 
    **Depends on:** Item 3.
 
-   **Result:** Deliver the first complete supported library workflow rather
-   than exporting an unused client foundation.
+   **Status:** Completed.
 
-   **Proposed changes:**
+   **Result:** Deliver the first complete supported library workflow through
+   non-generating token counting, rather than exporting an unused client
+   foundation.
+
+   **Completed changes:**
 
    - Register the supported library with
      `b.addModule("nbimg", .{ .root_source_file = b.path("src/root.zig"), ... })`.
      Supply its required `build_options` import while legacy root exports still
      reach implementation modules that import it.
    - Export `Client`, `ClientOptions`, `Outcome(T)`, `ApiFailure`,
-     `GenerationRequest`, `GenerationResult`, `GeneratedImage`,
-     `CountTokensResult`, and the deliberate generation option and enum types.
+     `GenerationRequest`, `GenerationValidationError`, `CountTokensResult`,
+     and the deliberate generation option and enum types.
    - Define `ClientOptions` with borrowed `api_key: []const u8` and
      `timeout: std.Io.Duration = .fromSeconds(180)`. Define
      `Client.init(allocator, io, options) !Client`; `Client` stores those
      values without allocating or copying the API key. Public traffic logging
      is out of scope.
-   - Have public client methods create a quiet internal request context. Have
-     the CLI call the same typed operation core with its logging-enabled
-     internal context, without exposing that context through `src/root.zig`.
+   - Have public client methods create a quiet internal request context without
+     exposing that context through `src/root.zig`.
    - Have `Client.init` return `error.EmptyApiKey` for an empty key and
      `error.InvalidTimeout` for a non-positive timeout. Document that the API
      key remains caller-owned for the client lifetime.
@@ -156,50 +158,135 @@ an intermediate state that requires the next item to build or pass tests.
      `LogprobsRequireResponseLogprobs`, `InvalidLogprobs`,
      `TooManyStopSequences`, `EmptyStopSequence`, `DuplicateStopSequence`,
      `EmptySystemInstruction`, `SystemInstructionTooLong`, and
-     `InvalidCachedContentName`. Both generation methods return these errors
-     for invalid caller input before network IO.
-   - Define `GeneratedImage` with candidate index, part index, output MIME, and
-     owned bytes. Define `GenerationResult` with owned response ID, owned image
-     slice, and optional reported service tier; both owning types provide
-     allocator-based `deinit`. Define `CountTokensResult` with total tokens and
-     optional cached-content token count.
-   - Add `Client.generate` and `Client.countGenerateTokens`. Return owned
-     `Outcome(GenerationResult)` and `Outcome(CountTokensResult)`,
-     respectively.
+     `InvalidCachedContentName`, plus `RequestTooLong` for the existing 5 MiB
+     aggregate variable-field bound. Token counting returns these errors for
+     invalid caller input before network IO.
+   - Define `CountTokensResult` with total tokens and optional cached-content
+     token count.
+   - Add `Client.countGenerateTokens`, returning
+     `Outcome(CountTokensResult)`.
    - Validate all public inputs with returned errors rather than assertions.
-     Keep CLI spelling parsers and output-file naming in `src/cli.zig`.
-   - Migrate immediate CLI generation to the same typed operation core without
-     changing output files, diagnostics, traffic logging, the priority-tier
-     downgrade warning, or exit codes. Batch preparation remains on the
-     existing internal path until Item 7.
-   - Remove `gen` from the package root after the replacement is in use.
+     Keep CLI spelling parsers in `src/cli.zig`.
+   - Keep the current immediate generation and Batch preparation paths
+     unchanged. This increment adds the public operation without migrating CLI
+     orchestration.
    - Add exact package-root and public-container method allowlists. Add a
      compile-only consumer root that imports `nbimg` through the build graph,
      never by importing `src/root.zig` directly. Verify the façade does not
      expose `RequestContext`, Gemini wire types, raw transport types, or
      implementation modules beyond the explicitly retained legacy root paths.
    - Add README and implementation-design examples for client initialization,
-     generation, token counting, outcome handling, and deinitialization.
+     token counting, outcome handling, and API-failure deinitialization.
 
-   **Compatibility:** This adds the first supported client API and may remove
-   the undocumented `nbimg.gen` path. Existing `api`, `edit`, `files`, and
-   `batch` package paths remain temporarily available.
+   **Compatibility:** This adds the first supported client API. Existing
+   `api`, `gen`, `edit`, `files`, and `batch` package paths remain temporarily
+   available.
 
-   **Validation:** Cover initialization without allocation or API-key copying,
-   independent configuration, every generation option, exact validation
-   errors, success and API-failure ownership, oversized success and failure
-   bodies, malformed successful responses, reported service tier, exact
-   allowlists, external-consumer compilation, and CLI parity. Run the
-   non-billable live generation request-validity target if request fields
-   change.
+   **Validation completed:** Covered initialization without allocation or
+   API-key copying, independent configuration, generation-option conversion,
+   exact validation errors, token-count success and API-failure ownership,
+   oversized success and failure bodies, malformed successful responses, exact
+   allowlists, and external-consumer compilation. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live validation was unnecessary because the public
+   request types convert into the unchanged existing Gemini wire shape.
 
-   **Complete when:** A dependency consumer can import `nbimg`, generate
-   images, and count generation tokens without raw JSON, `HttpResponse`, or
-   implementation modules.
+   **Complete when:** A dependency consumer can import `nbimg` and count
+   generation tokens without raw JSON, `HttpResponse`, or implementation
+   modules.
 
-5. **Add typed edit operations**
+5. **Add typed image generation**
 
    **Depends on:** Item 4.
+
+   **Result:** Consumers can generate images through the public client and
+   receive owned domain results instead of raw HTTP responses.
+
+   **Proposed changes:**
+
+   - Export `GenerationResult`, `GeneratedImage`, and the public output MIME
+     enum. `GeneratedImage` contains candidate index, part index, output MIME,
+     and owned bytes. `GenerationResult` contains an owned response ID, owned
+     image slice, and optional reported service tier.
+   - Provide allocator-based `deinit` methods on both owning types.
+   - Add `Client.generate`, returning `Outcome(GenerationResult)` and reusing
+     the request validation and domain-to-wire conversion introduced by Item
+     4.
+   - Decode successful responses internally, including the optional reported
+     service tier. Return successful-response JSON, base64, missing-field,
+     unsupported-part, and unsupported-MIME failures as Zig errors.
+   - Preserve complete bounded non-success response bodies in `ApiFailure`.
+     Keep response classification and decoding available through internal pure
+     helpers so success, failure, malformed, and ownership paths are testable
+     without live network calls.
+   - Keep immediate CLI generation and Batch preparation on their existing
+     internal paths. This increment adds the supported generation workflow
+     without changing CLI diagnostics or output handling.
+   - Extend exact package and public-container allowlists, the compile-only
+     external consumer, README examples, and implementation ownership
+     documentation for generation and deinitialization.
+
+   **Compatibility:** Additive. Existing package module paths and CLI behavior
+   remain unchanged.
+
+   **Validation:** Cover generated-image ownership and cleanup after partial
+   decode failures, response IDs, candidate and part indexes, supported and
+   unsupported MIME types, thought/text part handling, reported service tier,
+   API failures, oversized bodies, malformed successful responses, exact
+   allowlists, and external-consumer compilation. Run the non-billable live
+   generation request-validity target only if request fields change.
+
+   **Complete when:** A dependency consumer can generate images and count
+   generation tokens through `Client` without raw JSON, `HttpResponse`, or
+   implementation modules.
+
+6. **Migrate immediate CLI generation to the typed core**
+
+   **Depends on:** Item 5.
+
+   **Result:** The immediate `nbimg gen` path and public client share one typed
+   operation core, allowing the legacy package-level `gen` export to be
+   removed.
+
+   **Proposed changes:**
+
+   - Add an internal typed generation entry point that accepts an explicit
+     request context. Public client methods use a quiet context; the CLI uses
+     its existing logging-enabled context.
+   - Migrate only immediate CLI generation to the typed operation core.
+     Preserve output files, exclusive writes, diagnostics, traffic logging,
+     timeout reporting, the priority-tier downgrade warning, and exit codes.
+   - Keep Batch-file generation on the existing raw request-building path
+     until Item 9.
+   - Move generated-output filename formatting into `src/cli.zig`; filename
+     policy remains a CLI concern rather than a public result method.
+   - Remove `gen` from `src/root.zig` and the package allowlist after immediate
+     generation no longer relies on the legacy package path. Keep the
+     cross-file declarations needed by CLI Batch preparation in the internal
+     module allowlist.
+   - Update README and implementation-design architecture text to distinguish
+     the supported typed generation API from the temporary internal Batch
+     preparation seam.
+
+   **Compatibility:** Removes the undocumented `nbimg.gen` package path. CLI
+   commands, output naming, diagnostics, traffic logging, and exit codes remain
+   unchanged. Existing `api`, `edit`, `files`, and `batch` paths remain
+   temporarily available.
+
+   **Validation:** Add CLI parity tests for typed success, API failure,
+   malformed success, priority-tier downgrade, file writing, timeout
+   diagnostics, and exit-code mapping. Run exact package/internal allowlists,
+   the external-consumer compile test, all offline validation, and the
+   ReleaseSafe build. Live validation is unnecessary unless request fields or
+   transport behavior change.
+
+   **Complete when:** Immediate CLI generation and `Client.generate` share the
+   typed operation core, Batch preparation still works, and `nbimg.gen` is no
+   longer package-accessible.
+
+7. **Add typed edit operations**
+
+   **Depends on:** Item 5.
 
    **Result:** Consumers can construct and submit edit requests through domain
    types rather than implementation modules.
@@ -211,7 +298,7 @@ an intermediate state that requires the next item to build or pass tests.
    - Add `Client.edit` returning `Outcome(GenerationResult)` and
      `Client.countEditTokens` returning `Outcome(CountTokensResult)`. Reuse
      the public generation result and token-count types. Batch preparation
-     remains deferred to Item 7.
+     remains deferred to Item 9.
    - Return errors for invalid prompts, file names, labels, reference counts,
      role-specific limits, constraints, and option combinations.
    - Keep CLI role-name parsing, Gemini prompt-manifest construction, File URI
@@ -234,7 +321,7 @@ an intermediate state that requires the next item to build or pass tests.
    **Complete when:** Edit consumers and the immediate CLI edit path require no
    internal builders, validators, serializers, or transport responses.
 
-6. **Add typed Files operations**
+8. **Add typed Files operations**
 
    **Depends on:** Item 4.
 
@@ -270,9 +357,9 @@ an intermediate state that requires the next item to build or pass tests.
    **Complete when:** Files consumers and CLI commands require no public
    response decoders or resumable-upload mechanics.
 
-7. **Introduce deliberate Batch-input preparation**
+9. **Introduce deliberate Batch-input preparation**
 
-   **Depends on:** Items 4 and 5.
+   **Depends on:** Items 5 and 7.
 
    **Result:** Generation and edit requests can be validated and written as
    Batch JSONL without exposing generate-content JSON or count-token
@@ -303,8 +390,8 @@ an intermediate state that requires the next item to build or pass tests.
    - Add README and implementation-design examples for explicit-key
      preparation, ownership, validation summaries, and writing JSONL lines.
 
-   **Compatibility:** Additive until the old Batch helpers are removed by Item
-   8. CLI Batch-file output, generated keys, locking, and receipts remain
+   **Compatibility:** Additive until the old Batch helpers are removed by
+   Item 10. CLI Batch-file output, generated keys, locking, and receipts remain
    unchanged.
 
    **Validation:** Test explicit-key ownership, count-token API failures,
@@ -316,9 +403,9 @@ an intermediate state that requires the next item to build or pass tests.
    CLI automatic keys are still derived atomically from the locked file
    offset.
 
-8. **Add typed remote Batch operations**
+10. **Add typed remote Batch operations**
 
-   **Depends on:** Items 4, 6, and 7.
+   **Depends on:** Items 4, 8, and 9.
 
    **Result:** Consumers can manage remote Batch jobs without raw HTTP
    responses or public response decoders.
@@ -379,9 +466,9 @@ an intermediate state that requires the next item to build or pass tests.
    decoders, iterators, or presentation helpers, while the CLI retains its
    current raw JSON presentation through internal-only mechanics.
 
-9. **Remove the legacy shared API namespace**
+11. **Remove the legacy shared API namespace**
 
-   **Depends on:** Items 4 through 8.
+   **Depends on:** Items 4 through 10.
 
    **Result:** `api.zig` remains an internal shared implementation module and
    is no longer part of the package contract.
@@ -408,9 +495,9 @@ an intermediate state that requires the next item to build or pass tests.
    **Complete when:** No package-visible declaration exposes transport or
    Gemini wire implementation details.
 
-10. **Audit public invariants and reduce internal seams**
+12. **Audit public invariants and reduce internal seams**
 
-    **Depends on:** Item 9.
+    **Depends on:** Item 11.
 
     **Result:** Confirm the incrementally hardened public API and minimize
     remaining internal visibility.
@@ -419,7 +506,7 @@ an intermediate state that requires the next item to build or pass tests.
 
     - Audit that every public operation returns validation errors rather than
       asserting on caller input. Do not defer known public invariant work from
-      Items 4 through 8 to this item.
+      Items 4 through 10 to this item.
     - Retain assertions only for internal programmer errors and paired
       trust-boundary invariants.
     - Verify that public domain enums expose no wire serialization or CLI
@@ -439,9 +526,9 @@ an intermediate state that requires the next item to build or pass tests.
     **Complete when:** Every package declaration has a documented consumer use
     case and every remaining internal `pub` has a current cross-file caller.
 
-11. **Finalize and document the stable package contract**
+13. **Finalize and document the stable package contract**
 
-    **Depends on:** Items 1 through 10.
+    **Depends on:** Items 1 through 12.
 
     **Result:** Declare the already usable client API stable and ensure all
     documentation and examples match it.
@@ -451,7 +538,7 @@ an intermediate state that requires the next item to build or pass tests.
     - Reduce the package allowlist to the exact `Client`, configuration,
       outcome, request/result, enum, ownership, and documented-limit
       declarations.
-    - Consolidate the incremental README examples added with Items 4 through 8
+    - Consolidate the incremental README examples added with Items 4 through 10
       into complete client initialization, ownership, API-failure handling,
       generation, edit, Files, Batch preparation, and remote Batch workflows.
     - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal

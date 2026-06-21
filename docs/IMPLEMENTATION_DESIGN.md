@@ -49,12 +49,17 @@ Batch streaming uploads.
 
 ## Module Layout
 
-The code is split into eight source files:
+The code is split into nine source files:
 
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
-- `src/root.zig` exposes the package modules as `api`, `batch`, `gen`, `edit`,
-  and `files`. CLI implementation declarations are not package-accessible.
+- `src/root.zig` exposes the supported typed client declarations and retains
+  the legacy package modules as `api`, `batch`, `gen`, `edit`, and `files`.
+  CLI implementation declarations are not package-accessible.
+- `src/client.zig` owns the supported public client, generation request and
+  option domain types, returned validation errors, outcome classification,
+  API-failure ownership, and conversion into the existing generation wire
+  path.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -79,7 +84,38 @@ The code is split into eight source files:
   construction, upload/list/get response decoding, and
   Files API endpoint handling.
 
-The package API namespace is currently split by command domain:
+The supported package API is a typed client:
+
+```zig
+const client = try nbimg.Client.init(allocator, io, .{
+    .api_key = api_key,
+});
+const outcome = try client.countGenerateTokens(.{
+    .prompt = "Create a cinematic product image",
+});
+```
+
+`Client.init` borrows the API key and stores the allocator, `std.Io`, and a
+positive timeout without allocating. The default timeout is 180 seconds.
+Client operations create a quiet internal `api.RequestContext`; traffic
+logging remains CLI-only.
+
+`GenerationRequest` borrows the prompt, optional request strings, and stop
+sequences. Public enums and option structs are separate from the legacy
+`api.zig` wire types and expose no CLI spelling parsers, JSON serializers, or
+wire helper methods. Validation returns `GenerationValidationError` before
+allocation or network IO. It covers prompt/request bounds, generation numeric
+ranges and dependencies, stop-sequence invariants, cached-content names, and
+the shared 5 MiB aggregate variable-field bound.
+
+`Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Completed
+non-2xx responses become `ApiFailure` values containing the status and complete
+owned bounded body. Callers release that body with `ApiFailure.deinit`.
+Allocation, transport, timeout, oversized body, validation, and malformed
+successful-response failures remain Zig errors. Public client response traffic
+is not logged.
+
+The previous command-domain namespace remains temporarily available:
 
 ```zig
 nbimg.gen.*
@@ -94,6 +130,8 @@ and decoders remain independent of transport configuration.
 The internal module interfaces are intentionally narrow:
 
 - `cli` exports only `run` for executable assembly.
+- `client` exports only the deliberate supported client declarations and their
+  ownership methods.
 - `gen` exports immediate generation and generation-request construction.
   Token-count request helpers remain module-internal.
 - `edit` exports the CLI-consumed reference/request models and limits,
@@ -121,7 +159,10 @@ allowlist. `src/internal_module_api_test.zig` imports each implementation
 module directly and applies separate exact allowlists to declarations and
 public container methods that are visible for cross-file use. Both tests are
 registered with `zig build test`, so a package export or internal seam change
-requires an explicit decision in the corresponding allowlist.
+requires an explicit decision in the corresponding allowlist. A separate
+dependency-style compile test imports `nbimg` by module name through the build
+graph and verifies that the typed workflow is usable without top-level raw
+transport or request-context declarations.
 
 ### API Module Boundaries
 
@@ -134,6 +175,9 @@ transport.
 Command-domain modules must not depend on each other. `src/gen.zig`,
 `src/edit.zig`, `src/files.zig`, and `src/batch.zig` may import only
 `api.zig`, `std`, and `build_options` for project-local/shared functionality.
+`src/client.zig` is the package façade and may import `gen.zig` and `api.zig`
+to convert validated public requests into the existing internal operation
+path.
 Cross-command workflows
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
@@ -759,6 +803,9 @@ The full response body is buffered in memory. The current hard limit is:
 ```
 
 That limit is represented by `api.max_response_bytes`.
+JSON POST transport maps a body that exceeds the bound to
+`error.ResponseTooLong` for both successful and non-successful statuses. It
+does not return the buffered prefix as a partial response.
 
 Each Gemini HTTP transaction receives its timeout from an explicit
 `api.RequestContext`. The context defaults to 180 seconds, and the timeout

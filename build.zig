@@ -19,6 +19,11 @@ pub fn build(b: *std.Build) void {
     }
     const test_filters: []const []const u8 = if (test_filter) |filter| b.dupeStrings(&.{filter}) else &.{};
 
+    const nbimg_module = b.addModule("nbimg", .{
+        .root_source_file = b.path("src/root.zig"),
+    });
+    addBuildOptions(b, nbimg_module, false);
+
     const install_exe = addNbimgExecutable(b, target, install_optimize);
     b.installArtifact(install_exe);
 
@@ -34,12 +39,21 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "api", "src/api.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "batch", "src/batch.zig");
+    addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "client", "src/client.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "gen", "src/gen.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "edit", "src/edit.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "files", "src/files.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "cli", "src/cli.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "package-api", "src/public_api_test.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "internal-module-api", "src/internal_module_api_test.zig");
+    addConsumerTest(
+        b,
+        test_step,
+        target,
+        execution_optimize,
+        test_filters,
+        nbimg_module,
+    );
 
     addLiveApiTestStep(
         b,
@@ -169,6 +183,30 @@ fn addTestRoot(
         addDirectTestRun(b, tests, b.fmt("run {s} live tests", .{name}))
     else
         b.addRunArtifact(tests);
+    step.dependOn(&run_tests.step);
+}
+
+fn addConsumerTest(
+    b: *std.Build,
+    step: *std.Build.Step,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    test_filters: []const []const u8,
+    nbimg_module: *std.Build.Module,
+) void {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/external_consumer_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    module.addImport("nbimg", nbimg_module);
+
+    const tests = b.addTest(.{
+        .name = "external-consumer",
+        .root_module = module,
+        .filters = test_filters,
+    });
+    const run_tests = b.addRunArtifact(tests);
     step.dependOn(&run_tests.step);
 }
 
