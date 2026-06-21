@@ -11,6 +11,9 @@ comptime {
     if (@hasDecl(nbimg, "client")) {
         @compileError("public package exposes the client implementation module");
     }
+    if (@hasDecl(nbimg, "gen")) {
+        @compileError("public package exposes the legacy generation module");
+    }
 }
 
 test "dependency consumer compiles against typed generation APIs" {

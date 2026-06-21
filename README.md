@@ -158,9 +158,11 @@ successful-response failures are Zig errors. A completed non-success HTTP
 response is returned as `.api_failure`; its complete bounded body is owned and
 must be released with `ApiFailure.deinit`.
 
-The existing `api`, `gen`, `edit`, `files`, and `batch` package paths remain
-available temporarily for compatibility. They are implementation-oriented
-legacy APIs rather than the supported typed client contract.
+The existing `api`, `edit`, `files`, and `batch` package paths remain available
+temporarily for compatibility. They are implementation-oriented legacy APIs
+rather than the supported typed client contract. The undocumented `nbimg.gen`
+path has been removed; CLI Batch-file preparation still uses an internal
+generation request builder.
 
 ## Usage
 
@@ -655,7 +657,8 @@ generating content. The `gen` and `edit` request-shape live tests include
 `web,image` grounding, `thinkingConfig`, and representative advanced
 generation and request-level controls to validate the tool-bearing, Thinking,
 `generationConfig`, `systemInstruction`, `serviceTier`, and `store` request
-shape. Cached-content live validation requires an existing
+shape. The `gen` live fixture requests the lowest supported image size,
+`512`. Cached-content live validation requires an existing
 `cachedContents/...` resource and is not part of the default live tests. The
 edit request-shape live test uploads `sample_images/good_night.jpeg` through
 the Files API, validates the edit request with the uploaded `files/...` name,

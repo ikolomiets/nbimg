@@ -7,40 +7,6 @@ const build_options = @import("build_options");
 
 const live_prompt = "My fair lady";
 
-/// Generates images from a borrowed text prompt through the Gemini API.
-///
-/// - Borrows all inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
-pub fn generateContent(
-    context: *const api.RequestContext,
-    prompt: []const u8,
-    output_options: api.ImageOutputOptions,
-    grounding_options: api.GroundingOptions,
-    thinking_options: api.ThinkingOptions,
-    safety_options: ?api.SafetyOptions,
-    generation_options: api.GenerationOptions,
-    request_options: api.RequestOptions,
-) !api.HttpResponse {
-    assert(context.api_key.len > 0);
-    assert(prompt.len > 0);
-    assert(prompt.len <= api.max_generate_text_part_bytes);
-    api.assertValidRequestOptions(request_options);
-
-    const request_json = try buildGenerateRequest(
-        context.gpa,
-        prompt,
-        output_options,
-        grounding_options,
-        thinking_options,
-        safety_options,
-        generation_options,
-        request_options,
-    );
-    defer context.gpa.free(request_json);
-
-    return api.postGenerateContentJson(context, .nano2, request_json);
-}
-
 fn countGenerateContentRequestTokens(
     context: *const api.RequestContext,
     prompt: []const u8,
@@ -366,7 +332,7 @@ test "live API generateContent request shape is valid" {
         live_prompt,
         .{
             .aspect_ratio = .r16_9,
-            .image_size = .k2,
+            .image_size = .px512,
         },
         .{
             .web = true,

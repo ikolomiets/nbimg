@@ -1366,18 +1366,6 @@ fn decodeGeneratedPart(
     };
 }
 
-/// Formats a generated file's deterministic name into caller-provided storage.
-///
-/// - Returns a slice borrowed from `buffer`; allocates nothing.
-/// - Returns formatting errors such as insufficient buffer space and mutates only the written portion of `buffer`.
-pub fn generatedFileName(buffer: []u8, response_id: []const u8, file: GeneratedFile) ![]const u8 {
-    return std.fmt.bufPrint(
-        buffer,
-        "{s}-{d}-{d}.{s}",
-        .{ response_id, file.candidate_index, file.part_index, file.mime.extension() },
-    );
-}
-
 test "isCanonicalFileName requires files prefix and id" {
     try std.testing.expect(isCanonicalFileName("files/abc123"));
     try std.testing.expect(!isCanonicalFileName("abc123"));
@@ -3660,16 +3648,4 @@ test "decodeGeneratedFiles cleans up partial output on later part failure" {
     ;
 
     try std.testing.expectError(error.UnsupportedPart, decodeGeneratedFiles(gpa, json));
-}
-
-test "generatedFileName uses response id candidate part template" {
-    const file = GeneratedFile{
-        .candidate_index = 12,
-        .part_index = 3,
-        .mime = .webp,
-        .bytes = @constCast("x"),
-    };
-    var buffer: [64]u8 = undefined;
-    const name = try generatedFileName(&buffer, "PMMIapvKNtLj_uMPq8a8oQs", file);
-    try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs-12-3.webp", name);
 }

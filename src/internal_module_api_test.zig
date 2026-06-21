@@ -64,8 +64,10 @@ comptime {
         "ClientOptions",
         "CountTokensResult",
         "GeneratedImage",
+        "GenerationOperationOutcome",
         "GenerationOptions",
         "GenerationRequest",
+        "GenerationResponsePolicy",
         "GenerationResult",
         "GenerationValidationError",
         "GroundingOptions",
@@ -84,7 +86,6 @@ comptime {
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
-        "generateContent",
     });
     assertExactPublicDecls("edit", edit, &.{
         "EditRequest",
@@ -179,7 +180,6 @@ comptime {
         "decodeResponseServiceTier",
         "decodeUploadedFileName",
         "deleteJson",
-        "generatedFileName",
         "getBytesBounded",
         "getJson",
         "isCanonicalCachedContentName",
@@ -276,7 +276,9 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("client.GenerationOptions", client.GenerationOptions, &.{});
+    assertExactPublicDecls("client.GenerationOperationOutcome", client.GenerationOperationOutcome, &.{});
     assertExactPublicDecls("client.GenerationRequest", client.GenerationRequest, &.{});
+    assertExactPublicDecls("client.GenerationResponsePolicy", client.GenerationResponsePolicy, &.{});
     assertExactPublicDecls("client.GenerationResult", client.GenerationResult, &.{
         "deinit",
     });

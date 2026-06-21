@@ -54,7 +54,7 @@ The code is split into nine source files:
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
 - `src/root.zig` exposes the supported typed client declarations and retains
-  the legacy package modules as `api`, `batch`, `gen`, `edit`, and `files`.
+  the legacy package modules as `api`, `batch`, `edit`, and `files`.
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation request and
   option domain types, generated result ownership, returned validation errors,
@@ -68,8 +68,8 @@ The code is split into nine source files:
   request contexts, transport helpers, image MIME parsing and serialization,
   Thinking/output/generation/grounding wire helpers, shared generateContent
   request bounds and envelope assembly, generateContent/countTokens JSON posting,
-  generic resumable byte uploads, generated response decoding and output
-  naming, and response log sanitization.
+  generic resumable byte uploads, generated response decoding, and response log
+  sanitization.
 - `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
   input upload configuration, create/status/cancel/list request construction,
   canonical `batches/...` validation, response-name and list-page decoding,
@@ -120,18 +120,18 @@ an unknown service-tier spelling returns `error.UnsupportedServiceTier`.
 `Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Both
 operations reuse one private public-request-to-wire builder.
 `generateWithContext` is an internal public seam that accepts an explicit
-`api.RequestContext`; `Client.generate` supplies a quiet context, while a later
-CLI migration can supply traffic logging options. Completed non-2xx responses
-become `ApiFailure` values containing the status and complete owned bounded
-body. Callers release that body with `ApiFailure.deinit`. Allocation,
-transport, timeout, oversized body, validation, and malformed
-successful-response failures remain Zig errors. Public client response traffic
-is not logged.
+`api.RequestContext` and response policy. `Client.generate` supplies a quiet
+context and the public-client policy; immediate CLI generation supplies its
+logging-enabled context and CLI policy. The public policy accepts any 2xx and
+rejects unknown reported service tiers. The CLI policy requires HTTP 200 and
+treats unknown tiers as absent. A tagged internal outcome distinguishes
+success, completed API failure, and response-decoding failure so the public
+client and CLI can preserve their different error contracts. Public client
+response traffic is not logged.
 
 The previous command-domain namespace remains temporarily available:
 
 ```zig
-nbimg.gen.*
 nbimg.edit.*
 nbimg.files.*
 nbimg.batch.*
@@ -144,9 +144,10 @@ The internal module interfaces are intentionally narrow:
 
 - `cli` exports only `run` for executable assembly.
 - `client` exports only the deliberate supported client declarations and their
-  ownership methods.
-- `gen` exports immediate generation and generation-request construction.
-  Token-count request helpers remain module-internal.
+  ownership methods plus the policy-bearing internal CLI generation seam.
+- `gen` exports only generation-request construction for the typed client and
+  CLI Batch-file preparation. Token-count request helpers remain
+  module-internal.
 - `edit` exports the CLI-consumed reference/request models and limits,
   generation and token-count operations, generation-request construction, and
   label validation. Prompt-fragment, File URI, and countTokens-envelope
@@ -160,8 +161,8 @@ The internal module interfaces are intentionally narrow:
   byte-count validation, and URL construction remain internal.
 - `api` exports only shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
-  transport, resumable upload support, response decoders, output naming,
-  request context and traffic logging options, and ownership methods.
+  transport, resumable upload support, response decoders, request context and
+  traffic logging options, and ownership methods.
   Wire-only models, serializers, endpoint URL helpers, and lower-level request
   machinery remain internal.
 
@@ -205,9 +206,9 @@ copied into command modules. Command modules should remain narrow so duplicate
 internal enums and conversion helpers do not accumulate.
 
 `src/gen.zig` owns Gemini native image generation semantics for the fixed
-`nano2` model. It builds the prompt content for the shared
-`GenerateContentRequest` JSON, wraps that shape for `countTokens`, and uses
-shared API helpers to send generation and token-count requests.
+`nano2` model. It builds prompt content for the shared
+`GenerateContentRequest` JSON used by the typed client and CLI Batch-file
+preparation, and privately wraps that shape for countTokens live validation.
 
 `src/edit.zig` owns Gemini native image editing semantics for the fixed `nano2`
 model. It accepts uploaded File API resource names plus MIME types, derives
@@ -239,8 +240,8 @@ transport, shared response
 modality values, image MIME
 parsing/serialization for edit references and file uploads, generation config
 helpers, request-level control wire helpers, grounding tool wire structures,
-generated response decoding, generated file metadata, output naming, safety
-setting helpers, and logging.
+generated response decoding, generated file metadata, safety setting helpers,
+and logging. The CLI owns generated output naming.
 `gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
 request-with-body helper for resumable uploads, common `HttpResponse`
 ownership type, `Model` constants, and explicit `RequestContext`. Headers are
@@ -796,7 +797,7 @@ Only one model is currently wired:
 gemini-3.1-flash-image
 ```
 
-The internal model enum names it `nano2`. `gen.generateContent` and
+The internal model enum names it `nano2`. Typed generation and
 `edit.generateContent` send `POST` requests to:
 
 ```text
@@ -1275,8 +1276,9 @@ IO handles through the call chain.
 Allocator ownership is explicit:
 
 - `cli.run` uses `init.arena.allocator()` to materialize process arguments.
-- `gen.generateContent` receives `gpa` for request JSON, HTTP client state,
-  response buffering, and the returned response body.
+- `client.generateWithContext` receives `gpa` through its request context for
+  request JSON, HTTP client state, response buffering, decoded images, and
+  result metadata.
 - `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
 - `batch.uploadInput` receives already-read validated JSONL bytes; CLI
@@ -1362,6 +1364,9 @@ To run one live API test through the normal test step, pass both
 ```sh
 zig build test -Dlive-api-tests -Dtest-filter="live API generateContent request shape is valid"
 ```
+
+The generation request-shape fixture uses the lowest supported image size,
+`512`, while exercising the full generation option shape through countTokens.
 
 `build.zig` also provides dedicated side-effecting live API targets. Each one
 builds the owning module as the test root, applies an exact filter, and inherits

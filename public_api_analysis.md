@@ -1,5 +1,9 @@
 # Public API Analysis
 
+> Historical snapshot: this analysis describes the repository before the
+> incremental refactorings recorded in `public_api_refactoring_plan.md`.
+> Consult that plan and the current exact API allowlists for present behavior.
+
 ## Scope and classification
 
 This analysis covers every declaration and public container method allowlisted

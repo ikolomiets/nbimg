@@ -75,7 +75,6 @@ comptime {
         "batch",
         "edit",
         "files",
-        "gen",
     });
 
     assertExactPublicDecls("root.ApiFailure", root.ApiFailure, &.{

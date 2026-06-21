@@ -2,9 +2,10 @@
 
 ## Purpose
 
-This document proposes a sequence of incremental refactorings based on
-`public_api_analysis.md`. It does not implement or authorize those
-refactorings.
+This document defines and records the incremental public-API refactoring
+sequence based on the historical `public_api_analysis.md` snapshot. Completed
+items describe implemented work; remaining items describe planned work and do
+not by themselves authorize external side effects.
 
 The current code uses `pub` both for declarations shared between source files
 and for declarations reachable by package consumers. The proposed sequence
@@ -265,11 +266,13 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Depends on:** Item 5.
 
+   **Status:** Completed.
+
    **Result:** The immediate `nbimg gen` path and public client share one typed
    operation core, allowing the legacy package-level `gen` export to be
    removed.
 
-   **Proposed changes:**
+   **Completed changes:**
 
    - Migrate only immediate CLI generation to the context-taking typed
      operation core introduced by Item 5.
@@ -305,13 +308,17 @@ an intermediate state that requires the next item to build or pass tests.
    unchanged. Existing `api`, `edit`, `files`, and `batch` paths remain
    temporarily available.
 
-   **Validation:** Add CLI parity tests for HTTP 200 success, non-200 responses
-   including other 2xx statuses, malformed success, absent/known/unknown
-   reported service tiers, priority-tier downgrade, file writing, timeout
-   diagnostics, and exit-code mapping. Run exact package/internal allowlists,
-   the external-consumer compile test, all offline validation, and the
-   ReleaseSafe build. Live validation is unnecessary unless request fields or
-   transport behavior change.
+   **Validation completed:** Covered HTTP 200, other 2xx, and non-2xx response
+   policy; absent, recognized, unknown, and malformed reported service tiers;
+   complete CLI option adaptation with borrowed stop sequences; priority
+   downgrade detection; PNG, JPEG, and WebP output names; exclusive-write
+   failures; malformed-response classification; exact package/internal
+   allowlists; and external-consumer compilation. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live validation was unnecessary because request fields
+   and transport behavior did not change. A subsequent explicit live
+   generation request-shape check passed through Gemini countTokens using the
+   lowest supported image size, `512`.
 
    **Complete when:** Immediate CLI generation and `Client.generate` share the
    typed operation core, Batch preparation still works, and `nbimg.gen` is no
@@ -319,7 +326,7 @@ an intermediate state that requires the next item to build or pass tests.
 
 7. **Add typed edit operations**
 
-   **Depends on:** Item 5.
+   **Depends on:** Items 5 and 6.
 
    **Result:** Consumers can construct and submit edit requests through domain
    types rather than implementation modules, without changing CLI execution.
@@ -333,14 +340,18 @@ an intermediate state that requires the next item to build or pass tests.
      spelling and path-extension parsing internal or CLI-owned. Do not reuse
      `OutputMime`; input and generated-output MIME roles are distinct.
    - Export a named `EditValidationError` covering empty or oversized prompt,
-     invalid base/reference file names, invalid or duplicate labels, total and
-     role-specific reference limits, empty or oversized preserve/do-not
-     constraints, generation/request option failures, and the aggregate
-     request-field bound. Validate the complete public request before
-     allocation or network IO.
+     invalid base/reference file names, invalid, reserved `BASE_IMAGE`, or
+     duplicate labels, total and role-specific reference limits, preserve and
+     do-not count limits, empty or oversized preserve/do-not constraints,
+     generated edit-task text overflow, generated File URI overflow,
+     generation/request option failures, and the aggregate request-field
+     bound. Validate the complete public request before allocation or network
+     IO.
    - Export the stable edit admission limits as `max_edit_references`,
      `max_edit_character_images`, `max_edit_object_images`, and
-     `max_edit_reference_label_bytes`.
+     `max_edit_reference_label_bytes`. Also export
+     `max_edit_preserve_constraints` and `max_edit_do_not_constraints`; both
+     are 16 in the current CLI contract.
    - Add `Client.edit` returning `Outcome(GenerationResult)` and
      `Client.countEditTokens` returning `Outcome(CountTokensResult)`. Reuse
      the public generation result and token-count types. Batch preparation
@@ -349,9 +360,14 @@ an intermediate state that requires the next item to build or pass tests.
      role-specific limits, constraints, and option combinations.
    - Keep CLI role-name parsing, Gemini prompt-manifest construction, File URI
      construction, and wire serialization private.
+   - Generalize the policy-bearing generated-content response seam introduced
+     by Item 6 so generation and edit share status classification, generated
+     image decoding, service-tier handling, and stage-aware outcomes. Do not
+     introduce parallel edit-only response-policy types.
    - Add an internal typed edit entry point accepting an explicit request
-     context. Public methods use a quiet context; Item 8 will reuse the same
-     operation with the CLI's logging-enabled context.
+     context and the shared generated-content response policy. Public methods
+     use a quiet context and the strict public policy; Item 8 will reuse the
+     same operation with the CLI's logging-enabled context and HTTP-200 policy.
    - Keep immediate CLI edit execution and the legacy package export unchanged.
      Extend the exact package allowlist and external-consumer compile tests for
      the additive API.
@@ -361,12 +377,14 @@ an intermediate state that requires the next item to build or pass tests.
    **Compatibility:** Additive. The undocumented `nbimg.edit` path remains
    temporarily available.
 
-   **Validation:** Cover every input MIME, role, label and constraint rule,
-   duplicate labels, reference limits, generation/request option error,
-   aggregate bound, request validation before allocation/network IO, ownership
-   path, API failure, malformed success response, exact allowlists, and
-   external-consumer compilation. Run the non-billable live edit
-   request-validity target when request construction changes.
+   **Validation:** Cover every input MIME, role, label and constraint rule;
+   reserved and duplicate labels; reference and separate preserve/do-not count
+   limits; generated edit-task and File URI overflow; generation/request option
+   error mapping; aggregate bound; request validation before allocation/network
+   IO; ownership paths; both generated-content response policies; API failure;
+   malformed success response; exact allowlists; and external-consumer
+   compilation. Run the non-billable live edit request-validity target when
+   request construction changes.
 
    **Complete when:** A dependency consumer can edit images and count edit
    tokens through `Client` without internal builders, validators, serializers,
@@ -392,7 +410,10 @@ an intermediate state that requires the next item to build or pass tests.
    - Apply the same explicit CLI response policy as Item 6: require HTTP 200,
      tolerate absent or unknown reported service-tier spellings when image
      decoding otherwise succeeds, and continue to reject malformed response
-     metadata. Keep the stricter public typed response contract unchanged.
+     metadata. Reuse the generalized generated-content response policy and
+     stage-aware outcome from Item 7; do not duplicate generation response
+     classification. Keep the stricter public typed response contract
+     unchanged.
    - Keep Batch-file edit preparation on the existing raw request-building
      path until Item 11.
    - Remove `edit` from `src/root.zig` and the package allowlist. Retain only
@@ -428,6 +449,12 @@ an intermediate state that requires the next item to build or pass tests.
    - Reuse the public `InputImageMime` from Item 7. Export deliberate
      `FileUpload`, `File`, and `FileListPage` types with explicit
      allocator-based ownership methods.
+   - Keep `InputImageMime` limited to upload admission. Files list/get can
+     return non-image resources, including Batch JSONL inputs, so returned
+     `File.mime_type` must not use `InputImageMime`. Represent returned MIME,
+     state, and source either as owned opaque strings or as deliberate tagged
+     unions with owned unknown variants; decide and document one representation
+     before implementation.
    - Add `Client.uploadFile` and `Client.getFile` returning `Outcome(File)`,
      `Client.listFilesPage` returning `Outcome(FileListPage)`, and
      `Client.deleteFile` returning `Outcome(void)`.
@@ -435,8 +462,10 @@ an intermediate state that requires the next item to build or pass tests.
      treats any completed 2xx response as success. A successful delete returns
      `Outcome(void)` and discards its bounded response body without requiring a
      particular JSON or empty-body shape.
-   - Validate MIME, display name, resource name, page token, and upload size
-     before network IO. Keep path-extension parsing in the CLI.
+   - Export a named `FileValidationError`. Validate upload MIME, non-empty
+     bytes, display name, canonical resource name, non-empty page token, and
+     upload size before network IO. Require decoded response resource names to
+     be canonical. Keep path-extension parsing in the CLI.
    - Export the stable admission limit as `max_file_upload_bytes`; do not
      expose endpoint URLs, MIME spellings, or transport chunking limits.
    - Keep pagination explicit; a convenience iterator remains a separate
@@ -452,12 +481,14 @@ an intermediate state that requires the next item to build or pass tests.
    **Compatibility:** Additive. The undocumented `nbimg.files` path remains
    temporarily available.
 
-   **Validation:** Test every input MIME, successful and malformed response
+   **Validation:** Test every input MIME, image and non-image returned MIME
+   metadata, known and unknown state/source handling according to the selected
+   representation, canonical decoded names, successful and malformed response
    decoding, all 2xx delete statuses and arbitrary successful delete bodies,
-   pagination, ownership, validation before allocation/network IO, API
-   failures, oversized failure bodies, exact allowlists, and external-consumer
-   compilation. Run affected Files live targets only when transport or request
-   behavior changes.
+   pagination, ownership, exact validation errors before allocation/network
+   IO, API failures, oversized failure bodies, exact allowlists, and
+   external-consumer compilation. Run affected Files live targets only when
+   transport or request behavior changes.
 
    **Complete when:** Files consumers require no public response decoders or
    resumable-upload mechanics.
@@ -476,8 +507,9 @@ an intermediate state that requires the next item to build or pass tests.
    - Add narrow CLI adapters from parsed command values and path-derived MIME
      into public Files request values. Keep local path parsing and complete
      file reads in the CLI.
-   - Preserve upload progress, pagination, printed JSON shape, diagnostics,
-     traffic logging, timeout reporting, and exit codes.
+   - Preserve pagination, printed JSON shape, diagnostics, traffic logging,
+     timeout reporting, and exit codes. The current CLI has no upload-progress
+     UI, so this migration introduces none.
    - Preserve the CLI's exact HTTP policy independently of the public methods:
      CLI Files commands continue to require HTTP 200 even though the public
      typed operations accept any 2xx response. Use the internal policy-bearing
@@ -504,7 +536,7 @@ an intermediate state that requires the next item to build or pass tests.
 
 11. **Introduce deliberate Batch-input preparation**
 
-   **Depends on:** Items 5 and 7.
+   **Depends on:** Items 6 and 8.
 
    **Result:** Generation and edit requests can be validated and written as
    Batch JSONL without exposing generate-content JSON or count-token
@@ -522,6 +554,11 @@ an intermediate state that requires the next item to build or pass tests.
    - Introduce private context-taking preparation operations so public methods
      use quiet contexts and CLI Batch-file preparation retains its existing
      request/response traffic logging.
+   - Add an explicit countTokens response policy and stage-aware internal
+     outcome. Public preparation accepts any 2xx response; CLI Batch-file
+     preparation continues to require HTTP 200, prints the complete non-200
+     body, maps malformed successful countTokens responses to exit code 3, and
+     preserves timeout diagnostics.
    - Implement preparation as an explicit two-phase internal workflow. Phase
      one converts and validates the typed generation or edit request, retains
      the exact owned generate-content JSON, and validates that request through
@@ -553,12 +590,14 @@ an intermediate state that requires the next item to build or pass tests.
    removed by Item 13. CLI Batch-file output, generated keys, locking, and
    receipts remain unchanged.
 
-   **Validation:** Test explicit-key ownership, context logging selection,
-   count-token API failures, malformed count-token success responses, byte-for-
-   byte reuse of the validated generate-content JSON, exact JSONL shape,
-   structural validation summaries without JSON parsing, generated keys under
-   lock, all limits, duplicate handling, rollback after partial writes, and CLI
-   receipts.
+   **Validation:** Test explicit-key ownership, context logging and response
+   policy selection, public acceptance of all 2xx statuses, CLI rejection of
+   non-200 statuses including other 2xx responses, complete count-token API
+   failure bodies, malformed count-token success responses and CLI exit-code-3
+   mapping, timeout diagnostics, byte-for-byte reuse of the validated
+   generate-content JSON, exact JSONL shape, structural validation summaries
+   without JSON parsing, generated keys under lock, all limits, duplicate
+   handling, rollback after partial writes, and CLI receipts.
 
    **Complete when:** Public Batch preparation requires no raw Gemini JSON, and
    CLI automatic keys are still derived atomically from the locked file
@@ -593,7 +632,8 @@ an intermediate state that requires the next item to build or pass tests.
      count. Every owning type provides `deinit(allocator)`.
    - Define `BatchOutputRecord` with an owned key and a tagged result:
      `.success: GenerationResult` or `.failure: RemoteError`. Do not reduce a
-     failed record to a missing response.
+     failed record to a missing response. Preserve duplicate keys in the typed
+     result; duplicate-key conflicts are a CLI filesystem-output policy.
    - Return typed outcomes consistently: uploads return `Outcome(File)`,
      create/get return `Outcome(BatchOperation)`, cancel returns
      `Outcome(void)`, listing returns `Outcome(BatchListPage)`, and download
@@ -605,12 +645,14 @@ an intermediate state that requires the next item to build or pass tests.
      raw JSON presentation, and all current CLI Batch commands unchanged.
      Extend the exact package allowlist and external-consumer compile tests for
      the additive API.
-   - Make the download memory contract explicit. The initial supported method
-     owns the complete bounded downloaded JSONL body during decoding and then
-     returns all decoded records and image bytes; peak memory can therefore
-     exceed `max_batch_output_bytes`. Document this eager model and test
-     cleanup at every partial-decoding boundary. A streaming callback or
-     iterator is a separate proposal and must not expose raw wire JSON.
+   - Resolve the Batch download API shape before implementation. Prefer a
+     bounded streaming callback or iterator that returns typed records without
+     exposing raw wire JSON. If the first supported API instead owns the
+     complete bounded JSONL body and all decoded records/images, name it
+     explicitly as eager (for example `downloadBatchOutputEager`), document
+     that peak memory can approach the 512 MiB body bound plus decoded image
+     storage, and test cleanup at every partial-decoding boundary. Do not expose
+     an ambiguously named eager method as the stable default.
    - Add README and implementation-design examples for upload, creation,
      status, cancellation, listing, download, typed output records, ownership,
      and ambiguous creation failures.
@@ -620,16 +662,17 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Validation:** Cover pagination, canonical names, both known wire prefixes
    for every applicable state, unknown-state preservation, every successful
-   2xx cancellation body shape, output bounds, eager-decoding peak ownership
-   and partial cleanup, typed success and failure records, preserved failure
-   details, malformed records, duplicate keys, no automatic retry after
-   ambiguous creation failure, exact allowlists, and external-consumer
-   compilation. Never run the billable submit/status live target without
-   explicit authorization.
+   2xx cancellation body shape, output bounds, the selected streaming or
+   explicitly eager memory contract and partial cleanup, typed success and
+   failure records, preserved failure details, malformed records, duplicate-key
+   preservation, no automatic retry after ambiguous creation failure, exact
+   allowlists, and external-consumer compilation. Never run the billable
+   submit/status live target without explicit authorization.
 
    **Complete when:** Package consumers can use every remote Batch workflow
-   without raw response bodies, decoders, iterators, or presentation helpers,
-   while existing CLI Batch paths remain unchanged.
+   without raw response bodies, public wire decoders, internal line iterators,
+   or presentation helpers, while the selected typed download contract and
+   existing CLI Batch paths remain explicit and unchanged.
 
 13. **Migrate CLI Batch commands to typed operations**
 
@@ -757,8 +800,8 @@ an intermediate state that requires the next item to build or pass tests.
       generation, edit, Files, Batch preparation, and remote Batch workflows.
     - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal
       module boundaries.
-    - Retain `public_api_analysis.md` as a historical pre-refactoring snapshot,
-      label it accordingly, and record completed refactorings in this document.
+    - Retain the historical pre-refactoring label on `public_api_analysis.md`
+      and continue recording completed refactorings in this document.
     - Keep compile-only external-consumer examples synchronized with the
       supported named `nbimg` module.
 
