@@ -53,9 +53,58 @@ separate Debug artifact from the build cache.
 
 ## Zig Library API
 
-The package registers a supported module named `nbimg`. Its first typed
-workflow counts tokens for an image-generation request without generating
-content:
+The package registers a supported module named `nbimg`. Its typed client can
+generate owned images:
+
+```zig
+const std = @import("std");
+const nbimg = @import("nbimg");
+
+fn generate(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    api_key: []const u8,
+) !void {
+    const client = try nbimg.Client.init(allocator, io, .{
+        .api_key = api_key,
+    });
+
+    var outcome = try client.generate(.{
+        .prompt = "Create a cinematic product hero image",
+        .output_options = .{
+            .aspect_ratio = .r16_9,
+            .image_size = .k2,
+        },
+    });
+
+    switch (outcome) {
+        .success => |*result| {
+            defer result.deinit(allocator);
+            for (result.images) |image| {
+                std.debug.print(
+                    "candidate {d}, part {d}: {d} bytes\n",
+                    .{ image.candidate_position, image.part_position, image.bytes.len },
+                );
+            }
+        },
+        .api_failure => |*failure| {
+            defer failure.deinit(allocator);
+            std.debug.print(
+                "Gemini returned HTTP {d}: {s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+        },
+    }
+}
+```
+
+`GenerationResult` owns its response ID, image slice, and every image byte
+buffer. Release it with `GenerationResult.deinit` using the client allocator.
+Candidate and part positions are zero-based response-array positions. Output
+MIME values are `png`, `jpeg`, and `webp`; the optional reported service tier
+uses the public `ServiceTier` enum.
+
+The same request types support non-generating token counting:
 
 ```zig
 const std = @import("std");

@@ -115,6 +115,41 @@ pub const ServiceTier = enum {
     priority,
 };
 
+pub const OutputMime = enum {
+    png,
+    jpeg,
+    webp,
+};
+
+/// Owns one generated image returned by Gemini.
+pub const GeneratedImage = struct {
+    candidate_position: usize,
+    part_position: usize,
+    mime: OutputMime,
+    bytes: []u8,
+
+    /// Frees the image bytes and invalidates the value.
+    pub fn deinit(image: *GeneratedImage, allocator: std.mem.Allocator) void {
+        allocator.free(image.bytes);
+        image.* = undefined;
+    }
+};
+
+/// Owns the decoded images and response metadata from one generation request.
+pub const GenerationResult = struct {
+    response_id: []u8,
+    images: []GeneratedImage,
+    reported_service_tier: ?ServiceTier,
+
+    /// Frees all nested image bytes and result storage, then invalidates the value.
+    pub fn deinit(result: *GenerationResult, allocator: std.mem.Allocator) void {
+        for (result.images) |*image| image.deinit(allocator);
+        allocator.free(result.images);
+        allocator.free(result.response_id);
+        result.* = undefined;
+    }
+};
+
 /// Configures request-level Gemini options.
 pub const RequestOptions = struct {
     system_instruction: ?[]const u8 = null,
@@ -207,7 +242,40 @@ pub const Client = struct {
         var response = try api.postCountTokensJson(&context, .nano2, request_json);
         return countTokensOutcomeFromResponse(client.allocator, &response);
     }
+
+    /// Generates and returns owned decoded images for a borrowed request.
+    ///
+    /// Completed non-success HTTP responses are returned as owned API failures.
+    pub fn generate(
+        client: *const Client,
+        request: GenerationRequest,
+    ) !Outcome(GenerationResult) {
+        const context = api.RequestContext{
+            .gpa = client.allocator,
+            .io = client.io,
+            .api_key = client.api_key,
+            .timeout = client.timeout,
+        };
+        return generateWithContext(&context, request);
+    }
 };
+
+/// Generates images using an explicit internal request context.
+///
+/// This seam allows CLI callers to supply traffic logging without changing the
+/// supported public client contract.
+pub fn generateWithContext(
+    context: *const api.RequestContext,
+    request: GenerationRequest,
+) !Outcome(GenerationResult) {
+    try validateGenerationRequest(request);
+
+    const request_json = try buildGenerateRequest(context.gpa, request);
+    defer context.gpa.free(request_json);
+
+    var response = try api.postGenerateContentJson(context, .nano2, request_json);
+    return generationOutcomeFromResponse(context.gpa, &response);
+}
 
 fn countTokensOutcomeFromResponse(
     allocator: std.mem.Allocator,
@@ -228,6 +296,67 @@ fn countTokensOutcomeFromResponse(
         .total_tokens = result.total_tokens,
         .cached_content_token_count = result.cached_content_token_count,
     } };
+}
+
+fn generationOutcomeFromResponse(
+    allocator: std.mem.Allocator,
+    response: *api.HttpResponse,
+) !Outcome(GenerationResult) {
+    if (response.status.class() != .success) {
+        const failure = ApiFailure{
+            .status = response.status,
+            .body = response.body,
+        };
+        response.* = undefined;
+        return .{ .api_failure = failure };
+    }
+    defer response.deinit(allocator);
+
+    var files = try api.decodeGeneratedFiles(allocator, response.body);
+    errdefer files.deinit(allocator);
+
+    return .{ .success = try generationResultFromGeneratedFiles(allocator, &files) };
+}
+
+fn generationResultFromGeneratedFiles(
+    allocator: std.mem.Allocator,
+    files: *api.GeneratedFiles,
+) !GenerationResult {
+    const reported_service_tier = if (files.reported_service_tier_name) |name|
+        serviceTierFromWireName(name) orelse return error.UnsupportedServiceTier
+    else
+        null;
+
+    const images = try allocator.alloc(GeneratedImage, files.items.len);
+    for (files.items, images) |file, *image| {
+        image.* = .{
+            .candidate_position = file.candidate_index,
+            .part_position = file.part_index,
+            .mime = switch (file.mime) {
+                .png => .png,
+                .jpeg => .jpeg,
+                .webp => .webp,
+            },
+            .bytes = file.bytes,
+        };
+    }
+
+    const result = GenerationResult{
+        .response_id = files.response_id,
+        .images = images,
+        .reported_service_tier = reported_service_tier,
+    };
+    allocator.free(files.items);
+    if (files.reported_service_tier_name) |name| allocator.free(name);
+    files.* = undefined;
+    return result;
+}
+
+fn serviceTierFromWireName(name: []const u8) ?ServiceTier {
+    if (std.mem.eql(u8, name, "flex")) return .flex;
+    if (std.mem.eql(u8, name, "standard")) return .standard;
+    if (std.mem.eql(u8, name, "priority")) return .priority;
+    return null;
 }
 
 fn validateGenerationRequest(request: GenerationRequest) GenerationValidationError!void {
@@ -297,8 +426,21 @@ fn buildCountTokensRequest(
     allocator: std.mem.Allocator,
     request: GenerationRequest,
 ) ![]u8 {
-    const generation_options = wireGenerationOptions(request.generation_options);
-    const generate_request_json = try gen.buildGenerateRequest(
+    const generate_request_json = try buildGenerateRequest(allocator, request);
+    defer allocator.free(generate_request_json);
+
+    return api.buildCountTokensRequestFromGenerateContentJson(
+        allocator,
+        .nano2,
+        generate_request_json,
+    );
+}
+
+fn buildGenerateRequest(
+    allocator: std.mem.Allocator,
+    request: GenerationRequest,
+) ![]u8 {
+    return gen.buildGenerateRequest(
         allocator,
         request.prompt,
         wireImageOutputOptions(request.output_options),
@@ -308,15 +450,8 @@ fn buildCountTokensRequest(
         },
         wireThinkingOptions(request.thinking_options),
         if (request.safety_options) |options| wireSafetyOptions(options) else null,
-        generation_options,
+        wireGenerationOptions(request.generation_options),
         wireRequestOptions(request.request_options),
-    );
-    defer allocator.free(generate_request_json);
-
-    return api.buildCountTokensRequestFromGenerateContentJson(
-        allocator,
-        .nano2,
-        generate_request_json,
     );
 }
 
@@ -531,6 +666,10 @@ test "invalid public request returns before allocation or network IO" {
         error.EmptyPrompt,
         client.countGenerateTokens(.{ .prompt = "" }),
     );
+    try std.testing.expectError(
+        error.EmptyPrompt,
+        client.generate(.{ .prompt = "" }),
+    );
 }
 
 test "public generation options convert to the existing wire request" {
@@ -583,6 +722,162 @@ test "public generation options convert to the existing wire request" {
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"cachedContent\":\"cachedContents/brand\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"serviceTier\":\"priority\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"store\":false") != null);
+}
+
+test "generation response classification transfers images and metadata" {
+    const json =
+        \\{
+        \\  "responseId": "response-123",
+        \\  "candidates": [
+        \\    {
+        \\      "index": 99,
+        \\      "content": {
+        \\        "parts": [
+        \\          {"text": "planning", "thought": true},
+        \\          {"inlineData": {"mimeType": "image/png", "data": "AQID"}},
+        \\          {"text": "caption"}
+        \\        ]
+        \\      }
+        \\    },
+        \\    {
+        \\      "content": {
+        \\        "parts": [
+        \\          {"inlineData": {}, "thought": true},
+        \\          {"inlineData": {"mimeType": "image/jpeg", "data": "BAUG"}},
+        \\          {"inlineData": {"mimeType": "image/webp", "data": "BwgJ"}}
+        \\        ]
+        \\      }
+        \\    }
+        \\  ],
+        \\  "usageMetadata": {"serviceTier": "standard"}
+        \\}
+    ;
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(u8, json),
+    };
+    var outcome = try generationOutcomeFromResponse(std.testing.allocator, &response);
+
+    switch (outcome) {
+        .success => |*result| {
+            defer result.deinit(std.testing.allocator);
+
+            try std.testing.expectEqualStrings("response-123", result.response_id);
+            try std.testing.expectEqual(@as(?ServiceTier, .standard), result.reported_service_tier);
+            try std.testing.expectEqual(@as(usize, 3), result.images.len);
+
+            try std.testing.expectEqual(@as(usize, 0), result.images[0].candidate_position);
+            try std.testing.expectEqual(@as(usize, 1), result.images[0].part_position);
+            try std.testing.expectEqual(OutputMime.png, result.images[0].mime);
+            try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, result.images[0].bytes);
+
+            try std.testing.expectEqual(@as(usize, 1), result.images[1].candidate_position);
+            try std.testing.expectEqual(@as(usize, 1), result.images[1].part_position);
+            try std.testing.expectEqual(OutputMime.jpeg, result.images[1].mime);
+            try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, result.images[1].bytes);
+
+            try std.testing.expectEqual(@as(usize, 1), result.images[2].candidate_position);
+            try std.testing.expectEqual(@as(usize, 2), result.images[2].part_position);
+            try std.testing.expectEqual(OutputMime.webp, result.images[2].mime);
+            try std.testing.expectEqualSlices(u8, &.{ 7, 8, 9 }, result.images[2].bytes);
+        },
+        .api_failure => return error.UnexpectedApiFailure,
+    }
+}
+
+test "generation result conversion transfers image bytes without copying" {
+    var files = api.GeneratedFiles{
+        .response_id = try std.testing.allocator.dupe(u8, "response"),
+        .items = try std.testing.allocator.alloc(api.GeneratedFile, 1),
+        .reported_service_tier_name = try std.testing.allocator.dupe(u8, "priority"),
+    };
+    files.items[0] = .{
+        .candidate_index = 2,
+        .part_index = 4,
+        .mime = .webp,
+        .bytes = try std.testing.allocator.dupe(u8, "image bytes"),
+    };
+    const original_bytes = files.items[0].bytes.ptr;
+
+    var result = try generationResultFromGeneratedFiles(std.testing.allocator, &files);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(original_bytes, result.images[0].bytes.ptr);
+    try std.testing.expectEqual(@as(?ServiceTier, .priority), result.reported_service_tier);
+}
+
+test "generation response supports absent service tier" {
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}",
+        ),
+    };
+    var outcome = try generationOutcomeFromResponse(std.testing.allocator, &response);
+
+    switch (outcome) {
+        .success => |*result| {
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expectEqual(@as(?ServiceTier, null), result.reported_service_tier);
+        },
+        .api_failure => return error.UnexpectedApiFailure,
+    }
+}
+
+test "generation response rejects unknown service tier and cleans up" {
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"future\"}}",
+        ),
+    };
+
+    try std.testing.expectError(
+        error.UnsupportedServiceTier,
+        generationOutcomeFromResponse(std.testing.allocator, &response),
+    );
+}
+
+test "generation response classification preserves API failure body" {
+    var response = api.HttpResponse{
+        .status = .service_unavailable,
+        .body = try std.testing.allocator.dupe(u8, "{\"error\":\"complete body\"}"),
+    };
+    var outcome = try generationOutcomeFromResponse(std.testing.allocator, &response);
+
+    switch (outcome) {
+        .success => return error.UnexpectedSuccess,
+        .api_failure => |*failure| {
+            try std.testing.expectEqual(std.http.Status.service_unavailable, failure.status);
+            try std.testing.expectEqualStrings("{\"error\":\"complete body\"}", failure.body);
+            failure.deinit(std.testing.allocator);
+        },
+    }
+}
+
+test "generation response frees malformed and unsupported successes" {
+    var malformed = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(u8, "{"),
+    };
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        generationOutcomeFromResponse(std.testing.allocator, &malformed),
+    );
+
+    var unsupported = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{}]}}]}",
+        ),
+    };
+    try std.testing.expectError(
+        error.UnsupportedPart,
+        generationOutcomeFromResponse(std.testing.allocator, &unsupported),
+    );
 }
 
 test "ApiFailure owns and frees the complete body" {

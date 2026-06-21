@@ -1023,6 +1023,7 @@ pub const GeneratedFile = struct {
 pub const GeneratedFiles = struct {
     response_id: []u8,
     items: []GeneratedFile,
+    reported_service_tier_name: ?[]u8 = null,
 
     /// Frees a generated-files result and invalidates the value.
     ///
@@ -1032,6 +1033,7 @@ pub const GeneratedFiles = struct {
         for (files.items) |*file| file.deinit(gpa);
         gpa.free(files.items);
         gpa.free(files.response_id);
+        if (files.reported_service_tier_name) |name| gpa.free(name);
         files.* = undefined;
     }
 };
@@ -1303,6 +1305,12 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     const owned_response_id = try gpa.dupe(u8, response_id);
     errdefer gpa.free(owned_response_id);
 
+    const reported_service_tier_name = if (parsed.value.usageMetadata) |usage_metadata|
+        if (usage_metadata.serviceTier) |name| try gpa.dupe(u8, name) else null
+    else
+        null;
+    errdefer if (reported_service_tier_name) |name| gpa.free(name);
+
     var files: std.ArrayList(GeneratedFile) = .empty;
     errdefer {
         for (files.items) |*file| file.deinit(gpa);
@@ -1327,6 +1335,7 @@ pub fn decodeGeneratedFiles(gpa: std.mem.Allocator, response_json: []const u8) !
     return .{
         .response_id = owned_response_id,
         .items = try files.toOwnedSlice(gpa),
+        .reported_service_tier_name = reported_service_tier_name,
     };
 }
 
@@ -3579,6 +3588,19 @@ test "decodeGeneratedFiles accepts observed Gemini image response shape" {
     try std.testing.expectEqualStrings("PMMIapvKNtLj_uMPq8a8oQs", files.response_id);
     try std.testing.expectEqual(OutputMime.jpeg, files.items[0].mime);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, files.items[0].bytes);
+    try std.testing.expectEqualStrings("standard", files.reported_service_tier_name.?);
+}
+
+test "decodeGeneratedFiles owns unknown reported service tier spelling" {
+    const gpa = std.testing.allocator;
+    const json =
+        \\{"responseId":"test-response","candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AQID"}}]}}],"usageMetadata":{"serviceTier":"future"}}
+    ;
+
+    var files = try decodeGeneratedFiles(gpa, json);
+    defer files.deinit(gpa);
+
+    try std.testing.expectEqualStrings("future", files.reported_service_tier_name.?);
 }
 
 test "decodeGeneratedFiles rejects generated output missing response id" {

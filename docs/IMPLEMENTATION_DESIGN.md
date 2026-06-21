@@ -57,9 +57,9 @@ The code is split into nine source files:
   the legacy package modules as `api`, `batch`, `gen`, `edit`, and `files`.
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation request and
-  option domain types, returned validation errors, outcome classification,
-  API-failure ownership, and conversion into the existing generation wire
-  path.
+  option domain types, generated result ownership, returned validation errors,
+  outcome classification, API-failure ownership, and conversion to and from
+  the existing generation wire path.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -90,7 +90,7 @@ The supported package API is a typed client:
 const client = try nbimg.Client.init(allocator, io, .{
     .api_key = api_key,
 });
-const outcome = try client.countGenerateTokens(.{
+var outcome = try client.generate(.{
     .prompt = "Create a cinematic product image",
 });
 ```
@@ -108,10 +108,23 @@ allocation or network IO. It covers prompt/request bounds, generation numeric
 ranges and dependencies, stop-sequence invariants, cached-content names, and
 the shared 5 MiB aggregate variable-field bound.
 
-`Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Completed
-non-2xx responses become `ApiFailure` values containing the status and complete
-owned bounded body. Callers release that body with `ApiFailure.deinit`.
-Allocation, transport, timeout, oversized body, validation, and malformed
+`Client.generate` returns `Outcome(GenerationResult)`.
+`GenerationResult` owns one response ID, an image slice, and every decoded
+image byte buffer. `GeneratedImage.candidate_position` and `part_position` are
+zero-based positions in the Gemini response arrays, independent of optional
+candidate index metadata. The public MIME enum supports PNG, JPEG, and WebP.
+The optional reported service tier is mapped to the public `ServiceTier` enum;
+an unknown service-tier spelling returns `error.UnsupportedServiceTier`.
+`GenerationResult.deinit` releases all nested storage.
+
+`Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Both
+operations reuse one private public-request-to-wire builder.
+`generateWithContext` is an internal public seam that accepts an explicit
+`api.RequestContext`; `Client.generate` supplies a quiet context, while a later
+CLI migration can supply traffic logging options. Completed non-2xx responses
+become `ApiFailure` values containing the status and complete owned bounded
+body. Callers release that body with `ApiFailure.deinit`. Allocation,
+transport, timeout, oversized body, validation, and malformed
 successful-response failures remain Zig errors. Public client response traffic
 is not logged.
 
@@ -1198,7 +1211,9 @@ Supported final image parts are converted into `GeneratedFile` values:
 The decoder also accepts currently observed Gemini metadata fields such as
 content `role`, part `thoughtSignature`, candidate `finishReason` and `index`,
 root `usageMetadata`, `modelVersion`, and `responseId`. Metadata other than
-`responseId` is parsed for shape compatibility but is not exposed to callers.
+`responseId` and the optional reported service-tier spelling is parsed for
+shape compatibility but is not exposed to callers. The typed client validates
+and maps that spelling to its public `ServiceTier`.
 
 Supported inline MIME types are:
 
@@ -1282,12 +1297,15 @@ Allocator ownership is explicit:
   object at a time. `cli.processBatchOutput` releases each record and decoded
   generated result before advancing to the next JSONL line.
 - `api.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
-  buffers plus one owned response ID on the returned collection.
+  buffers, one owned response ID, and an optional owned reported service-tier
+  spelling. The typed client transfers the response ID and image buffers into
+  `GenerationResult` without copying image bytes.
 - `HttpResponse.deinit`, `FileListPage.deinit`, `batch.ListPage.deinit`,
-  `GeneratedFile.deinit`, and `GeneratedFiles.deinit` release owned
-  allocations.
+  `GeneratedFile.deinit`, `GeneratedFiles.deinit`, `GeneratedImage.deinit`,
+  and `GenerationResult.deinit` release owned allocations.
 
-Partial decode failures clean up already-decoded file buffers with `errdefer`.
+Partial decode and public-result conversion failures clean up already-decoded
+file buffers and metadata with `errdefer`.
 
 ## Tests
 

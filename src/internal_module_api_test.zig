@@ -63,8 +63,10 @@ comptime {
         "Client",
         "ClientOptions",
         "CountTokensResult",
+        "GeneratedImage",
         "GenerationOptions",
         "GenerationRequest",
+        "GenerationResult",
         "GenerationValidationError",
         "GroundingOptions",
         "HarmBlockThreshold",
@@ -72,11 +74,13 @@ comptime {
         "ImageOutputOptions",
         "ImageSize",
         "Outcome",
+        "OutputMime",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
         "ThinkingLevel",
         "ThinkingOptions",
+        "generateWithContext",
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
@@ -263,18 +267,27 @@ comptime {
     });
     assertExactPublicDecls("client.Client", client.Client, &.{
         "countGenerateTokens",
+        "generate",
         "init",
     });
     assertExactPublicDecls("client.ClientOptions", client.ClientOptions, &.{});
     assertExactPublicDecls("client.CountTokensResult", client.CountTokensResult, &.{});
+    assertExactPublicDecls("client.GeneratedImage", client.GeneratedImage, &.{
+        "deinit",
+    });
     assertExactPublicDecls("client.GenerationOptions", client.GenerationOptions, &.{});
     assertExactPublicDecls("client.GenerationRequest", client.GenerationRequest, &.{});
+    assertExactPublicDecls("client.GenerationResult", client.GenerationResult, &.{
+        "deinit",
+    });
     assertExactPublicDecls("client.GroundingOptions", client.GroundingOptions, &.{});
     assertExactPublicDecls("client.HarmBlockThreshold", client.HarmBlockThreshold, &.{});
     assertExactPublicDecls("client.ImageAspectRatio", client.ImageAspectRatio, &.{});
     assertExactPublicDecls("client.ImageOutputOptions", client.ImageOutputOptions, &.{});
     assertExactPublicDecls("client.ImageSize", client.ImageSize, &.{});
     assertExactPublicDecls("client.Outcome(CountTokensResult)", client.Outcome(client.CountTokensResult), &.{});
+    assertExactPublicDecls("client.Outcome(GenerationResult)", client.Outcome(client.GenerationResult), &.{});
+    assertExactPublicDecls("client.OutputMime", client.OutputMime, &.{});
     assertExactPublicDecls("client.RequestOptions", client.RequestOptions, &.{});
     assertExactPublicDecls("client.SafetyOptions", client.SafetyOptions, &.{});
     assertExactPublicDecls("client.ServiceTier", client.ServiceTier, &.{});

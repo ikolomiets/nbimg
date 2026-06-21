@@ -13,7 +13,7 @@ comptime {
     }
 }
 
-test "dependency consumer compiles against the typed token-count API" {
+test "dependency consumer compiles against typed generation APIs" {
     const client = try nbimg.Client.init(std.testing.allocator, std.testing.io, .{
         .api_key = "borrowed-key",
     });
@@ -31,6 +31,20 @@ test "dependency consumer compiles against the typed token-count API" {
     const outcome: nbimg.Outcome(nbimg.CountTokensResult) = .{
         .success = .{ .total_tokens = 42 },
     };
+    var generation_result = nbimg.GenerationResult{
+        .response_id = try std.testing.allocator.dupe(u8, "response"),
+        .images = try std.testing.allocator.alloc(nbimg.GeneratedImage, 1),
+        .reported_service_tier = .standard,
+    };
+    generation_result.images[0] = .{
+        .candidate_position = 0,
+        .part_position = 1,
+        .mime = .png,
+        .bytes = try std.testing.allocator.dupe(u8, "image"),
+    };
+    defer generation_result.deinit(std.testing.allocator);
+    const generate = nbimg.Client.generate;
+    _ = generate;
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
     try std.testing.expectEqualStrings(
@@ -41,4 +55,5 @@ test "dependency consumer compiles against the typed token-count API" {
         .success => |result| try std.testing.expectEqual(@as(u64, 42), result.total_tokens),
         .api_failure => |*failure| failure.deinit(std.testing.allocator),
     }
+    try std.testing.expectEqual(nbimg.OutputMime.png, generation_result.images[0].mime);
 }

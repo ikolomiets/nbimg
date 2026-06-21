@@ -54,8 +54,10 @@ comptime {
         "Client",
         "ClientOptions",
         "CountTokensResult",
+        "GeneratedImage",
         "GenerationOptions",
         "GenerationRequest",
+        "GenerationResult",
         "GenerationValidationError",
         "GroundingOptions",
         "HarmBlockThreshold",
@@ -63,6 +65,7 @@ comptime {
         "ImageOutputOptions",
         "ImageSize",
         "Outcome",
+        "OutputMime",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
@@ -80,18 +83,27 @@ comptime {
     });
     assertExactPublicDecls("root.Client", root.Client, &.{
         "countGenerateTokens",
+        "generate",
         "init",
     });
     assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
     assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
+    assertExactPublicDecls("root.GeneratedImage", root.GeneratedImage, &.{
+        "deinit",
+    });
     assertExactPublicDecls("root.GenerationOptions", root.GenerationOptions, &.{});
     assertExactPublicDecls("root.GenerationRequest", root.GenerationRequest, &.{});
+    assertExactPublicDecls("root.GenerationResult", root.GenerationResult, &.{
+        "deinit",
+    });
     assertExactPublicDecls("root.GroundingOptions", root.GroundingOptions, &.{});
     assertExactPublicDecls("root.HarmBlockThreshold", root.HarmBlockThreshold, &.{});
     assertExactPublicDecls("root.ImageAspectRatio", root.ImageAspectRatio, &.{});
     assertExactPublicDecls("root.ImageOutputOptions", root.ImageOutputOptions, &.{});
     assertExactPublicDecls("root.ImageSize", root.ImageSize, &.{});
     assertExactPublicDecls("root.Outcome(CountTokensResult)", root.Outcome(root.CountTokensResult), &.{});
+    assertExactPublicDecls("root.Outcome(GenerationResult)", root.Outcome(root.GenerationResult), &.{});
+    assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
     assertExactPublicDecls("root.RequestOptions", root.RequestOptions, &.{});
     assertExactPublicDecls("root.SafetyOptions", root.SafetyOptions, &.{});
     assertExactPublicDecls("root.ServiceTier", root.ServiceTier, &.{});
