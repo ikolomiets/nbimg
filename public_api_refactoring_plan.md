@@ -20,10 +20,12 @@ an intermediate state that requires the next item to build or pass tests.
 
 1. **Separate package-contract tests from internal module-seam tests**
 
+   **Status:** Completed.
+
    **Result:** Distinguish declarations supported for package consumers from
    declarations that are `pub` only so another source file can use them.
 
-   **Proposed changes:**
+   **Completed changes:**
 
    - Change `src/public_api_test.zig` to inspect the declarations reachable
      through `src/root.zig`.
@@ -36,8 +38,8 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Compatibility:** No source or CLI behavior changes.
 
-   **Validation:** Run `zig fmt --check build.zig src`, `zig build test`, and
-   `zig build`.
+   **Validation completed:** `zig fmt --check build.zig src`,
+   `zig build test`, and `zig build`.
 
    **Complete when:** Package exports and internal cross-file declarations are
    guarded by separate exact allowlists with unambiguous names.

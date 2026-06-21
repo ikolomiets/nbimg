@@ -38,7 +38,8 @@ pub fn build(b: *std.Build) void {
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "edit", "src/edit.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "files", "src/files.zig");
     addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "cli", "src/cli.zig");
-    addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "public-api", "src/public_api_test.zig");
+    addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "package-api", "src/public_api_test.zig");
+    addTestRoot(b, test_step, target, execution_optimize, live_api_tests, test_filters, "internal-module-api", "src/internal_module_api_test.zig");
 
     addLiveApiTestStep(
         b,

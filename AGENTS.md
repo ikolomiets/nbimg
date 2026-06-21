@@ -29,8 +29,10 @@ cross-command transport, wire, MIME, resource-name, or response mechanics in
 Declarations default to private. Same-file tests, possible future use, and
 convenience aliases do not justify `pub`. Public concrete structs expose their
 fields, so keep implementation state and wire-only types private. Treat every
-change to a module's public declarations or public container methods as an
-interface change and update the exact allowlists in `src/public_api_test.zig`.
+change to the package root, a module's public declarations, or public container
+methods as an interface change. Update the package allowlist in
+`src/public_api_test.zig` or the internal seam allowlists in
+`src/internal_module_api_test.zig`, as applicable.
 
 Follow the repository style documents: use `zig fmt`, `snake_case`, small
 scopes, bounded resources, explicit ownership, and simple control flow. Pass
@@ -49,7 +51,9 @@ checks across serialization/parsing or other trust boundaries.
 Keep changes scoped and update only affected artifacts:
 
 - Functional changes: add focused tests near the owning module.
-- Public declarations or methods: update `src/public_api_test.zig`.
+- Package exports: update `src/public_api_test.zig`.
+- Internal module declarations or methods: update
+  `src/internal_module_api_test.zig`.
 - User-visible commands, flags, output, or workflows: update `README.md`.
 - Architecture, API behavior, output naming, module ownership, or known gaps:
   update `docs/IMPLEMENTATION_DESIGN.md`.

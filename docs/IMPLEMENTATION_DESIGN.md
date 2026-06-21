@@ -114,12 +114,14 @@ The supported module interfaces are intentionally narrow:
   serializers, endpoint URL helpers, and lower-level request machinery remain
   internal.
 
-`src/public_api_test.zig` imports each module as an external consumer and uses
-compile-time declaration reflection to compare every module namespace against
-an exact, order-independent allowlist. It also checks public methods on
-exported container types. The test is registered with `zig build test`, so an
-added, removed, or accidentally public declaration requires an explicit
-allowlist decision.
+The package contract and internal module seams have separate compile-time API
+tests. `src/public_api_test.zig` imports `src/root.zig` and compares its
+consumer-reachable package exports against an exact, order-independent
+allowlist. `src/internal_module_api_test.zig` imports each implementation
+module directly and applies separate exact allowlists to declarations and
+public container methods that are visible for cross-file use. Both tests are
+registered with `zig build test`, so a package export or internal seam change
+requires an explicit decision in the corresponding allowlist.
 
 ### API Module Boundaries
 
@@ -195,11 +197,12 @@ the build cache. The normal offline `test` step and dedicated live API test
 steps also compile Debug artifacts for faster feedback.
 
 The `test` step builds test roots from `src/api.zig`, `src/batch.zig`,
-`src/gen.zig`, `src/edit.zig`, `src/files.zig`, `src/cli.zig`, and
-`src/public_api_test.zig` so tests stay close to their owning modules and
-module API boundaries are compile-time enforced. Tests receive a generated
-`build_options` module with `live_api_tests = false` by default. Passing
-`-Dlive-api-tests` enables live tests for a filtered test run.
+`src/gen.zig`, `src/edit.zig`, `src/files.zig`, `src/cli.zig`,
+`src/public_api_test.zig`, and `src/internal_module_api_test.zig` so tests stay
+close to their owning modules while package and internal module API boundaries
+are independently enforced. Tests receive a generated `build_options` module
+with `live_api_tests = false` by default. Passing `-Dlive-api-tests` enables
+live tests for a filtered test run.
 
 Default builds produce the final ReleaseSafe executable:
 
