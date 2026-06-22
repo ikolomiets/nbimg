@@ -56,6 +56,12 @@ comptime {
         "CountTokensResult",
         "EditRequest",
         "EditValidationError",
+        "File",
+        "FileListPage",
+        "FileSource",
+        "FileState",
+        "FileUpload",
+        "FileValidationError",
         "GeneratedImage",
         "GenerationOptions",
         "GenerationRequest",
@@ -71,6 +77,7 @@ comptime {
         "OutputMime",
         "Reference",
         "ReferenceRole",
+        "RemoteError",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
@@ -86,6 +93,7 @@ comptime {
         "max_edit_preserve_constraints",
         "max_edit_reference_label_bytes",
         "max_edit_references",
+        "max_file_upload_bytes",
     });
 
     assertExactPublicDecls("root.ApiFailure", root.ApiFailure, &.{
@@ -94,13 +102,30 @@ comptime {
     assertExactPublicDecls("root.Client", root.Client, &.{
         "countEditTokens",
         "countGenerateTokens",
+        "deleteFile",
         "edit",
         "generate",
+        "getFile",
         "init",
+        "listFilesPage",
+        "uploadFile",
     });
     assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
     assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
     assertExactPublicDecls("root.EditRequest", root.EditRequest, &.{});
+    assertExactPublicDecls("root.File", root.File, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.FileListPage", root.FileListPage, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.FileSource", root.FileSource, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.FileState", root.FileState, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.FileUpload", root.FileUpload, &.{});
     assertExactPublicDecls("root.GeneratedImage", root.GeneratedImage, &.{
         "deinit",
     });
@@ -117,9 +142,15 @@ comptime {
     assertExactPublicDecls("root.InputImageMime", root.InputImageMime, &.{});
     assertExactPublicDecls("root.Outcome(CountTokensResult)", root.Outcome(root.CountTokensResult), &.{});
     assertExactPublicDecls("root.Outcome(GenerationResult)", root.Outcome(root.GenerationResult), &.{});
+    assertExactPublicDecls("root.Outcome(File)", root.Outcome(root.File), &.{});
+    assertExactPublicDecls("root.Outcome(FileListPage)", root.Outcome(root.FileListPage), &.{});
+    assertExactPublicDecls("root.Outcome(void)", root.Outcome(void), &.{});
     assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
     assertExactPublicDecls("root.Reference", root.Reference, &.{});
     assertExactPublicDecls("root.ReferenceRole", root.ReferenceRole, &.{});
+    assertExactPublicDecls("root.RemoteError", root.RemoteError, &.{
+        "deinit",
+    });
     assertExactPublicDecls("root.RequestOptions", root.RequestOptions, &.{});
     assertExactPublicDecls("root.SafetyOptions", root.SafetyOptions, &.{});
     assertExactPublicDecls("root.ServiceTier", root.ServiceTier, &.{});

@@ -6,7 +6,9 @@ const client = @import("client.zig");
 const cli = @import("cli.zig");
 const edit = @import("edit.zig");
 const files = @import("files.zig");
+const file_domain = @import("files_domain.zig");
 const gen = @import("gen.zig");
+const operation = @import("operation.zig");
 
 fn contains(comptime names: []const []const u8, comptime candidate: []const u8) bool {
     inline for (names) |name| {
@@ -65,9 +67,13 @@ comptime {
         "CountTokensResult",
         "EditRequest",
         "EditValidationError",
+        "File",
+        "FileListPage",
+        "FileSource",
+        "FileState",
+        "FileUpload",
+        "FileValidationError",
         "GeneratedImage",
-        "GeneratedContentOperationOutcome",
-        "GeneratedContentResponsePolicy",
         "GenerationOptions",
         "GenerationRequest",
         "GenerationResult",
@@ -79,9 +85,11 @@ comptime {
         "ImageSize",
         "InputImageMime",
         "Outcome",
+        "OperationOutcome",
         "OutputMime",
         "Reference",
         "ReferenceRole",
+        "RemoteError",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
@@ -96,6 +104,7 @@ comptime {
         "max_edit_preserve_constraints",
         "max_edit_reference_label_bytes",
         "max_edit_references",
+        "max_file_upload_bytes",
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
@@ -123,11 +132,31 @@ comptime {
         "decodeFile",
         "decodeFileListPage",
         "decodeUploadedFile",
+        "deleteFileWithContext",
         "deleteFile",
+        "getFileWithContext",
         "getFile",
+        "listFilesPageWithContext",
         "listFilesPage",
         "max_upload_bytes",
+        "uploadFileWithContext",
         "uploadFile",
+    });
+    assertExactPublicDecls("file_domain", file_domain, &.{
+        "File",
+        "FileListPage",
+        "FileSource",
+        "FileState",
+        "FileUpload",
+        "FileValidationError",
+        "InputImageMime",
+        "RemoteError",
+        "max_file_upload_bytes",
+    });
+    assertExactPublicDecls("operation", operation, &.{
+        "ApiFailure",
+        "OperationOutcome",
+        "Outcome",
     });
     assertExactPublicDecls("batch", batch, &.{
         "DownloadInfo",
@@ -284,20 +313,35 @@ comptime {
     assertExactPublicDecls("client.Client", client.Client, &.{
         "countEditTokens",
         "countGenerateTokens",
+        "deleteFile",
         "edit",
         "generate",
+        "getFile",
         "init",
+        "listFilesPage",
+        "uploadFile",
     });
     assertExactPublicDecls("client.ClientOptions", client.ClientOptions, &.{});
     assertExactPublicDecls("client.CountTokensResult", client.CountTokensResult, &.{});
     assertExactPublicDecls("client.EditRequest", client.EditRequest, &.{});
+    assertExactPublicDecls("client.File", client.File, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.FileListPage", client.FileListPage, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.FileSource", client.FileSource, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.FileState", client.FileState, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.FileUpload", client.FileUpload, &.{});
     assertExactPublicDecls("client.GeneratedImage", client.GeneratedImage, &.{
         "deinit",
     });
     assertExactPublicDecls("client.GenerationOptions", client.GenerationOptions, &.{});
-    assertExactPublicDecls("client.GeneratedContentOperationOutcome", client.GeneratedContentOperationOutcome, &.{});
     assertExactPublicDecls("client.GenerationRequest", client.GenerationRequest, &.{});
-    assertExactPublicDecls("client.GeneratedContentResponsePolicy", client.GeneratedContentResponsePolicy, &.{});
     assertExactPublicDecls("client.GenerationResult", client.GenerationResult, &.{
         "deinit",
     });
@@ -309,9 +353,20 @@ comptime {
     assertExactPublicDecls("client.InputImageMime", client.InputImageMime, &.{});
     assertExactPublicDecls("client.Outcome(CountTokensResult)", client.Outcome(client.CountTokensResult), &.{});
     assertExactPublicDecls("client.Outcome(GenerationResult)", client.Outcome(client.GenerationResult), &.{});
+    assertExactPublicDecls("client.Outcome(File)", client.Outcome(client.File), &.{});
+    assertExactPublicDecls("client.Outcome(FileListPage)", client.Outcome(client.FileListPage), &.{});
+    assertExactPublicDecls("client.Outcome(void)", client.Outcome(void), &.{});
+    assertExactPublicDecls(
+        "client.OperationOutcome(GenerationResult)",
+        client.OperationOutcome(client.GenerationResult),
+        &.{},
+    );
     assertExactPublicDecls("client.OutputMime", client.OutputMime, &.{});
     assertExactPublicDecls("client.Reference", client.Reference, &.{});
     assertExactPublicDecls("client.ReferenceRole", client.ReferenceRole, &.{});
+    assertExactPublicDecls("client.RemoteError", client.RemoteError, &.{
+        "deinit",
+    });
     assertExactPublicDecls("client.RequestOptions", client.RequestOptions, &.{});
     assertExactPublicDecls("client.SafetyOptions", client.SafetyOptions, &.{});
     assertExactPublicDecls("client.ServiceTier", client.ServiceTier, &.{});
@@ -333,6 +388,38 @@ comptime {
     assertExactPublicDecls("files.FileListPage", files.FileListPage, &.{
         "deinit",
     });
+
+    assertExactPublicDecls("file_domain.FileUpload", file_domain.FileUpload, &.{});
+    assertExactPublicDecls("file_domain.File", file_domain.File, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("file_domain.FileListPage", file_domain.FileListPage, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("file_domain.FileState", file_domain.FileState, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("file_domain.FileSource", file_domain.FileSource, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("file_domain.RemoteError", file_domain.RemoteError, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("file_domain.InputImageMime", file_domain.InputImageMime, &.{});
+
+    assertExactPublicDecls("operation.ApiFailure", operation.ApiFailure, &.{
+        "deinit",
+    });
+    assertExactPublicDecls(
+        "operation.Outcome(void)",
+        operation.Outcome(void),
+        &.{},
+    );
+    assertExactPublicDecls(
+        "operation.OperationOutcome(void)",
+        operation.OperationOutcome(void),
+        &.{},
+    );
 
     assertExactPublicDecls("batch.SubmitRequest", batch.SubmitRequest, &.{});
     assertExactPublicDecls("batch.DownloadInfo", batch.DownloadInfo, &.{

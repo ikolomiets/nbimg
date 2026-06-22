@@ -49,7 +49,7 @@ Batch streaming uploads.
 
 ## Module Layout
 
-The code is split into nine source files:
+The code is split into eleven source files:
 
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
@@ -58,8 +58,12 @@ The code is split into nine source files:
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
-  returned validation errors, outcome classification, API-failure ownership,
-  and conversion to and from the existing generation and edit wire paths.
+  returned validation errors, public Files methods, and conversion to and from
+  the existing command wire paths.
+- `src/operation.zig` owns shared `ApiFailure`, `Outcome(T)`, and internal
+  stage-aware `OperationOutcome(T)` response types.
+- `src/files_domain.zig` owns the public Files request, result, state, source,
+  remote-error, validation-error, and upload-limit declarations.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -81,8 +85,8 @@ The code is split into nine source files:
   validation and content construction, edit manifest text, and File API URI
   derivation.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
-  construction, upload/list/get response decoding, and
-  Files API endpoint handling.
+  construction, legacy and typed response decoding, typed response
+  classification, and Files API endpoint handling.
 
 The supported package API is a typed client:
 
@@ -131,16 +135,22 @@ bound. `Client.edit` returns `Outcome(GenerationResult)`;
 `Client.countEditTokens` returns `Outcome(CountTokensResult)`.
 
 `generateWithContext` and `editWithContext` are internal public seams that
-accept an explicit `api.RequestContext` and shared generated-content response
-policy. Public methods supply a quiet context and the public-client policy;
-immediate CLI generation and edit supply their logging-enabled context and CLI
-policy. The public policy accepts any 2xx and rejects unknown reported service
-tiers. The CLI policy requires HTTP 200 and treats unknown tiers as absent. A
-tagged internal outcome distinguishes success, completed API failure, and
-response-decoding failure so callers can preserve different error contracts.
-Both immediate commands share CLI result ownership, priority-downgrade
-warnings, output writing, diagnostics, and exit-code handling. Public client
-response traffic is not logged.
+accept an explicit `api.RequestContext`. Both public and CLI callers accept
+every completed 2xx response and reject unknown reported service tiers. The
+generic `OperationOutcome(T)` distinguishes typed success, completed API
+failure, and successful-response decoding failure. Public methods convert the
+last case into a Zig error; CLI callers retain the stage to select diagnostics
+and exit codes. Both immediate commands share result ownership,
+priority-downgrade warnings, output writing, diagnostics, and exit-code
+handling. Public client response traffic is not logged.
+
+`Client.uploadFile`, `Client.getFile`, `Client.listFilesPage`, and
+`Client.deleteFile` use quiet request contexts and typed context-taking
+operations in `src/files.zig`. Uploads borrow bytes and optional display
+metadata. File and page results own their nested allocations. Input validation
+runs before allocation or network IO. Completed non-2xx responses preserve
+their bounded bodies as `ApiFailure`; malformed successful response bodies are
+Zig errors at the public method boundary.
 
 The previous command-domain namespace remains temporarily available:
 
@@ -156,16 +166,21 @@ The internal module interfaces are intentionally narrow:
 
 - `cli` exports only `run` for executable assembly.
 - `client` exports only the deliberate supported client declarations and their
-  ownership methods plus the policy-bearing internal generated-content seams.
+  ownership methods plus context-taking generated-content seams and the
+  generic internal operation outcome.
+- `operation` exports only shared typed-operation outcome and API-failure
+  ownership declarations.
+- `files_domain` exports only deliberate public Files domain declarations.
 - `gen` exports only generation-request construction for the typed client and
   CLI Batch-file preparation. Token-count request helpers remain
   module-internal.
 - `edit` exports the CLI/client-consumed wire request models and limits,
   edit-specific bounded validation, generation-request construction, and label
   validation. Prompt-fragment and File URI builders remain internal.
-- `files` exports upload/file/list models, their ownership methods,
-  upload/list/get/delete operations, response decoders, and the upload-size
-  limit. Shared uploaded-name decoding is exposed only by `api`.
+- `files` exports legacy upload/file/list models and raw operations for CLI
+  compatibility, plus typed context-taking operations for the public client.
+  Typed response decoders remain private. Shared uploaded-name decoding is
+  exposed only by `api`.
 - `batch` exports the CLI-consumed models and limits, ownership/iteration
   methods, upload/submit/status/download/cancel/list operations, response
   decoders, and JSONL/output helpers. Wire constants, submit serialization,
@@ -198,11 +213,13 @@ exit codes. API modules own only request/response wire shapes and HTTP
 transport.
 
 Command-domain modules must not depend on each other. `src/gen.zig`,
-`src/edit.zig`, `src/files.zig`, and `src/batch.zig` may import only
-`api.zig`, `std`, and `build_options` for project-local/shared functionality.
-`src/client.zig` is the package façade and may import `gen.zig`, `edit.zig`,
-and `api.zig` to convert validated public requests into the existing internal
-request paths.
+`src/edit.zig`, and `src/batch.zig` may import only `api.zig`, `std`, and
+`build_options` for project-local/shared functionality. `src/files.zig` may
+additionally import the flat shared `files_domain.zig` and `operation.zig`
+modules required by its typed operations. `src/client.zig` is the package
+façade and may import `gen.zig`, `edit.zig`, `files.zig`, `files_domain.zig`,
+`operation.zig`, and `api.zig` to convert validated public requests into the
+existing internal request paths.
 Cross-command workflows
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
@@ -228,11 +245,12 @@ and interleaves role anchor text and `file_data` parts. The typed client uses
 the resulting generateContent shape for immediate edits and countTokens; CLI
 Batch-file preparation continues to call the internal builder directly.
 
-`src/files.zig` owns Gemini Files API semantics. It receives shared image MIME
-types from `src/api.zig`, applies image extension and size policy, invokes the
-shared resumable byte-upload transport, builds paginated list URLs and
-file-resource get/delete URLs, and decodes uploaded/listed/fetched File
-metadata.
+`src/files.zig` owns Gemini Files API semantics. Legacy CLI operations receive
+wire image MIME types from `src/api.zig`; typed operations receive public
+`FileUpload` values from `src/files_domain.zig`. The module validates typed
+uploads, canonical names, and page tokens, invokes the shared resumable
+byte-upload transport, builds paginated list and file-resource URLs, and
+decodes uploaded/listed/fetched File metadata.
 
 `src/batch.zig` owns Gemini Batch API semantics. It enforces the 5 MiB
 serialized-entry and 512 MiB local file limits, counts entries, leaves submit
@@ -880,6 +898,35 @@ original response body remains unchanged for decoding and file output.
 
 ## Files API
 
+The supported library exposes typed Files operations:
+
+- `Client.uploadFile(FileUpload) !Outcome(File)`
+- `Client.getFile([]const u8) !Outcome(File)`
+- `Client.listFilesPage(?[]const u8) !Outcome(FileListPage)`
+- `Client.deleteFile([]const u8) !Outcome(void)`
+
+`FileUpload` admits JPEG, PNG, and WebP bytes up to
+`max_file_upload_bytes`. Empty or oversized bytes, invalid display names,
+noncanonical `files/...` names, and present empty page tokens return
+`FileValidationError` before allocation or network IO. A null page token
+requests the first fixed-size page.
+
+Typed File decoding requires a canonical owned name. Optional display name,
+MIME, timestamp, hash, URI, and download URI strings are owned; returned MIME
+is opaque because list/get can include non-image resources. `sizeBytes` is
+parsed from the wire string into `?u64`; negative, malformed, or overflowing
+values fail successful-response decoding. Absent state/source values and
+`STATE_UNSPECIFIED`/`SOURCE_UNSPECIFIED` map to allocation-free
+`.unspecified` tags. Other documented values map to known tags, while unknown
+spellings are preserved as owned bytes.
+
+A populated File processing error becomes `RemoteError`: its signed code is
+optional, its message is required and owned, and non-null details are retained
+as compact owned JSON. `File`, `FileListPage`, `FileState`, `FileSource`, and
+`RemoteError` provide allocator-based `deinit` methods. All typed Files
+operations accept every 2xx response. Delete discards any bounded successful
+body without requiring JSON.
+
 The `files` command uses Gemini's project-level Files API endpoints. It does
 not take a model flag; the rest of the tool still uses the fixed internal
 `nano2` model for generation and token validation.
@@ -1293,6 +1340,10 @@ Allocator ownership is explicit:
 - `client.generateWithContext` and `client.editWithContext` receive `gpa`
   through their request context for request JSON, HTTP client state, response
   buffering, decoded images, and result metadata.
+- Typed Files context operations receive `gpa` through the same request
+  context. `File` owns its canonical name, optional metadata strings, unknown
+  state/source spellings, and optional `RemoteError`; `FileListPage` owns its
+  File slice and continuation token.
 - `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
 - `batch.uploadInput` receives already-read validated JSONL bytes; CLI
@@ -1316,9 +1367,11 @@ Allocator ownership is explicit:
   buffers, one owned response ID, and an optional owned reported service-tier
   spelling. The typed client transfers the response ID and image buffers into
   `GenerationResult` without copying image bytes.
-- `HttpResponse.deinit`, `FileListPage.deinit`, `batch.ListPage.deinit`,
-  `GeneratedFile.deinit`, `GeneratedFiles.deinit`, `GeneratedImage.deinit`,
-  and `GenerationResult.deinit` release owned allocations.
+- `HttpResponse.deinit`, both legacy and typed `FileListPage.deinit`,
+  typed `File.deinit`, `FileState.deinit`, `FileSource.deinit`,
+  `RemoteError.deinit`, `batch.ListPage.deinit`, `GeneratedFile.deinit`,
+  `GeneratedFiles.deinit`, `GeneratedImage.deinit`, and
+  `GenerationResult.deinit` release owned allocations.
 
 Partial decode and public-result conversion failures clean up already-decoded
 file buffers and metadata with `errdefer`.
@@ -1346,6 +1399,10 @@ Current tests cover:
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
 - Decoding Files API upload, list, and get responses.
+- Typed Files validation, image and opaque MIME metadata, numeric size bounds,
+  pagination, download URI, known and unknown state/source values, remote
+  errors, all 2xx delete statuses, malformed successes, API failures, and
+  partial-allocation cleanup.
 - Files API metadata JSON output shape, omitted optional fields, and string
   escaping.
 - Files API file-resource URL construction and canonical file-name validation.
@@ -1453,19 +1510,21 @@ Live Files API checks live in `src/files.zig`. They upload
 `nbimg live api sample`, assert the returned file ID starts with `files/`,
 check the returned `displayName` when Google includes it, list Files API
 entries, assert the uploaded ID appears, and fetch that uploaded File through
-`files.get`. The live delete target deletes an uploaded file, asserts the
-success body parses as an empty JSON object, checks that `files.get` returns
-403 afterward, checks a second delete returns 403, and probes a fixed missing
-test name before asserting deleting that missing name also returns 403. Request
-logging confirms the upload-start body uses `displayName` and file-resource
-endpoints use `/v1beta/files/{id}`; response logging shows the actual File
-fields and delete response bodies returned by Gemini for the current API
-behavior. Live tests construct logging-enabled `api.RequestContext` values,
-require a non-empty `GEMINI_API_KEY`, perform network IO, may leave an uploaded
-file in the Gemini Files API until Google expires it if a delete test fails
-before cleanup, intentionally retain Batch input uploads, and can fail due to
-quota or remote API errors. The Batch list target is read-only and non-billable.
-The Batch submit/status target creates one billable non-idempotent job.
+the typed context-taking get operation. The upload/list and get targets
+best-effort delete their temporary upload. The live delete target deletes an
+uploaded file, accepts its arbitrary successful body, checks that typed get
+returns 403 afterward, checks a second delete returns 403, and probes a fixed
+missing test name before asserting deleting that missing name also returns
+403. Request logging confirms the upload-start body uses `displayName` and
+file-resource endpoints use `/v1beta/files/{id}`; response logging shows the
+actual File fields and delete response bodies returned by Gemini for the
+current API behavior. Live tests construct logging-enabled
+`api.RequestContext` values, require a non-empty `GEMINI_API_KEY`, perform
+network IO, may leave an uploaded file in the Gemini Files API until Google
+expires it if cleanup fails, intentionally retain Batch input uploads, and can
+fail due to quota or remote API errors. The Batch list target is read-only and
+non-billable. The Batch submit/status target creates one billable
+non-idempotent job.
 
 ## Known Gaps
 

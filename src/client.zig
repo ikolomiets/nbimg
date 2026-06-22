@@ -3,7 +3,10 @@
 const std = @import("std");
 const api = @import("api.zig");
 const edit_api = @import("edit.zig");
+const file_domain = @import("files_domain.zig");
+const files_api = @import("files.zig");
 const gen = @import("gen.zig");
+const operation = @import("operation.zig");
 
 const default_request_timeout = std.Io.Duration.fromSeconds(180);
 
@@ -32,38 +35,17 @@ pub const ClientOptions = struct {
     timeout: std.Io.Duration = default_request_timeout,
 };
 
-/// Owns a completed non-success HTTP response body.
-pub const ApiFailure = struct {
-    status: std.http.Status,
-    body: []u8,
-
-    /// Frees the response body and invalidates the value.
-    pub fn deinit(failure: *ApiFailure, allocator: std.mem.Allocator) void {
-        allocator.free(failure.body);
-        failure.* = undefined;
-    }
-};
+pub const ApiFailure = operation.ApiFailure;
 
 /// Represents either a decoded operation result or a completed API failure.
 pub fn Outcome(comptime T: type) type {
-    return union(enum) {
-        success: T,
-        api_failure: ApiFailure,
-    };
+    return operation.Outcome(T);
 }
 
-/// Selects response compatibility for one internal generated-content caller.
-pub const GeneratedContentResponsePolicy = enum {
-    public_client,
-    immediate_cli,
-};
-
-/// Separates completed generated-content responses by processing stage.
-pub const GeneratedContentOperationOutcome = union(enum) {
-    success: GenerationResult,
-    api_failure: ApiFailure,
-    response_decoding_failure: anyerror,
-};
+/// Separates completed responses by transport and decoding stage.
+pub fn OperationOutcome(comptime T: type) type {
+    return operation.OperationOutcome(T);
+}
 
 pub const ImageAspectRatio = enum {
     r1_1,
@@ -199,11 +181,16 @@ pub const GenerationRequest = struct {
     request_options: RequestOptions = .{},
 };
 
-pub const InputImageMime = enum {
-    jpeg,
-    png,
-    webp,
-};
+pub const InputImageMime = file_domain.InputImageMime;
+
+pub const FileUpload = file_domain.FileUpload;
+pub const File = file_domain.File;
+pub const FileListPage = file_domain.FileListPage;
+pub const FileState = file_domain.FileState;
+pub const FileSource = file_domain.FileSource;
+pub const RemoteError = file_domain.RemoteError;
+pub const FileValidationError = file_domain.FileValidationError;
+pub const max_file_upload_bytes = file_domain.max_file_upload_bytes;
 
 pub const ReferenceRole = enum {
     scene,
@@ -385,18 +372,11 @@ pub const Client = struct {
         client: *const Client,
         request: GenerationRequest,
     ) !Outcome(GenerationResult) {
-        const context = api.RequestContext{
-            .gpa = client.allocator,
-            .io = client.io,
-            .api_key = client.api_key,
-            .timeout = client.timeout,
-        };
-        const outcome = try generateWithContext(&context, request, .public_client);
-        return switch (outcome) {
-            .success => |result| .{ .success = result },
-            .api_failure => |failure| .{ .api_failure = failure },
-            .response_decoding_failure => |err| return err,
-        };
+        const context = client.requestContext();
+        return publicOutcome(
+            GenerationResult,
+            try generateWithContext(&context, request),
+        );
     }
 
     /// Edits an uploaded image and returns owned decoded images.
@@ -406,17 +386,67 @@ pub const Client = struct {
         client: *const Client,
         request: EditRequest,
     ) !Outcome(GenerationResult) {
-        const context = api.RequestContext{
+        const context = client.requestContext();
+        return publicOutcome(
+            GenerationResult,
+            try editWithContext(&context, request),
+        );
+    }
+
+    /// Uploads borrowed image bytes and returns owned File metadata.
+    pub fn uploadFile(
+        client: *const Client,
+        upload: FileUpload,
+    ) !Outcome(File) {
+        const context = client.requestContext();
+        return publicOutcome(
+            File,
+            try files_api.uploadFileWithContext(&context, upload),
+        );
+    }
+
+    /// Fetches one canonical File resource and returns owned metadata.
+    pub fn getFile(
+        client: *const Client,
+        name: []const u8,
+    ) !Outcome(File) {
+        const context = client.requestContext();
+        return publicOutcome(
+            File,
+            try files_api.getFileWithContext(&context, name),
+        );
+    }
+
+    /// Fetches one fixed-size File page using an optional continuation token.
+    pub fn listFilesPage(
+        client: *const Client,
+        page_token: ?[]const u8,
+    ) !Outcome(FileListPage) {
+        const context = client.requestContext();
+        return publicOutcome(
+            FileListPage,
+            try files_api.listFilesPageWithContext(&context, page_token),
+        );
+    }
+
+    /// Deletes one canonical File resource.
+    pub fn deleteFile(
+        client: *const Client,
+        name: []const u8,
+    ) !Outcome(void) {
+        const context = client.requestContext();
+        return publicOutcome(
+            void,
+            try files_api.deleteFileWithContext(&context, name),
+        );
+    }
+
+    fn requestContext(client: *const Client) api.RequestContext {
+        return .{
             .gpa = client.allocator,
             .io = client.io,
             .api_key = client.api_key,
             .timeout = client.timeout,
-        };
-        const outcome = try editWithContext(&context, request, .public_client);
-        return switch (outcome) {
-            .success => |result| .{ .success = result },
-            .api_failure => |failure| .{ .api_failure = failure },
-            .response_decoding_failure => |err| return err,
         };
     }
 };
@@ -428,30 +458,39 @@ pub const Client = struct {
 pub fn generateWithContext(
     context: *const api.RequestContext,
     request: GenerationRequest,
-    response_policy: GeneratedContentResponsePolicy,
-) !GeneratedContentOperationOutcome {
+) !OperationOutcome(GenerationResult) {
     try validateGenerationRequest(request);
 
     const request_json = try buildGenerateRequest(context.gpa, request);
     defer context.gpa.free(request_json);
 
     var response = try api.postGenerateContentJson(context, .nano2, request_json);
-    return generatedContentOutcomeFromResponse(context.gpa, &response, response_policy);
+    return generatedContentOutcomeFromResponse(context.gpa, &response);
 }
 
 /// Edits an image using an explicit internal request context.
 pub fn editWithContext(
     context: *const api.RequestContext,
     request: EditRequest,
-    response_policy: GeneratedContentResponsePolicy,
-) !GeneratedContentOperationOutcome {
+) !OperationOutcome(GenerationResult) {
     try validateEditRequest(request);
 
     const request_json = try buildEditGenerateRequest(context.gpa, request);
     defer context.gpa.free(request_json);
 
     var response = try api.postGenerateContentJson(context, .nano2, request_json);
-    return generatedContentOutcomeFromResponse(context.gpa, &response, response_policy);
+    return generatedContentOutcomeFromResponse(context.gpa, &response);
+}
+
+fn publicOutcome(
+    comptime T: type,
+    outcome: OperationOutcome(T),
+) !Outcome(T) {
+    return switch (outcome) {
+        .success => |result| .{ .success = result },
+        .api_failure => |failure| .{ .api_failure = failure },
+        .response_decoding_failure => |err| return err,
+    };
 }
 
 fn countTokensOutcomeFromResponse(
@@ -478,9 +517,8 @@ fn countTokensOutcomeFromResponse(
 fn generatedContentOutcomeFromResponse(
     allocator: std.mem.Allocator,
     response: *api.HttpResponse,
-    response_policy: GeneratedContentResponsePolicy,
-) GeneratedContentOperationOutcome {
-    if (!generatedContentStatusAccepted(response.status, response_policy)) {
+) OperationOutcome(GenerationResult) {
+    if (response.status.class() != .success) {
         const failure = ApiFailure{
             .status = response.status,
             .body = response.body,
@@ -493,11 +531,7 @@ fn generatedContentOutcomeFromResponse(
     var files = api.decodeGeneratedFiles(allocator, response.body) catch |err| {
         return .{ .response_decoding_failure = err };
     };
-    const result = generationResultFromGeneratedFiles(
-        allocator,
-        &files,
-        response_policy,
-    ) catch |err| {
+    const result = generationResultFromGeneratedFiles(allocator, &files) catch |err| {
         files.deinit(allocator);
         return .{ .response_decoding_failure = err };
     };
@@ -505,26 +539,12 @@ fn generatedContentOutcomeFromResponse(
     return .{ .success = result };
 }
 
-fn generatedContentStatusAccepted(
-    status: std.http.Status,
-    response_policy: GeneratedContentResponsePolicy,
-) bool {
-    return switch (response_policy) {
-        .public_client => status.class() == .success,
-        .immediate_cli => status == .ok,
-    };
-}
-
 fn generationResultFromGeneratedFiles(
     allocator: std.mem.Allocator,
     files: *api.GeneratedFiles,
-    response_policy: GeneratedContentResponsePolicy,
 ) !GenerationResult {
     const reported_service_tier = if (files.reported_service_tier_name) |name|
-        serviceTierFromWireName(name) orelse switch (response_policy) {
-            .public_client => return error.UnsupportedServiceTier,
-            .immediate_cli => null,
-        }
+        serviceTierFromWireName(name) orelse return error.UnsupportedServiceTier
     else
         null;
 
@@ -1000,6 +1020,13 @@ test "invalid public request returns before allocation or network IO" {
     };
     try std.testing.expectError(error.EmptyPrompt, client.countEditTokens(invalid_edit));
     try std.testing.expectError(error.EmptyPrompt, client.edit(invalid_edit));
+    try std.testing.expectError(
+        error.EmptyFileBytes,
+        client.uploadFile(.{ .mime = .jpeg, .bytes = "" }),
+    );
+    try std.testing.expectError(error.InvalidFileName, client.getFile("abc123"));
+    try std.testing.expectError(error.EmptyPageToken, client.listFilesPage(""));
+    try std.testing.expectError(error.InvalidFileName, client.deleteFile("files/"));
 }
 
 test "public generation options convert to the existing wire request" {
@@ -1465,7 +1492,6 @@ test "generation response classification transfers images and metadata" {
     var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
-        .public_client,
     );
 
     switch (outcome) {
@@ -1512,7 +1538,6 @@ test "generation result conversion transfers image bytes without copying" {
     var result = try generationResultFromGeneratedFiles(
         std.testing.allocator,
         &files,
-        .public_client,
     );
     defer result.deinit(std.testing.allocator);
 
@@ -1531,7 +1556,6 @@ test "generation response supports absent service tier" {
     var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
-        .public_client,
     );
 
     switch (outcome) {
@@ -1555,7 +1579,6 @@ test "generation response rejects unknown service tier and cleans up" {
     var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
-        .public_client,
     );
     switch (outcome) {
         .success => |*result| {
@@ -1572,67 +1595,28 @@ test "generation response rejects unknown service tier and cleans up" {
     }
 }
 
-test "generation response policies classify HTTP statuses independently" {
+test "generation response accepts every successful HTTP status class" {
     const json =
         "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}";
 
-    var public_created = api.HttpResponse{
-        .status = .created,
-        .body = try std.testing.allocator.dupe(u8, json),
-    };
-    var public_outcome = generatedContentOutcomeFromResponse(
-        std.testing.allocator,
-        &public_created,
-        .public_client,
-    );
-    switch (public_outcome) {
-        .success => |*result| result.deinit(std.testing.allocator),
-        .api_failure, .response_decoding_failure => return error.UnexpectedGenerationFailure,
-    }
-
-    var cli_created = api.HttpResponse{
-        .status = .created,
-        .body = try std.testing.allocator.dupe(u8, json),
-    };
-    var cli_outcome = generatedContentOutcomeFromResponse(
-        std.testing.allocator,
-        &cli_created,
-        .immediate_cli,
-    );
-    switch (cli_outcome) {
-        .api_failure => |*failure| failure.deinit(std.testing.allocator),
-        .success => |*result| {
-            result.deinit(std.testing.allocator);
-            return error.UnexpectedSuccess;
-        },
-        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
+    var code: u16 = 200;
+    while (code <= 299) : (code += 1) {
+        var response = api.HttpResponse{
+            .status = @enumFromInt(code),
+            .body = try std.testing.allocator.dupe(u8, json),
+        };
+        var outcome = generatedContentOutcomeFromResponse(
+            std.testing.allocator,
+            &response,
+        );
+        switch (outcome) {
+            .success => |*result| result.deinit(std.testing.allocator),
+            .api_failure, .response_decoding_failure => return error.UnexpectedGenerationFailure,
+        }
     }
 }
 
-test "CLI generation response ignores unknown service tier" {
-    var response = api.HttpResponse{
-        .status = .ok,
-        .body = try std.testing.allocator.dupe(
-            u8,
-            "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"future\"}}",
-        ),
-    };
-    var outcome = generatedContentOutcomeFromResponse(
-        std.testing.allocator,
-        &response,
-        .immediate_cli,
-    );
-
-    switch (outcome) {
-        .success => |*result| {
-            defer result.deinit(std.testing.allocator);
-            try std.testing.expectEqual(@as(?ServiceTier, null), result.reported_service_tier);
-        },
-        .api_failure, .response_decoding_failure => return error.UnexpectedGenerationFailure,
-    }
-}
-
-test "CLI generation response supports recognized and absent service tiers" {
+test "generation response supports recognized and absent service tiers" {
     const bodies = .{
         .{
             "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"standard\"}}",
@@ -1652,7 +1636,6 @@ test "CLI generation response supports recognized and absent service tiers" {
         var outcome = generatedContentOutcomeFromResponse(
             std.testing.allocator,
             &response,
-            .immediate_cli,
         );
         switch (outcome) {
             .success => |*result| {
@@ -1664,31 +1647,28 @@ test "CLI generation response supports recognized and absent service tiers" {
     }
 }
 
-test "generation response policies reject malformed service tier metadata" {
+test "generation response rejects malformed service tier metadata" {
     const json =
         "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":{}}}";
 
-    inline for (.{ GeneratedContentResponsePolicy.public_client, .immediate_cli }) |policy| {
-        var response = api.HttpResponse{
-            .status = .ok,
-            .body = try std.testing.allocator.dupe(u8, json),
-        };
-        var outcome = generatedContentOutcomeFromResponse(
-            std.testing.allocator,
-            &response,
-            policy,
-        );
-        switch (outcome) {
-            .response_decoding_failure => {},
-            .success => |*result| {
-                result.deinit(std.testing.allocator);
-                return error.UnexpectedSuccess;
-            },
-            .api_failure => |*failure| {
-                failure.deinit(std.testing.allocator);
-                return error.UnexpectedApiFailure;
-            },
-        }
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try std.testing.allocator.dupe(u8, json),
+    };
+    var outcome = generatedContentOutcomeFromResponse(
+        std.testing.allocator,
+        &response,
+    );
+    switch (outcome) {
+        .response_decoding_failure => {},
+        .success => |*result| {
+            result.deinit(std.testing.allocator);
+            return error.UnexpectedSuccess;
+        },
+        .api_failure => |*failure| {
+            failure.deinit(std.testing.allocator);
+            return error.UnexpectedApiFailure;
+        },
     }
 }
 
@@ -1700,36 +1680,10 @@ test "generation response classification preserves API failure body" {
     var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
-        .public_client,
     );
 
     switch (outcome) {
         .success => return error.UnexpectedSuccess,
-        .api_failure => |*failure| {
-            try std.testing.expectEqual(std.http.Status.service_unavailable, failure.status);
-            try std.testing.expectEqualStrings("{\"error\":\"complete body\"}", failure.body);
-            failure.deinit(std.testing.allocator);
-        },
-        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
-    }
-}
-
-test "CLI generation response preserves non-200 failure body" {
-    var response = api.HttpResponse{
-        .status = .service_unavailable,
-        .body = try std.testing.allocator.dupe(u8, "{\"error\":\"complete body\"}"),
-    };
-    var outcome = generatedContentOutcomeFromResponse(
-        std.testing.allocator,
-        &response,
-        .immediate_cli,
-    );
-
-    switch (outcome) {
-        .success => |*result| {
-            result.deinit(std.testing.allocator);
-            return error.UnexpectedSuccess;
-        },
         .api_failure => |*failure| {
             try std.testing.expectEqual(std.http.Status.service_unavailable, failure.status);
             try std.testing.expectEqualStrings("{\"error\":\"complete body\"}", failure.body);
@@ -1747,7 +1701,6 @@ test "generation response frees malformed and unsupported successes" {
     var malformed_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &malformed,
-        .public_client,
     );
     switch (malformed_outcome) {
         .response_decoding_failure => |err| {
@@ -1773,7 +1726,6 @@ test "generation response frees malformed and unsupported successes" {
     var unsupported_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &unsupported,
-        .public_client,
     );
     switch (unsupported_outcome) {
         .response_decoding_failure => |err| {

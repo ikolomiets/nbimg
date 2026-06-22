@@ -417,7 +417,6 @@ fn runGen(
     var outcome = client.generateWithContext(
         context,
         generationRequestFromCommand(command),
-        .immediate_cli,
     ) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
@@ -437,7 +436,7 @@ fn runGeneratedContentOutcome(
     io: std.Io,
     request_options: api.RequestOptions,
     out_dir: ?[]const u8,
-    outcome: *client.GeneratedContentOperationOutcome,
+    outcome: *client.OperationOutcome(client.GenerationResult),
 ) u8 {
     return switch (outcome.*) {
         .success => |*result| runGeneratedResult(
@@ -463,7 +462,7 @@ fn runGeneratedContentOutcome(
 }
 
 fn generatedContentOutcomeExitCode(
-    outcome: *const client.GeneratedContentOperationOutcome,
+    outcome: *const client.OperationOutcome(client.GenerationResult),
 ) u8 {
     return switch (outcome.*) {
         .success => exit_success,
@@ -633,7 +632,6 @@ fn runEdit(
     var outcome = client.editWithContext(
         context,
         editRequestFromCommand(command, &references),
-        .immediate_cli,
     ) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
@@ -3605,20 +3603,20 @@ test "generated content priority downgrade requires requested priority and repor
 }
 
 test "generated content CLI outcome maps response stages to exit codes" {
-    const success = client.GeneratedContentOperationOutcome{
+    const success = client.OperationOutcome(client.GenerationResult){
         .success = .{
             .response_id = @constCast("response"),
             .images = &.{},
             .reported_service_tier = null,
         },
     };
-    const api_failure = client.GeneratedContentOperationOutcome{
+    const api_failure = client.OperationOutcome(client.GenerationResult){
         .api_failure = .{
             .status = .service_unavailable,
             .body = @constCast("{\"error\":\"unavailable\"}"),
         },
     };
-    const decoding_failure = client.GeneratedContentOperationOutcome{
+    const decoding_failure = client.OperationOutcome(client.GenerationResult){
         .response_decoding_failure = error.UnexpectedEndOfInput,
     };
 

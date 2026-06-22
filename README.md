@@ -174,13 +174,55 @@ content. Edit inputs use `InputImageMime`; generated outputs use `OutputMime`.
 The exported edit limits cover reference totals, character/object images,
 labels, and preserve/do-not constraints.
 
+Typed Files operations accept borrowed upload data and return owned metadata:
+
+```zig
+var upload_outcome = try client.uploadFile(.{
+    .mime = .jpeg,
+    .bytes = image_bytes,
+    .display_name = "reference.jpg",
+});
+var uploaded = switch (upload_outcome) {
+    .success => |file| file,
+    .api_failure => |*failure| {
+        defer failure.deinit(allocator);
+        return error.FileUploadFailed;
+    },
+};
+defer uploaded.deinit(allocator);
+
+var page_outcome = try client.listFilesPage(null);
+switch (page_outcome) {
+    .success => |*page| {
+        defer page.deinit(allocator);
+        // Pass page.next_page_token to listFilesPage for the next page.
+    },
+    .api_failure => |*failure| failure.deinit(allocator),
+}
+```
+
+`Client.getFile` accepts a canonical `files/...` name.
+`Client.deleteFile` returns `Outcome(void)` and accepts any successful 2xx
+response body. `File` owns its canonical name and optional metadata strings,
+including `download_uri`; `size_bytes` is an optional `u64`. Known File states
+and sources are allocation-free tags, while unknown service spellings are
+owned. A populated `processing_error` owns its message and optional compact
+JSON details. Release `File`, `FileListPage`, `FileState`, `FileSource`, and
+`RemoteError` values with their allocator-based `deinit` methods when they are
+owned independently.
+
 Invalid `GenerationRequest` values return `GenerationValidationError` before
 network IO; invalid `EditRequest` values return `EditValidationError` before
-allocation or network IO. Transport, allocation, timeout, oversized-response,
-and malformed successful-response failures are Zig errors. A completed
+allocation or network IO. Invalid Files inputs return `FileValidationError`;
+the stable upload limit is `max_file_upload_bytes`. Transport, allocation,
+timeout, oversized-response, and malformed successful-response failures are
+Zig errors. All typed operations accept every 2xx response. A completed
 non-success HTTP response is returned as `.api_failure`; its complete bounded
 body is owned and must be released with `ApiFailure.deinit`. Successful edits
 return `GenerationResult` and use the same `deinit` contract as generation.
+Generation and edit reject unknown reported service-tier spellings as
+successful-response decoding failures.
+Immediate CLI generation and edit use the same response contract.
 
 The existing `api`, `files`, and `batch` package paths remain available
 temporarily for compatibility. They are implementation-oriented legacy APIs
