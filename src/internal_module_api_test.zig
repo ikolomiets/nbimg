@@ -63,11 +63,13 @@ comptime {
         "Client",
         "ClientOptions",
         "CountTokensResult",
+        "EditRequest",
+        "EditValidationError",
         "GeneratedImage",
-        "GenerationOperationOutcome",
+        "GeneratedContentOperationOutcome",
+        "GeneratedContentResponsePolicy",
         "GenerationOptions",
         "GenerationRequest",
-        "GenerationResponsePolicy",
         "GenerationResult",
         "GenerationValidationError",
         "GroundingOptions",
@@ -75,14 +77,25 @@ comptime {
         "ImageAspectRatio",
         "ImageOutputOptions",
         "ImageSize",
+        "InputImageMime",
         "Outcome",
         "OutputMime",
+        "Reference",
+        "ReferenceRole",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
         "ThinkingLevel",
         "ThinkingOptions",
+        "UploadedImage",
+        "editWithContext",
         "generateWithContext",
+        "max_edit_character_images",
+        "max_edit_do_not_constraints",
+        "max_edit_object_images",
+        "max_edit_preserve_constraints",
+        "max_edit_reference_label_bytes",
+        "max_edit_references",
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
@@ -97,8 +110,13 @@ comptime {
         "generateContent",
         "isValidLabel",
         "max_character_references",
+        "max_do_not_constraints",
+        "max_label_bytes",
         "max_object_references",
+        "max_preserve_constraints",
         "max_references",
+        "validateRequest",
+        "ValidationError",
     });
     assertExactPublicDecls("files", files, &.{
         "File",
@@ -186,6 +204,7 @@ comptime {
         "isCanonicalFileName",
         "isValidDisplayName",
         "max_generate_request_field_bytes",
+        "max_generate_file_uri_bytes",
         "max_generate_request_parts_total",
         "max_generate_text_part_bytes",
         "max_output_tokens",
@@ -266,19 +285,22 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("client.Client", client.Client, &.{
+        "countEditTokens",
         "countGenerateTokens",
+        "edit",
         "generate",
         "init",
     });
     assertExactPublicDecls("client.ClientOptions", client.ClientOptions, &.{});
     assertExactPublicDecls("client.CountTokensResult", client.CountTokensResult, &.{});
+    assertExactPublicDecls("client.EditRequest", client.EditRequest, &.{});
     assertExactPublicDecls("client.GeneratedImage", client.GeneratedImage, &.{
         "deinit",
     });
     assertExactPublicDecls("client.GenerationOptions", client.GenerationOptions, &.{});
-    assertExactPublicDecls("client.GenerationOperationOutcome", client.GenerationOperationOutcome, &.{});
+    assertExactPublicDecls("client.GeneratedContentOperationOutcome", client.GeneratedContentOperationOutcome, &.{});
     assertExactPublicDecls("client.GenerationRequest", client.GenerationRequest, &.{});
-    assertExactPublicDecls("client.GenerationResponsePolicy", client.GenerationResponsePolicy, &.{});
+    assertExactPublicDecls("client.GeneratedContentResponsePolicy", client.GeneratedContentResponsePolicy, &.{});
     assertExactPublicDecls("client.GenerationResult", client.GenerationResult, &.{
         "deinit",
     });
@@ -287,14 +309,18 @@ comptime {
     assertExactPublicDecls("client.ImageAspectRatio", client.ImageAspectRatio, &.{});
     assertExactPublicDecls("client.ImageOutputOptions", client.ImageOutputOptions, &.{});
     assertExactPublicDecls("client.ImageSize", client.ImageSize, &.{});
+    assertExactPublicDecls("client.InputImageMime", client.InputImageMime, &.{});
     assertExactPublicDecls("client.Outcome(CountTokensResult)", client.Outcome(client.CountTokensResult), &.{});
     assertExactPublicDecls("client.Outcome(GenerationResult)", client.Outcome(client.GenerationResult), &.{});
     assertExactPublicDecls("client.OutputMime", client.OutputMime, &.{});
+    assertExactPublicDecls("client.Reference", client.Reference, &.{});
+    assertExactPublicDecls("client.ReferenceRole", client.ReferenceRole, &.{});
     assertExactPublicDecls("client.RequestOptions", client.RequestOptions, &.{});
     assertExactPublicDecls("client.SafetyOptions", client.SafetyOptions, &.{});
     assertExactPublicDecls("client.ServiceTier", client.ServiceTier, &.{});
     assertExactPublicDecls("client.ThinkingLevel", client.ThinkingLevel, &.{});
     assertExactPublicDecls("client.ThinkingOptions", client.ThinkingOptions, &.{});
+    assertExactPublicDecls("client.UploadedImage", client.UploadedImage, &.{});
 
     assertExactPublicDecls("edit.ReferenceRole", edit.ReferenceRole, &.{
         "fromName",

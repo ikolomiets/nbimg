@@ -56,10 +56,10 @@ The code is split into nine source files:
 - `src/root.zig` exposes the supported typed client declarations and retains
   the legacy package modules as `api`, `batch`, `edit`, and `files`.
   CLI implementation declarations are not package-accessible.
-- `src/client.zig` owns the supported public client, generation request and
-  option domain types, generated result ownership, returned validation errors,
-  outcome classification, API-failure ownership, and conversion to and from
-  the existing generation wire path.
+- `src/client.zig` owns the supported public client, generation and edit
+  request domain types, shared option types, generated result ownership,
+  returned validation errors, outcome classification, API-failure ownership,
+  and conversion to and from the existing generation and edit wire paths.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -119,15 +119,27 @@ an unknown service-tier spelling returns `error.UnsupportedServiceTier`.
 
 `Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Both
 operations reuse one private public-request-to-wire builder.
-`generateWithContext` is an internal public seam that accepts an explicit
-`api.RequestContext` and response policy. `Client.generate` supplies a quiet
-context and the public-client policy; immediate CLI generation supplies its
-logging-enabled context and CLI policy. The public policy accepts any 2xx and
-rejects unknown reported service tiers. The CLI policy requires HTTP 200 and
-treats unknown tiers as absent. A tagged internal outcome distinguishes
-success, completed API failure, and response-decoding failure so the public
-client and CLI can preserve their different error contracts. Public client
-response traffic is not logged.
+
+`EditRequest` borrows a required uploaded base image, optional labeled
+references, preserve/do-not constraints, and the same generation/request
+options. `InputImageMime` distinguishes uploaded JPEG, PNG, and WebP inputs
+from generated `OutputMime` values. Edit validation runs before allocation or
+network IO and covers canonical names, exact File URI and generated edit-task
+bounds, labels, duplicate/reserved labels, total and role-specific image
+limits, constraint limits, shared option rules, and the aggregate 5 MiB field
+bound. `Client.edit` returns `Outcome(GenerationResult)`;
+`Client.countEditTokens` returns `Outcome(CountTokensResult)`.
+
+`generateWithContext` and `editWithContext` are internal public seams that
+accept an explicit `api.RequestContext` and shared generated-content response
+policy. Public methods supply a quiet context and the public-client policy;
+immediate CLI generation supplies its logging-enabled context and CLI policy.
+The public policy accepts any 2xx and rejects unknown reported service tiers.
+The CLI policy requires HTTP 200 and treats unknown tiers as absent. A tagged
+internal outcome distinguishes success, completed API failure, and
+response-decoding failure so callers can preserve different error contracts.
+Public client response traffic is not logged. Immediate CLI edit remains on
+the legacy path until its separate migration.
 
 The previous command-domain namespace remains temporarily available:
 
@@ -144,14 +156,14 @@ The internal module interfaces are intentionally narrow:
 
 - `cli` exports only `run` for executable assembly.
 - `client` exports only the deliberate supported client declarations and their
-  ownership methods plus the policy-bearing internal CLI generation seam.
+  ownership methods plus the policy-bearing internal generated-content seams.
 - `gen` exports only generation-request construction for the typed client and
   CLI Batch-file preparation. Token-count request helpers remain
   module-internal.
-- `edit` exports the CLI-consumed reference/request models and limits,
-  generation and token-count operations, generation-request construction, and
-  label validation. Prompt-fragment, File URI, and countTokens-envelope
-  builders remain internal.
+- `edit` exports the CLI/client-consumed wire request models and limits,
+  edit-specific bounded validation, generation and token-count operations,
+  generation-request construction, and label validation. Prompt-fragment,
+  File URI, and countTokens-envelope builders remain internal.
 - `files` exports upload/file/list models, their ownership methods,
   upload/list/get/delete operations, response decoders, and the upload-size
   limit. Shared uploaded-name decoding is exposed only by `api`.
@@ -1276,9 +1288,9 @@ IO handles through the call chain.
 Allocator ownership is explicit:
 
 - `cli.run` uses `init.arena.allocator()` to materialize process arguments.
-- `client.generateWithContext` receives `gpa` through its request context for
-  request JSON, HTTP client state, response buffering, decoded images, and
-  result metadata.
+- `client.generateWithContext` and `client.editWithContext` receive `gpa`
+  through their request context for request JSON, HTTP client state, response
+  buffering, decoded images, and result metadata.
 - `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
 - `batch.uploadInput` receives already-read validated JSONL bytes; CLI
@@ -1420,11 +1432,12 @@ Cached content is not included in the default live check because it requires an
 existing `cachedContents/...` resource.
 
 The live edit request validity check lives in `src/cli.zig` because it
-orchestrates both Files API upload/delete and edit `countTokens` validation. It
-uploads `sample_images/good_night.jpeg` with the fixed display name
+orchestrates both Files API upload/delete and typed edit `countTokens`
+validation. It uploads `sample_images/good_night.jpeg` with the fixed display name
 `nbimg live edit request validity`, uses the returned `files/...` name as the
-edit base image with MIME `image/jpeg`, sends the edit request to `countTokens`,
-and then deletes the uploaded file. The live edit request uses
+typed `EditRequest` base image with MIME `jpeg`, calls
+`Client.countEditTokens`, and then deletes the uploaded file. The live edit
+request uses
 `aspectRatio: "4:5"` and `imageSize: "1K"` at the CLI/options layer, which are
 serialized as `ASPECT_RATIO_FOUR_BY_FIVE` and `IMAGE_SIZE_ONE_K`, to validate
 output options on edit requests. It also enables `web,image` grounding. It

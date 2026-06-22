@@ -6786,69 +6786,61 @@ test "live API edit request shape is valid" {
     defer uploaded_file.deinit(gpa);
     defer deleteLiveEditSampleImage(&context, uploaded_file.name);
 
-    var generation_options = api.GenerationOptions{
-        .max_output_tokens = 4096,
-        .temperature = 0.7,
-        .top_p = 0.95,
-        .seed = 42,
-        .presence_penalty = 0.0,
-        .frequency_penalty = 0.0,
-        .response_logprobs = true,
-        .logprobs = 1,
-    };
-    generation_options.appendStopSequence("END");
-
-    var response = api_edit.countGenerateContentRequestTokens(
-        &context,
-        .{
-            .prompt = live_edit_prompt,
-            .output_options = .{
-                .aspect_ratio = .r4_5,
-                .image_size = .k1,
-            },
-            .grounding_options = .{
-                .web = true,
-                .image = true,
-            },
-            .thinking_options = .{
-                .level = .high,
-                .include_thoughts = true,
-            },
-            .generation_options = generation_options,
-            .request_options = .{
-                .system_instruction = "Follow the edit request exactly.",
-                .service_tier = .standard,
-                .store = false,
-            },
-            .base = .{
-                .name = uploaded_file.name,
-                .mime = upload_mime,
-            },
-            .base_role = .scene,
+    const typed_client = try client.Client.init(gpa, std.testing.io, .{
+        .api_key = api_key,
+    });
+    var outcome = try typed_client.countEditTokens(.{
+        .prompt = live_edit_prompt,
+        .output_options = .{
+            .aspect_ratio = .r4_5,
+            .image_size = .k1,
         },
-    ) catch |err| {
-        std.debug.print("error: countTokens edit request failed: {s}\n", .{@errorName(err)});
-        return err;
-    };
-    defer response.deinit(gpa);
+        .grounding_options = .{
+            .web = true,
+            .image = true,
+        },
+        .thinking_options = .{
+            .level = .high,
+            .include_thoughts = true,
+        },
+        .generation_options = .{
+            .max_output_tokens = 4096,
+            .temperature = 0.7,
+            .top_p = 0.95,
+            .seed = 42,
+            .presence_penalty = 0.0,
+            .frequency_penalty = 0.0,
+            .response_logprobs = true,
+            .logprobs = 1,
+            .stop_sequences = &.{"END"},
+        },
+        .request_options = .{
+            .system_instruction = "Follow the edit request exactly.",
+            .service_tier = .standard,
+            .store = false,
+        },
+        .base = .{
+            .name = uploaded_file.name,
+            .mime = switch (upload_mime) {
+                .jpeg => .jpeg,
+                .png => .png,
+                .webp => .webp,
+            },
+        },
+        .base_role = .scene,
+    });
 
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: countTokens edit request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return error.CountTokensRequestFailed;
+    switch (outcome) {
+        .success => |result| try std.testing.expect(result.total_tokens > 0),
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: countTokens edit request failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+            return error.CountTokensRequestFailed;
+        },
     }
-
-    const result = api.decodeCountTokensResponse(gpa, response.body) catch |err| {
-        std.debug.print(
-            "error: failed to parse countTokens response: {s}\n{s}\n",
-            .{ @errorName(err), response.body },
-        );
-        return err;
-    };
-
-    try std.testing.expect(result.total_tokens > 0);
 }
 
 fn uploadLiveEditSampleImage(

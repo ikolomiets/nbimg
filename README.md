@@ -152,11 +152,35 @@ key must remain valid for the client lifetime. The default request timeout is
 requests are quiet: CLI request and response traffic logging is not part of
 the library contract.
 
+Typed edits reuse the generation options and result ownership contract:
+
+```zig
+var outcome = try client.edit(.{
+    .prompt = "Apply STYLE_A while preserving the product geometry",
+    .base = .{ .name = "files/base", .mime = .jpeg },
+    .base_role = .object,
+    .references = &.{.{
+        .role = .style,
+        .label = "STYLE_A",
+        .image = .{ .name = "files/style", .mime = .webp },
+    }},
+    .preserves = &.{"logo placement"},
+    .do_nots = &.{"change the camera angle"},
+});
+```
+
+`Client.countEditTokens` accepts the same `EditRequest` without generating
+content. Edit inputs use `InputImageMime`; generated outputs use `OutputMime`.
+The exported edit limits cover reference totals, character/object images,
+labels, and preserve/do-not constraints.
+
 Invalid `GenerationRequest` values return `GenerationValidationError` before
-network IO. Transport, allocation, timeout, oversized-response, and malformed
-successful-response failures are Zig errors. A completed non-success HTTP
-response is returned as `.api_failure`; its complete bounded body is owned and
-must be released with `ApiFailure.deinit`.
+network IO; invalid `EditRequest` values return `EditValidationError` before
+allocation or network IO. Transport, allocation, timeout, oversized-response,
+and malformed successful-response failures are Zig errors. A completed
+non-success HTTP response is returned as `.api_failure`; its complete bounded
+body is owned and must be released with `ApiFailure.deinit`. Successful edits
+return `GenerationResult` and use the same `deinit` contract as generation.
 
 The existing `api`, `edit`, `files`, and `batch` package paths remain available
 temporarily for compatibility. They are implementation-oriented legacy APIs

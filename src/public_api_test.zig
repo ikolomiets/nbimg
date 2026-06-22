@@ -54,6 +54,8 @@ comptime {
         "Client",
         "ClientOptions",
         "CountTokensResult",
+        "EditRequest",
+        "EditValidationError",
         "GeneratedImage",
         "GenerationOptions",
         "GenerationRequest",
@@ -64,29 +66,42 @@ comptime {
         "ImageAspectRatio",
         "ImageOutputOptions",
         "ImageSize",
+        "InputImageMime",
         "Outcome",
         "OutputMime",
+        "Reference",
+        "ReferenceRole",
         "RequestOptions",
         "SafetyOptions",
         "ServiceTier",
         "ThinkingLevel",
         "ThinkingOptions",
+        "UploadedImage",
         "api",
         "batch",
         "edit",
         "files",
+        "max_edit_character_images",
+        "max_edit_do_not_constraints",
+        "max_edit_object_images",
+        "max_edit_preserve_constraints",
+        "max_edit_reference_label_bytes",
+        "max_edit_references",
     });
 
     assertExactPublicDecls("root.ApiFailure", root.ApiFailure, &.{
         "deinit",
     });
     assertExactPublicDecls("root.Client", root.Client, &.{
+        "countEditTokens",
         "countGenerateTokens",
+        "edit",
         "generate",
         "init",
     });
     assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
     assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
+    assertExactPublicDecls("root.EditRequest", root.EditRequest, &.{});
     assertExactPublicDecls("root.GeneratedImage", root.GeneratedImage, &.{
         "deinit",
     });
@@ -100,14 +115,18 @@ comptime {
     assertExactPublicDecls("root.ImageAspectRatio", root.ImageAspectRatio, &.{});
     assertExactPublicDecls("root.ImageOutputOptions", root.ImageOutputOptions, &.{});
     assertExactPublicDecls("root.ImageSize", root.ImageSize, &.{});
+    assertExactPublicDecls("root.InputImageMime", root.InputImageMime, &.{});
     assertExactPublicDecls("root.Outcome(CountTokensResult)", root.Outcome(root.CountTokensResult), &.{});
     assertExactPublicDecls("root.Outcome(GenerationResult)", root.Outcome(root.GenerationResult), &.{});
     assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
+    assertExactPublicDecls("root.Reference", root.Reference, &.{});
+    assertExactPublicDecls("root.ReferenceRole", root.ReferenceRole, &.{});
     assertExactPublicDecls("root.RequestOptions", root.RequestOptions, &.{});
     assertExactPublicDecls("root.SafetyOptions", root.SafetyOptions, &.{});
     assertExactPublicDecls("root.ServiceTier", root.ServiceTier, &.{});
     assertExactPublicDecls("root.ThinkingLevel", root.ThinkingLevel, &.{});
     assertExactPublicDecls("root.ThinkingOptions", root.ThinkingOptions, &.{});
+    assertExactPublicDecls("root.UploadedImage", root.UploadedImage, &.{});
 }
 
 test "package API matches exact allowlist" {}

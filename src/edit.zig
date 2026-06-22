@@ -8,7 +8,9 @@ const max_total_images = 14;
 pub const max_references = max_total_images - 1;
 pub const max_character_references = 4;
 pub const max_object_references = 10;
-const max_label_bytes = 64;
+pub const max_label_bytes = 64;
+pub const max_preserve_constraints = 16;
+pub const max_do_not_constraints = 16;
 
 const max_edit_content_parts = 2 + max_references * 2 + 1;
 const max_edit_total_parts_with_system = max_edit_content_parts + 1;
@@ -87,6 +89,109 @@ pub const EditRequest = struct {
     preserves: []const []const u8 = &.{},
     do_nots: []const []const u8 = &.{},
 };
+
+pub const ValidationError = error{
+    EmptyPrompt,
+    PromptTooLong,
+    InvalidBaseFileName,
+    InvalidReferenceFileName,
+    FileUriTooLong,
+    InvalidReferenceLabel,
+    ReservedReferenceLabel,
+    DuplicateReferenceLabel,
+    TooManyReferences,
+    TooManyCharacterImages,
+    TooManyObjectImages,
+    TooManyPreserveConstraints,
+    TooManyDoNotConstraints,
+    EmptyPreserveConstraint,
+    PreserveConstraintTooLong,
+    EmptyDoNotConstraint,
+    DoNotConstraintTooLong,
+    EditTaskTooLong,
+    RequestTooLong,
+};
+
+/// Validates edit-specific fields and exact serialized request bounds.
+pub fn validateRequest(request: EditRequest) ValidationError!void {
+    if (request.prompt.len == 0) return error.EmptyPrompt;
+    if (request.prompt.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
+    if (!api.isCanonicalFileName(request.base.name)) return error.InvalidBaseFileName;
+    if (fileUriLength(request.base.name) > api.max_generate_file_uri_bytes) {
+        return error.FileUriTooLong;
+    }
+    if (request.references.len > max_references) return error.TooManyReferences;
+    if (request.preserves.len > max_preserve_constraints) {
+        return error.TooManyPreserveConstraints;
+    }
+    if (request.do_nots.len > max_do_not_constraints) {
+        return error.TooManyDoNotConstraints;
+    }
+
+    var character_count: usize = if (request.base_role == .character) 1 else 0;
+    var object_count: usize = if (request.base_role == .object) 1 else 0;
+    var field_bytes: usize = baseAnchorLength(request.base_role);
+    field_bytes +|= request.base.mime.apiName().len;
+    field_bytes +|= fileUriLength(request.base.name);
+
+    for (request.references, 0..) |reference, index| {
+        if (!api.isCanonicalFileName(reference.image.name)) {
+            return error.InvalidReferenceFileName;
+        }
+        if (fileUriLength(reference.image.name) > api.max_generate_file_uri_bytes) {
+            return error.FileUriTooLong;
+        }
+        if (!isValidLabel(reference.label)) return error.InvalidReferenceLabel;
+        if (std.mem.eql(u8, reference.label, "BASE_IMAGE")) {
+            return error.ReservedReferenceLabel;
+        }
+        for (request.references[0..index]) |previous| {
+            if (std.mem.eql(u8, reference.label, previous.label)) {
+                return error.DuplicateReferenceLabel;
+            }
+        }
+        if (reference.role == .character) character_count += 1;
+        if (reference.role == .object) object_count += 1;
+
+        field_bytes +|= referenceAnchorLength(reference);
+        field_bytes +|= reference.image.mime.apiName().len;
+        field_bytes +|= fileUriLength(reference.image.name);
+    }
+
+    if (character_count > max_character_references) {
+        return error.TooManyCharacterImages;
+    }
+    if (object_count > max_object_references) return error.TooManyObjectImages;
+
+    var edit_task_bytes: usize = editTaskPrefix().len +| request.prompt.len;
+    if (request.preserves.len > 0) edit_task_bytes +|= preserveSectionPrefix().len;
+    for (request.preserves) |preserve| {
+        if (preserve.len == 0) return error.EmptyPreserveConstraint;
+        if (preserve.len > api.max_generate_text_part_bytes) {
+            return error.PreserveConstraintTooLong;
+        }
+        edit_task_bytes +|= "\n- ".len;
+        edit_task_bytes +|= preserve.len;
+    }
+    if (request.do_nots.len > 0) edit_task_bytes +|= doNotSectionPrefix().len;
+    for (request.do_nots) |do_not| {
+        if (do_not.len == 0) return error.EmptyDoNotConstraint;
+        if (do_not.len > api.max_generate_text_part_bytes) {
+            return error.DoNotConstraintTooLong;
+        }
+        edit_task_bytes +|= "\n- ".len;
+        edit_task_bytes +|= do_not.len;
+    }
+    if (edit_task_bytes > api.max_generate_text_part_bytes) {
+        return error.EditTaskTooLong;
+    }
+    field_bytes +|= edit_task_bytes;
+
+    if (request.request_options.system_instruction) |value| field_bytes +|= value.len;
+    if (request.request_options.cached_content) |value| field_bytes +|= value.len;
+    for (request.generation_options.stopSequenceSlice()) |value| field_bytes +|= value.len;
+    if (field_bytes > api.max_generate_request_field_bytes) return error.RequestTooLong;
+}
 
 /// Submits a borrowed image-edit request to the Gemini API.
 ///
@@ -269,11 +374,11 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
 
-    try output.writer.writeAll("EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\n");
+    try output.writer.writeAll(editTaskPrefix());
     try output.writer.writeAll(request.prompt);
 
     if (request.preserves.len > 0) {
-        try output.writer.writeAll("\n\nPRESERVE FROM BASE_IMAGE:");
+        try output.writer.writeAll(preserveSectionPrefix());
 
         for (request.preserves) |preserve| {
             assert(preserve.len > 0);
@@ -283,7 +388,7 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
     }
 
     if (request.do_nots.len > 0) {
-        try output.writer.writeAll("\n\nDO NOT:");
+        try output.writer.writeAll(doNotSectionPrefix());
 
         for (request.do_nots) |do_not| {
             assert(do_not.len > 0);
@@ -298,6 +403,7 @@ fn buildEditTask(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
 }
 
 fn assertValidEditRequest(request: EditRequest) void {
+    validateRequest(request) catch unreachable;
     assert(request.prompt.len > 0);
     assert(request.prompt.len <= api.max_generate_text_part_bytes);
     assert(api.isCanonicalFileName(request.base.name));
@@ -316,16 +422,52 @@ fn assertValidEditRequest(request: EditRequest) void {
     assert(character_count <= max_character_references);
     assert(object_count <= max_object_references);
 
+    assert(request.preserves.len <= max_preserve_constraints);
     for (request.preserves) |preserve| {
         assert(preserve.len > 0);
         assert(preserve.len <= api.max_generate_text_part_bytes);
     }
+    assert(request.do_nots.len <= max_do_not_constraints);
     for (request.do_nots) |do_not| {
         assert(do_not.len > 0);
         assert(do_not.len <= api.max_generate_text_part_bytes);
     }
     api.assertValidGenerationOptions(request.generation_options);
     api.assertValidRequestOptions(request.request_options);
+}
+
+fn fileUriLength(name: []const u8) usize {
+    return file_uri_prefix.len +| name.len;
+}
+
+fn baseAnchorLength(role: ReferenceRole) usize {
+    return "REFERENCE MANIFEST\n\nBASE_IMAGE:\n".len + switch (role) {
+        .scene => baseSceneAnchor().len,
+        .character => baseCharacterAnchor().len,
+        .object => baseObjectAnchor().len,
+        .style => baseStyleAnchor().len,
+        .pose => basePoseAnchor().len,
+        .composition => baseCompositionAnchor().len,
+        .background => baseBackgroundAnchor().len,
+        .texture => baseTextureAnchor().len,
+        .image => baseImageAnchor().len,
+    };
+}
+
+fn referenceAnchorLength(reference: Reference) usize {
+    return reference.label.len +| ":\n".len +| referenceRoleAnchor(reference.role).len;
+}
+
+fn editTaskPrefix() []const u8 {
+    return "EDIT TASK:\nApply this edit to BASE_IMAGE using the labeled references above:\n";
+}
+
+fn preserveSectionPrefix() []const u8 {
+    return "\n\nPRESERVE FROM BASE_IMAGE:";
+}
+
+fn doNotSectionPrefix() []const u8 {
+    return "\n\nDO NOT:";
 }
 
 fn baseSceneAnchor() []const u8 {

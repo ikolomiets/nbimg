@@ -2,9 +2,26 @@
 
 const std = @import("std");
 const api = @import("api.zig");
+const edit_api = @import("edit.zig");
 const gen = @import("gen.zig");
 
 const default_request_timeout = std.Io.Duration.fromSeconds(180);
+
+pub const max_edit_references = 13;
+pub const max_edit_character_images = 4;
+pub const max_edit_object_images = 10;
+pub const max_edit_reference_label_bytes = 64;
+pub const max_edit_preserve_constraints = 16;
+pub const max_edit_do_not_constraints = 16;
+
+comptime {
+    std.debug.assert(max_edit_references == edit_api.max_references);
+    std.debug.assert(max_edit_character_images == edit_api.max_character_references);
+    std.debug.assert(max_edit_object_images == edit_api.max_object_references);
+    std.debug.assert(max_edit_reference_label_bytes == edit_api.max_label_bytes);
+    std.debug.assert(max_edit_preserve_constraints == edit_api.max_preserve_constraints);
+    std.debug.assert(max_edit_do_not_constraints == edit_api.max_do_not_constraints);
+}
 
 /// Configures a client with an explicit borrowed Gemini API key and timeout.
 ///
@@ -35,14 +52,14 @@ pub fn Outcome(comptime T: type) type {
     };
 }
 
-/// Selects response compatibility for one internal generation caller.
-pub const GenerationResponsePolicy = enum {
+/// Selects response compatibility for one internal generated-content caller.
+pub const GeneratedContentResponsePolicy = enum {
     public_client,
     immediate_cli,
 };
 
-/// Separates completed generation responses by processing stage.
-pub const GenerationOperationOutcome = union(enum) {
+/// Separates completed generated-content responses by processing stage.
+pub const GeneratedContentOperationOutcome = union(enum) {
     success: GenerationResult,
     api_failure: ApiFailure,
     response_decoding_failure: anyerror,
@@ -182,10 +199,93 @@ pub const GenerationRequest = struct {
     request_options: RequestOptions = .{},
 };
 
+pub const InputImageMime = enum {
+    jpeg,
+    png,
+    webp,
+};
+
+pub const ReferenceRole = enum {
+    scene,
+    character,
+    object,
+    style,
+    pose,
+    composition,
+    background,
+    texture,
+    image,
+};
+
+/// Identifies one borrowed Gemini Files API image.
+pub const UploadedImage = struct {
+    name: []const u8,
+    mime: InputImageMime,
+};
+
+/// Associates a borrowed uploaded image with an edit role and manifest label.
+pub const Reference = struct {
+    role: ReferenceRole,
+    label: []const u8,
+    image: UploadedImage,
+};
+
+/// Describes one borrowed image-edit request.
+pub const EditRequest = struct {
+    prompt: []const u8,
+    output_options: ImageOutputOptions = .{},
+    grounding_options: GroundingOptions = .{},
+    thinking_options: ThinkingOptions = .{},
+    safety_options: ?SafetyOptions = null,
+    generation_options: GenerationOptions = .{},
+    request_options: RequestOptions = .{},
+    base: UploadedImage,
+    base_role: ReferenceRole = .scene,
+    references: []const Reference = &.{},
+    preserves: []const []const u8 = &.{},
+    do_nots: []const []const u8 = &.{},
+};
+
 /// Reports invalid caller-controlled generation request fields.
 pub const GenerationValidationError = error{
     EmptyPrompt,
     PromptTooLong,
+    InvalidMaxOutputTokens,
+    InvalidTemperature,
+    InvalidTopP,
+    InvalidPresencePenalty,
+    InvalidFrequencyPenalty,
+    LogprobsRequireResponseLogprobs,
+    InvalidLogprobs,
+    TooManyStopSequences,
+    EmptyStopSequence,
+    DuplicateStopSequence,
+    EmptySystemInstruction,
+    SystemInstructionTooLong,
+    InvalidCachedContentName,
+    RequestTooLong,
+};
+
+/// Reports invalid caller-controlled edit request fields.
+pub const EditValidationError = error{
+    EmptyPrompt,
+    PromptTooLong,
+    InvalidBaseFileName,
+    InvalidReferenceFileName,
+    FileUriTooLong,
+    InvalidReferenceLabel,
+    ReservedReferenceLabel,
+    DuplicateReferenceLabel,
+    TooManyReferences,
+    TooManyCharacterImages,
+    TooManyObjectImages,
+    TooManyPreserveConstraints,
+    TooManyDoNotConstraints,
+    EmptyPreserveConstraint,
+    PreserveConstraintTooLong,
+    EmptyDoNotConstraint,
+    DoNotConstraintTooLong,
+    EditTaskTooLong,
     InvalidMaxOutputTokens,
     InvalidTemperature,
     InvalidTopP,
@@ -256,6 +356,28 @@ pub const Client = struct {
         return countTokensOutcomeFromResponse(client.allocator, &response);
     }
 
+    /// Validates and counts tokens for a borrowed edit request.
+    ///
+    /// Completed non-success HTTP responses are returned as owned API failures.
+    pub fn countEditTokens(
+        client: *const Client,
+        request: EditRequest,
+    ) !Outcome(CountTokensResult) {
+        try validateEditRequest(request);
+
+        const request_json = try buildEditCountTokensRequest(client.allocator, request);
+        defer client.allocator.free(request_json);
+
+        const context = api.RequestContext{
+            .gpa = client.allocator,
+            .io = client.io,
+            .api_key = client.api_key,
+            .timeout = client.timeout,
+        };
+        var response = try api.postCountTokensJson(&context, .nano2, request_json);
+        return countTokensOutcomeFromResponse(client.allocator, &response);
+    }
+
     /// Generates and returns owned decoded images for a borrowed request.
     ///
     /// Completed non-success HTTP responses are returned as owned API failures.
@@ -276,6 +398,27 @@ pub const Client = struct {
             .response_decoding_failure => |err| return err,
         };
     }
+
+    /// Edits an uploaded image and returns owned decoded images.
+    ///
+    /// Completed non-success HTTP responses are returned as owned API failures.
+    pub fn edit(
+        client: *const Client,
+        request: EditRequest,
+    ) !Outcome(GenerationResult) {
+        const context = api.RequestContext{
+            .gpa = client.allocator,
+            .io = client.io,
+            .api_key = client.api_key,
+            .timeout = client.timeout,
+        };
+        const outcome = try editWithContext(&context, request, .public_client);
+        return switch (outcome) {
+            .success => |result| .{ .success = result },
+            .api_failure => |failure| .{ .api_failure = failure },
+            .response_decoding_failure => |err| return err,
+        };
+    }
 };
 
 /// Generates images using an explicit internal request context.
@@ -285,15 +428,30 @@ pub const Client = struct {
 pub fn generateWithContext(
     context: *const api.RequestContext,
     request: GenerationRequest,
-    response_policy: GenerationResponsePolicy,
-) !GenerationOperationOutcome {
+    response_policy: GeneratedContentResponsePolicy,
+) !GeneratedContentOperationOutcome {
     try validateGenerationRequest(request);
 
     const request_json = try buildGenerateRequest(context.gpa, request);
     defer context.gpa.free(request_json);
 
     var response = try api.postGenerateContentJson(context, .nano2, request_json);
-    return generationOutcomeFromResponse(context.gpa, &response, response_policy);
+    return generatedContentOutcomeFromResponse(context.gpa, &response, response_policy);
+}
+
+/// Edits an image using an explicit internal request context.
+pub fn editWithContext(
+    context: *const api.RequestContext,
+    request: EditRequest,
+    response_policy: GeneratedContentResponsePolicy,
+) !GeneratedContentOperationOutcome {
+    try validateEditRequest(request);
+
+    const request_json = try buildEditGenerateRequest(context.gpa, request);
+    defer context.gpa.free(request_json);
+
+    var response = try api.postGenerateContentJson(context, .nano2, request_json);
+    return generatedContentOutcomeFromResponse(context.gpa, &response, response_policy);
 }
 
 fn countTokensOutcomeFromResponse(
@@ -317,12 +475,12 @@ fn countTokensOutcomeFromResponse(
     } };
 }
 
-fn generationOutcomeFromResponse(
+fn generatedContentOutcomeFromResponse(
     allocator: std.mem.Allocator,
     response: *api.HttpResponse,
-    response_policy: GenerationResponsePolicy,
-) GenerationOperationOutcome {
-    if (!generationStatusAccepted(response.status, response_policy)) {
+    response_policy: GeneratedContentResponsePolicy,
+) GeneratedContentOperationOutcome {
+    if (!generatedContentStatusAccepted(response.status, response_policy)) {
         const failure = ApiFailure{
             .status = response.status,
             .body = response.body,
@@ -347,9 +505,9 @@ fn generationOutcomeFromResponse(
     return .{ .success = result };
 }
 
-fn generationStatusAccepted(
+fn generatedContentStatusAccepted(
     status: std.http.Status,
-    response_policy: GenerationResponsePolicy,
+    response_policy: GeneratedContentResponsePolicy,
 ) bool {
     return switch (response_policy) {
         .public_client => status.class() == .success,
@@ -360,7 +518,7 @@ fn generationStatusAccepted(
 fn generationResultFromGeneratedFiles(
     allocator: std.mem.Allocator,
     files: *api.GeneratedFiles,
-    response_policy: GenerationResponsePolicy,
+    response_policy: GeneratedContentResponsePolicy,
 ) !GenerationResult {
     const reported_service_tier = if (files.reported_service_tier_name) |name|
         serviceTierFromWireName(name) orelse switch (response_policy) {
@@ -406,7 +564,33 @@ fn validateGenerationRequest(request: GenerationRequest) GenerationValidationErr
     if (request.prompt.len == 0) return error.EmptyPrompt;
     if (request.prompt.len > api.max_generate_text_part_bytes) return error.PromptTooLong;
 
-    const generation_options = request.generation_options;
+    try validateSharedRequestOptions(request.generation_options, request.request_options);
+
+    var field_bytes = request.prompt.len;
+    addSharedRequestFieldBytes(&field_bytes, request.generation_options, request.request_options);
+    if (field_bytes > api.max_generate_request_field_bytes) return error.RequestTooLong;
+}
+
+const SharedValidationError = error{
+    InvalidMaxOutputTokens,
+    InvalidTemperature,
+    InvalidTopP,
+    InvalidPresencePenalty,
+    InvalidFrequencyPenalty,
+    LogprobsRequireResponseLogprobs,
+    InvalidLogprobs,
+    TooManyStopSequences,
+    EmptyStopSequence,
+    DuplicateStopSequence,
+    EmptySystemInstruction,
+    SystemInstructionTooLong,
+    InvalidCachedContentName,
+};
+
+fn validateSharedRequestOptions(
+    generation_options: GenerationOptions,
+    request_options: RequestOptions,
+) SharedValidationError!void {
     if (generation_options.max_output_tokens) |tokens| {
         if (tokens < 1 or tokens > api.max_output_tokens) return error.InvalidMaxOutputTokens;
     }
@@ -446,23 +630,35 @@ fn validateGenerationRequest(request: GenerationRequest) GenerationValidationErr
         }
     }
 
-    if (request.request_options.system_instruction) |system_instruction| {
+    if (request_options.system_instruction) |system_instruction| {
         if (system_instruction.len == 0) return error.EmptySystemInstruction;
         if (system_instruction.len > api.max_generate_text_part_bytes) {
             return error.SystemInstructionTooLong;
         }
     }
-    if (request.request_options.cached_content) |cached_content| {
+    if (request_options.cached_content) |cached_content| {
         if (!api.isCanonicalCachedContentName(cached_content)) {
             return error.InvalidCachedContentName;
         }
     }
+}
 
-    var field_bytes = request.prompt.len;
-    if (request.request_options.system_instruction) |value| field_bytes +|= value.len;
-    if (request.request_options.cached_content) |value| field_bytes +|= value.len;
-    for (generation_options.stop_sequences) |value| field_bytes +|= value.len;
-    if (field_bytes > api.max_generate_request_field_bytes) return error.RequestTooLong;
+fn addSharedRequestFieldBytes(
+    field_bytes: *usize,
+    generation_options: GenerationOptions,
+    request_options: RequestOptions,
+) void {
+    if (request_options.system_instruction) |value| field_bytes.* +|= value.len;
+    if (request_options.cached_content) |value| field_bytes.* +|= value.len;
+    for (generation_options.stop_sequences) |value| field_bytes.* +|= value.len;
+}
+
+fn validateEditRequest(request: EditRequest) EditValidationError!void {
+    if (request.references.len > max_edit_references) return error.TooManyReferences;
+    try validateSharedRequestOptions(request.generation_options, request.request_options);
+
+    var references: [max_edit_references]edit_api.Reference = undefined;
+    try edit_api.validateRequest(wireEditRequest(request, &references));
 }
 
 fn buildCountTokensRequest(
@@ -476,6 +672,31 @@ fn buildCountTokensRequest(
         allocator,
         .nano2,
         generate_request_json,
+    );
+}
+
+fn buildEditCountTokensRequest(
+    allocator: std.mem.Allocator,
+    request: EditRequest,
+) ![]u8 {
+    const generate_request_json = try buildEditGenerateRequest(allocator, request);
+    defer allocator.free(generate_request_json);
+
+    return api.buildCountTokensRequestFromGenerateContentJson(
+        allocator,
+        .nano2,
+        generate_request_json,
+    );
+}
+
+fn buildEditGenerateRequest(
+    allocator: std.mem.Allocator,
+    request: EditRequest,
+) ![]u8 {
+    var references: [max_edit_references]edit_api.Reference = undefined;
+    return edit_api.buildGenerateRequest(
+        allocator,
+        wireEditRequest(request, &references),
     );
 }
 
@@ -496,6 +717,66 @@ fn buildGenerateRequest(
         wireGenerationOptions(request.generation_options),
         wireRequestOptions(request.request_options),
     );
+}
+
+fn wireEditRequest(
+    request: EditRequest,
+    references: *[max_edit_references]edit_api.Reference,
+) edit_api.EditRequest {
+    std.debug.assert(request.references.len <= references.len);
+    for (request.references, references[0..request.references.len]) |reference, *wire| {
+        wire.* = .{
+            .role = wireReferenceRole(reference.role),
+            .label = reference.label,
+            .image = wireUploadedImage(reference.image),
+        };
+    }
+
+    return .{
+        .prompt = request.prompt,
+        .output_options = wireImageOutputOptions(request.output_options),
+        .grounding_options = .{
+            .web = request.grounding_options.web,
+            .image = request.grounding_options.image,
+        },
+        .thinking_options = wireThinkingOptions(request.thinking_options),
+        .safety_options = if (request.safety_options) |options|
+            wireSafetyOptions(options)
+        else
+            null,
+        .generation_options = wireGenerationOptions(request.generation_options),
+        .request_options = wireRequestOptions(request.request_options),
+        .base = wireUploadedImage(request.base),
+        .base_role = wireReferenceRole(request.base_role),
+        .references = references[0..request.references.len],
+        .preserves = request.preserves,
+        .do_nots = request.do_nots,
+    };
+}
+
+fn wireUploadedImage(image: UploadedImage) edit_api.UploadedImage {
+    return .{
+        .name = image.name,
+        .mime = switch (image.mime) {
+            .jpeg => .jpeg,
+            .png => .png,
+            .webp => .webp,
+        },
+    };
+}
+
+fn wireReferenceRole(role: ReferenceRole) edit_api.ReferenceRole {
+    return switch (role) {
+        .scene => .scene,
+        .character => .character,
+        .object => .object,
+        .style => .style,
+        .pose => .pose,
+        .composition => .composition,
+        .background => .background,
+        .texture => .texture,
+        .image => .image,
+    };
 }
 
 fn wireImageOutputOptions(options: ImageOutputOptions) api.ImageOutputOptions {
@@ -713,6 +994,12 @@ test "invalid public request returns before allocation or network IO" {
         error.EmptyPrompt,
         client.generate(.{ .prompt = "" }),
     );
+    const invalid_edit = EditRequest{
+        .prompt = "",
+        .base = .{ .name = "files/base", .mime = .jpeg },
+    };
+    try std.testing.expectError(error.EmptyPrompt, client.countEditTokens(invalid_edit));
+    try std.testing.expectError(error.EmptyPrompt, client.edit(invalid_edit));
 }
 
 test "public generation options convert to the existing wire request" {
@@ -767,6 +1054,382 @@ test "public generation options convert to the existing wire request" {
     try std.testing.expect(std.mem.indexOf(u8, request_json, "\"store\":false") != null);
 }
 
+test "edit request validation returns edit-specific errors" {
+    const base = UploadedImage{ .name = "files/base", .mime = .jpeg };
+    const uri_prefix = "https://generativelanguage.googleapis.com/v1beta/";
+
+    try std.testing.expectError(error.EmptyPrompt, validateEditRequest(.{
+        .prompt = "",
+        .base = base,
+    }));
+    try std.testing.expectError(error.PromptTooLong, validateEditRequest(.{
+        .prompt = "x" ** (api.max_generate_text_part_bytes + 1),
+        .base = base,
+    }));
+    try std.testing.expectError(error.InvalidBaseFileName, validateEditRequest(.{
+        .prompt = "x",
+        .base = .{ .name = "base", .mime = .jpeg },
+    }));
+    try std.testing.expectError(error.FileUriTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = .{
+            .name = "files/" ++ "a" ** api.max_generate_file_uri_bytes,
+            .mime = .jpeg,
+        },
+    }));
+    const max_file_name =
+        "files/" ++ "a" ** (api.max_generate_file_uri_bytes - uri_prefix.len - "files/".len);
+    const max_label_reference = [_]Reference{.{
+        .role = .image,
+        .label = "A" ** max_edit_reference_label_bytes,
+        .image = .{ .name = max_file_name, .mime = .webp },
+    }};
+    try validateEditRequest(.{
+        .prompt = "x",
+        .base = .{ .name = max_file_name, .mime = .png },
+        .references = &max_label_reference,
+    });
+
+    const invalid_name = [_]Reference{.{
+        .role = .image,
+        .label = "IMAGE_A",
+        .image = .{ .name = "invalid", .mime = .png },
+    }};
+    try std.testing.expectError(error.InvalidReferenceFileName, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &invalid_name,
+    }));
+    const long_reference_uri = [_]Reference{.{
+        .role = .image,
+        .label = "IMAGE_A",
+        .image = .{
+            .name = "files/" ++ "a" ** api.max_generate_file_uri_bytes,
+            .mime = .png,
+        },
+    }};
+    try std.testing.expectError(error.FileUriTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &long_reference_uri,
+    }));
+    const invalid_label = [_]Reference{.{
+        .role = .image,
+        .label = "image-a",
+        .image = .{ .name = "files/a", .mime = .png },
+    }};
+    try std.testing.expectError(error.InvalidReferenceLabel, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &invalid_label,
+    }));
+    const long_label = [_]Reference{.{
+        .role = .image,
+        .label = "A" ** (max_edit_reference_label_bytes + 1),
+        .image = .{ .name = "files/a", .mime = .png },
+    }};
+    try std.testing.expectError(error.InvalidReferenceLabel, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &long_label,
+    }));
+    const reserved_label = [_]Reference{.{
+        .role = .image,
+        .label = "BASE_IMAGE",
+        .image = .{ .name = "files/a", .mime = .png },
+    }};
+    try std.testing.expectError(error.ReservedReferenceLabel, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &reserved_label,
+    }));
+    const duplicate_labels = [_]Reference{
+        .{
+            .role = .image,
+            .label = "IMAGE_A",
+            .image = .{ .name = "files/a", .mime = .png },
+        },
+        .{
+            .role = .style,
+            .label = "IMAGE_A",
+            .image = .{ .name = "files/b", .mime = .webp },
+        },
+    };
+    try std.testing.expectError(error.DuplicateReferenceLabel, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &duplicate_labels,
+    }));
+}
+
+test "edit request validation enforces image and constraint counts" {
+    const base = UploadedImage{ .name = "files/base", .mime = .jpeg };
+    var references: [max_edit_references + 1]Reference = undefined;
+    for (&references, 0..) |*reference, index| {
+        reference.* = .{
+            .role = .style,
+            .label = switch (index) {
+                0 => "A",
+                1 => "B",
+                2 => "C",
+                3 => "D",
+                4 => "E",
+                5 => "F",
+                6 => "G",
+                7 => "H",
+                8 => "I",
+                9 => "J",
+                10 => "K",
+                11 => "L",
+                12 => "M",
+                13 => "N",
+                else => unreachable,
+            },
+            .image = .{ .name = "files/reference", .mime = .jpeg },
+        };
+    }
+    try std.testing.expectError(error.TooManyReferences, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .references = &references,
+    }));
+
+    var characters: [max_edit_character_images]Reference = undefined;
+    for (&characters, 0..) |*reference, index| {
+        reference.* = .{
+            .role = .character,
+            .label = switch (index) {
+                0 => "A",
+                1 => "B",
+                2 => "C",
+                3 => "D",
+                else => unreachable,
+            },
+            .image = .{ .name = "files/character", .mime = .jpeg },
+        };
+    }
+    try std.testing.expectError(error.TooManyCharacterImages, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .base_role = .character,
+        .references = &characters,
+    }));
+
+    var objects: [max_edit_object_images]Reference = undefined;
+    for (&objects, 0..) |*reference, index| {
+        reference.* = .{
+            .role = .object,
+            .label = switch (index) {
+                0 => "A",
+                1 => "B",
+                2 => "C",
+                3 => "D",
+                4 => "E",
+                5 => "F",
+                6 => "G",
+                7 => "H",
+                8 => "I",
+                9 => "J",
+                else => unreachable,
+            },
+            .image = .{ .name = "files/object", .mime = .png },
+        };
+    }
+    try std.testing.expectError(error.TooManyObjectImages, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .base_role = .object,
+        .references = &objects,
+    }));
+
+    const too_many = [_][]const u8{"x"} ** (max_edit_preserve_constraints + 1);
+    try std.testing.expectError(error.TooManyPreserveConstraints, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .preserves = &too_many,
+    }));
+    try std.testing.expectError(error.TooManyDoNotConstraints, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .do_nots = &too_many,
+    }));
+}
+
+test "edit request validation enforces constraint and aggregate bounds" {
+    const base = UploadedImage{ .name = "files/base", .mime = .jpeg };
+    try std.testing.expectError(error.EmptyPreserveConstraint, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .preserves = &.{""},
+    }));
+    try std.testing.expectError(error.PreserveConstraintTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .preserves = &.{"x" ** (api.max_generate_text_part_bytes + 1)},
+    }));
+    try std.testing.expectError(error.EmptyDoNotConstraint, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .do_nots = &.{""},
+    }));
+    try std.testing.expectError(error.DoNotConstraintTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .do_nots = &.{"x" ** (api.max_generate_text_part_bytes + 1)},
+    }));
+    try std.testing.expectError(error.EditTaskTooLong, validateEditRequest(.{
+        .prompt = "x" ** api.max_generate_text_part_bytes,
+        .base = base,
+    }));
+
+    const oversized_stop = try std.testing.allocator.alloc(
+        u8,
+        api.max_generate_request_field_bytes,
+    );
+    defer std.testing.allocator.free(oversized_stop);
+    @memset(oversized_stop, 'x');
+    try std.testing.expectError(error.RequestTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .stop_sequences = &.{oversized_stop} },
+    }));
+}
+
+test "edit request validation maps shared option errors" {
+    const base = UploadedImage{ .name = "files/base", .mime = .jpeg };
+    try std.testing.expectError(error.InvalidMaxOutputTokens, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .max_output_tokens = 0 },
+    }));
+    try std.testing.expectError(error.InvalidTemperature, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .temperature = std.math.inf(f64) },
+    }));
+    try std.testing.expectError(error.InvalidTopP, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .top_p = -0.1 },
+    }));
+    try std.testing.expectError(error.InvalidPresencePenalty, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .presence_penalty = 2.0 },
+    }));
+    try std.testing.expectError(error.InvalidFrequencyPenalty, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .frequency_penalty = -2.1 },
+    }));
+    try std.testing.expectError(error.LogprobsRequireResponseLogprobs, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .logprobs = 1 },
+    }));
+    try std.testing.expectError(error.InvalidLogprobs, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .response_logprobs = true, .logprobs = 21 },
+    }));
+    try std.testing.expectError(error.TooManyStopSequences, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .stop_sequences = &.{ "1", "2", "3", "4", "5", "6" } },
+    }));
+    try std.testing.expectError(error.EmptyStopSequence, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .stop_sequences = &.{""} },
+    }));
+    try std.testing.expectError(error.DuplicateStopSequence, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .generation_options = .{ .stop_sequences = &.{ "same", "same" } },
+    }));
+    try std.testing.expectError(error.EmptySystemInstruction, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .request_options = .{ .system_instruction = "" },
+    }));
+    try std.testing.expectError(error.SystemInstructionTooLong, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .request_options = .{
+            .system_instruction = "x" ** (api.max_generate_text_part_bytes + 1),
+        },
+    }));
+    try std.testing.expectError(error.InvalidCachedContentName, validateEditRequest(.{
+        .prompt = "x",
+        .base = base,
+        .request_options = .{ .cached_content = "invalid" },
+    }));
+}
+
+test "public edit types convert every MIME and role through existing serializer" {
+    const roles = [_]ReferenceRole{
+        .scene,
+        .character,
+        .object,
+        .style,
+        .pose,
+        .composition,
+        .background,
+        .texture,
+        .image,
+    };
+    const labels = [_][]const u8{
+        "SCENE_A",
+        "CHARACTER_A",
+        "OBJECT_A",
+        "STYLE_A",
+        "POSE_A",
+        "COMPOSITION_A",
+        "BACKGROUND_A",
+        "TEXTURE_A",
+        "IMAGE_A",
+    };
+    var references: [roles.len]Reference = undefined;
+    for (&references, roles, labels, 0..) |*reference, role, label, index| {
+        reference.* = .{
+            .role = role,
+            .label = label,
+            .image = .{
+                .name = "files/reference",
+                .mime = switch (index % 3) {
+                    0 => .jpeg,
+                    1 => .png,
+                    2 => .webp,
+                    else => unreachable,
+                },
+            },
+        };
+    }
+
+    const request_json = try buildEditCountTokensRequest(std.testing.allocator, .{
+        .prompt = "Apply the references",
+        .base = .{ .name = "files/base", .mime = .webp },
+        .references = &references,
+        .preserves = &.{"identity"},
+        .do_nots = &.{"change crop"},
+    });
+    defer std.testing.allocator.free(request_json);
+
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        request_json,
+        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image\",",
+    ));
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"mime_type\":\"image/jpeg\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"mime_type\":\"image/png\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "\"mime_type\":\"image/webp\"") != null);
+    for (labels) |label| {
+        try std.testing.expect(std.mem.indexOf(u8, request_json, label) != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "PRESERVE FROM BASE_IMAGE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request_json, "DO NOT") != null);
+}
+
 test "generation response classification transfers images and metadata" {
     const json =
         \\{
@@ -799,7 +1462,7 @@ test "generation response classification transfers images and metadata" {
         .status = .ok,
         .body = try std.testing.allocator.dupe(u8, json),
     };
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .public_client,
@@ -865,7 +1528,7 @@ test "generation response supports absent service tier" {
             "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}",
         ),
     };
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .public_client,
@@ -889,7 +1552,7 @@ test "generation response rejects unknown service tier and cleans up" {
         ),
     };
 
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .public_client,
@@ -917,7 +1580,7 @@ test "generation response policies classify HTTP statuses independently" {
         .status = .created,
         .body = try std.testing.allocator.dupe(u8, json),
     };
-    var public_outcome = generationOutcomeFromResponse(
+    var public_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &public_created,
         .public_client,
@@ -931,7 +1594,7 @@ test "generation response policies classify HTTP statuses independently" {
         .status = .created,
         .body = try std.testing.allocator.dupe(u8, json),
     };
-    var cli_outcome = generationOutcomeFromResponse(
+    var cli_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &cli_created,
         .immediate_cli,
@@ -954,7 +1617,7 @@ test "CLI generation response ignores unknown service tier" {
             "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"future\"}}",
         ),
     };
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .immediate_cli,
@@ -986,7 +1649,7 @@ test "CLI generation response supports recognized and absent service tiers" {
             .status = .ok,
             .body = try std.testing.allocator.dupe(u8, entry[0]),
         };
-        var outcome = generationOutcomeFromResponse(
+        var outcome = generatedContentOutcomeFromResponse(
             std.testing.allocator,
             &response,
             .immediate_cli,
@@ -1005,12 +1668,12 @@ test "generation response policies reject malformed service tier metadata" {
     const json =
         "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":{}}}";
 
-    inline for (.{ GenerationResponsePolicy.public_client, .immediate_cli }) |policy| {
+    inline for (.{ GeneratedContentResponsePolicy.public_client, .immediate_cli }) |policy| {
         var response = api.HttpResponse{
             .status = .ok,
             .body = try std.testing.allocator.dupe(u8, json),
         };
-        var outcome = generationOutcomeFromResponse(
+        var outcome = generatedContentOutcomeFromResponse(
             std.testing.allocator,
             &response,
             policy,
@@ -1034,7 +1697,7 @@ test "generation response classification preserves API failure body" {
         .status = .service_unavailable,
         .body = try std.testing.allocator.dupe(u8, "{\"error\":\"complete body\"}"),
     };
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .public_client,
@@ -1056,7 +1719,7 @@ test "CLI generation response preserves non-200 failure body" {
         .status = .service_unavailable,
         .body = try std.testing.allocator.dupe(u8, "{\"error\":\"complete body\"}"),
     };
-    var outcome = generationOutcomeFromResponse(
+    var outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &response,
         .immediate_cli,
@@ -1081,7 +1744,7 @@ test "generation response frees malformed and unsupported successes" {
         .status = .ok,
         .body = try std.testing.allocator.dupe(u8, "{"),
     };
-    var malformed_outcome = generationOutcomeFromResponse(
+    var malformed_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &malformed,
         .public_client,
@@ -1107,7 +1770,7 @@ test "generation response frees malformed and unsupported successes" {
             "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{}]}}]}",
         ),
     };
-    var unsupported_outcome = generationOutcomeFromResponse(
+    var unsupported_outcome = generatedContentOutcomeFromResponse(
         std.testing.allocator,
         &unsupported,
         .public_client,

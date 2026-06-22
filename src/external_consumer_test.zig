@@ -16,7 +16,7 @@ comptime {
     }
 }
 
-test "dependency consumer compiles against typed generation APIs" {
+test "dependency consumer compiles against typed generation and edit APIs" {
     const client = try nbimg.Client.init(std.testing.allocator, std.testing.io, .{
         .api_key = "borrowed-key",
     });
@@ -47,7 +47,30 @@ test "dependency consumer compiles against typed generation APIs" {
     };
     defer generation_result.deinit(std.testing.allocator);
     const generate = nbimg.Client.generate;
+    const edit = nbimg.Client.edit;
+    const count_edit_tokens = nbimg.Client.countEditTokens;
     _ = generate;
+    _ = edit;
+    _ = count_edit_tokens;
+
+    const edit_request = nbimg.EditRequest{
+        .prompt = "Apply the product style",
+        .base = .{
+            .name = "files/base",
+            .mime = .jpeg,
+        },
+        .base_role = .object,
+        .references = &.{.{
+            .role = .style,
+            .label = "STYLE_A",
+            .image = .{
+                .name = "files/style",
+                .mime = .webp,
+            },
+        }},
+        .preserves = &.{"product geometry"},
+        .do_nots = &.{"change the logo"},
+    };
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
     try std.testing.expectEqualStrings(
@@ -59,4 +82,11 @@ test "dependency consumer compiles against typed generation APIs" {
         .api_failure => |*failure| failure.deinit(std.testing.allocator),
     }
     try std.testing.expectEqual(nbimg.OutputMime.png, generation_result.images[0].mime);
+    try std.testing.expectEqualStrings("files/base", edit_request.base.name);
+    try std.testing.expectEqual(@as(usize, 13), nbimg.max_edit_references);
+    try std.testing.expectEqual(@as(usize, 4), nbimg.max_edit_character_images);
+    try std.testing.expectEqual(@as(usize, 10), nbimg.max_edit_object_images);
+    try std.testing.expectEqual(@as(usize, 64), nbimg.max_edit_reference_label_bytes);
+    try std.testing.expectEqual(@as(usize, 16), nbimg.max_edit_preserve_constraints);
+    try std.testing.expectEqual(@as(usize, 16), nbimg.max_edit_do_not_constraints);
 }

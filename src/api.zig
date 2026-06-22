@@ -12,7 +12,7 @@ const max_display_name_codepoints = 512;
 const max_generate_content_count = 1;
 pub const max_generate_request_parts_total = 32;
 pub const max_generate_text_part_bytes = 16 * 1024;
-const max_generate_file_uri_bytes = 512;
+pub const max_generate_file_uri_bytes = 512;
 const max_generate_mime_type_bytes = 64;
 pub const max_generate_request_field_bytes = 5 * 1024 * 1024;
 
