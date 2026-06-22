@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const api = @import("api.zig");
+const batch_api = @import("batch.zig");
 const edit_api = @import("edit.zig");
 const file_domain = @import("files_domain.zig");
 const files_api = @import("files.zig");
@@ -192,6 +193,14 @@ pub const RemoteError = file_domain.RemoteError;
 pub const FileValidationError = file_domain.FileValidationError;
 pub const max_file_upload_bytes = file_domain.max_file_upload_bytes;
 
+pub const BatchValidationError = batch_api.BatchValidationError;
+pub const BatchInputSummary = batch_api.BatchInputSummary;
+pub const PreparedBatchEntry = batch_api.PreparedBatchEntry;
+pub const max_batch_entry_bytes = batch_api.max_batch_entry_bytes;
+pub const max_batch_entries = batch_api.max_batch_entries;
+pub const max_batch_input_bytes = batch_api.max_batch_input_bytes;
+pub const validateBatchInput = batch_api.validateBatchInput;
+
 pub const ReferenceRole = enum {
     scene,
     character,
@@ -295,6 +304,20 @@ pub const CountTokensResult = struct {
     cached_content_token_count: ?u64 = null,
 };
 
+/// Owns the exact generate-content request retained through countTokens validation.
+///
+/// This is an internal cross-module seam for CLI Batch preparation.
+pub const PreparedBatchRequest = struct {
+    generate_request_json: []u8,
+    total_tokens: u64,
+
+    /// Frees the retained generate-content JSON and invalidates the value.
+    pub fn deinit(request: *PreparedBatchRequest, allocator: std.mem.Allocator) void {
+        allocator.free(request.generate_request_json);
+        request.* = undefined;
+    }
+};
+
 /// Stores explicit dependencies for supported Gemini operations.
 ///
 /// The API key remains caller-owned for the complete client lifetime.
@@ -330,17 +353,14 @@ pub const Client = struct {
     ) !Outcome(CountTokensResult) {
         try validateGenerationRequest(request);
 
-        const request_json = try buildCountTokensRequest(client.allocator, request);
-        defer client.allocator.free(request_json);
+        const generate_request_json = try buildGenerateRequest(client.allocator, request);
+        defer client.allocator.free(generate_request_json);
 
-        const context = api.RequestContext{
-            .gpa = client.allocator,
-            .io = client.io,
-            .api_key = client.api_key,
-            .timeout = client.timeout,
-        };
-        var response = try api.postCountTokensJson(&context, .nano2, request_json);
-        return countTokensOutcomeFromResponse(client.allocator, &response);
+        const context = client.requestContext();
+        return publicOutcome(
+            CountTokensResult,
+            try countTokensWithContext(&context, generate_request_json),
+        );
     }
 
     /// Validates and counts tokens for a borrowed edit request.
@@ -352,17 +372,50 @@ pub const Client = struct {
     ) !Outcome(CountTokensResult) {
         try validateEditRequest(request);
 
-        const request_json = try buildEditCountTokensRequest(client.allocator, request);
-        defer client.allocator.free(request_json);
+        const generate_request_json = try buildEditGenerateRequest(client.allocator, request);
+        defer client.allocator.free(generate_request_json);
 
-        const context = api.RequestContext{
-            .gpa = client.allocator,
-            .io = client.io,
-            .api_key = client.api_key,
-            .timeout = client.timeout,
-        };
-        var response = try api.postCountTokensJson(&context, .nano2, request_json);
-        return countTokensOutcomeFromResponse(client.allocator, &response);
+        const context = client.requestContext();
+        return publicOutcome(
+            CountTokensResult,
+            try countTokensWithContext(&context, generate_request_json),
+        );
+    }
+
+    /// Validates and prepares one owned generation Batch JSONL record.
+    ///
+    /// The explicit key is validated before request validation, allocation, or network IO.
+    pub fn prepareGenerationBatchEntry(
+        client: *const Client,
+        key: []const u8,
+        request: GenerationRequest,
+    ) !Outcome(PreparedBatchEntry) {
+        if (key.len == 0) return error.EmptyBatchKey;
+
+        const context = client.requestContext();
+        return preparedBatchEntryPublicOutcome(
+            client.allocator,
+            key,
+            try prepareGenerationBatchRequestWithContext(&context, request),
+        );
+    }
+
+    /// Validates and prepares one owned edit Batch JSONL record.
+    ///
+    /// The explicit key is validated before request validation, allocation, or network IO.
+    pub fn prepareEditBatchEntry(
+        client: *const Client,
+        key: []const u8,
+        request: EditRequest,
+    ) !Outcome(PreparedBatchEntry) {
+        if (key.len == 0) return error.EmptyBatchKey;
+
+        const context = client.requestContext();
+        return preparedBatchEntryPublicOutcome(
+            client.allocator,
+            key,
+            try prepareEditBatchRequestWithContext(&context, request),
+        );
     }
 
     /// Generates and returns owned decoded images for a borrowed request.
@@ -482,6 +535,32 @@ pub fn editWithContext(
     return generatedContentOutcomeFromResponse(context.gpa, &response);
 }
 
+/// Builds and validates one generation request while retaining its exact JSON bytes.
+///
+/// This is an internal cross-module seam for the CLI migration in Item #12.
+pub fn prepareGenerationBatchRequestWithContext(
+    context: *const api.RequestContext,
+    request: GenerationRequest,
+) !OperationOutcome(PreparedBatchRequest) {
+    try validateGenerationRequest(request);
+
+    const generate_request_json = try buildGenerateRequest(context.gpa, request);
+    return prepareBatchRequestWithContext(context, generate_request_json);
+}
+
+/// Builds and validates one edit request while retaining its exact JSON bytes.
+///
+/// This is an internal cross-module seam for the CLI migration in Item #12.
+pub fn prepareEditBatchRequestWithContext(
+    context: *const api.RequestContext,
+    request: EditRequest,
+) !OperationOutcome(PreparedBatchRequest) {
+    try validateEditRequest(request);
+
+    const generate_request_json = try buildEditGenerateRequest(context.gpa, request);
+    return prepareBatchRequestWithContext(context, generate_request_json);
+}
+
 fn publicOutcome(
     comptime T: type,
     outcome: OperationOutcome(T),
@@ -493,10 +572,105 @@ fn publicOutcome(
     };
 }
 
+fn preparedBatchEntryPublicOutcome(
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    outcome: OperationOutcome(PreparedBatchRequest),
+) !Outcome(PreparedBatchEntry) {
+    return switch (outcome) {
+        .success => |prepared_value| {
+            var prepared = prepared_value;
+            defer prepared.deinit(allocator);
+            return .{
+                .success = try prepareBatchEntry(allocator, key, prepared),
+            };
+        },
+        .api_failure => |failure| .{ .api_failure = failure },
+        .response_decoding_failure => |err| return err,
+    };
+}
+
+fn prepareBatchEntry(
+    allocator: std.mem.Allocator,
+    key: []const u8,
+    request: PreparedBatchRequest,
+) !PreparedBatchEntry {
+    std.debug.assert(key.len > 0);
+
+    const jsonl_record = try batch_api.buildEntryJson(
+        allocator,
+        key,
+        request.generate_request_json,
+    );
+    errdefer allocator.free(jsonl_record);
+    if (jsonl_record.len > max_batch_entry_bytes) return error.BatchEntryTooLong;
+
+    const owned_key = try allocator.dupe(u8, key);
+    errdefer allocator.free(owned_key);
+
+    return .{
+        .key = owned_key,
+        .jsonl_record = jsonl_record,
+        .total_tokens = request.total_tokens,
+    };
+}
+
+fn prepareBatchRequestWithContext(
+    context: *const api.RequestContext,
+    generate_request_json: []u8,
+) !OperationOutcome(PreparedBatchRequest) {
+    errdefer context.gpa.free(generate_request_json);
+
+    const outcome = try countTokensWithContext(context, generate_request_json);
+    return preparedBatchRequestOutcomeFromCountTokens(
+        context.gpa,
+        generate_request_json,
+        outcome,
+    );
+}
+
+fn preparedBatchRequestOutcomeFromCountTokens(
+    allocator: std.mem.Allocator,
+    generate_request_json: []u8,
+    outcome: OperationOutcome(CountTokensResult),
+) OperationOutcome(PreparedBatchRequest) {
+    return switch (outcome) {
+        .success => |result| .{
+            .success = .{
+                .generate_request_json = generate_request_json,
+                .total_tokens = result.total_tokens,
+            },
+        },
+        .api_failure => |failure| {
+            allocator.free(generate_request_json);
+            return .{ .api_failure = failure };
+        },
+        .response_decoding_failure => |err| {
+            allocator.free(generate_request_json);
+            return .{ .response_decoding_failure = err };
+        },
+    };
+}
+
+fn countTokensWithContext(
+    context: *const api.RequestContext,
+    generate_request_json: []const u8,
+) !OperationOutcome(CountTokensResult) {
+    const request_json = try api.buildCountTokensRequestFromGenerateContentJson(
+        context.gpa,
+        .nano2,
+        generate_request_json,
+    );
+    defer context.gpa.free(request_json);
+
+    var response = try api.postCountTokensJson(context, .nano2, request_json);
+    return countTokensOutcomeFromResponse(context.gpa, &response);
+}
+
 fn countTokensOutcomeFromResponse(
     allocator: std.mem.Allocator,
     response: *api.HttpResponse,
-) !Outcome(CountTokensResult) {
+) OperationOutcome(CountTokensResult) {
     if (response.status.class() != .success) {
         const failure = ApiFailure{
             .status = response.status,
@@ -507,7 +681,9 @@ fn countTokensOutcomeFromResponse(
     }
     defer response.deinit(allocator);
 
-    const result = try api.decodeCountTokensResponse(allocator, response.body);
+    const result = api.decodeCountTokensResponse(allocator, response.body) catch |err| {
+        return .{ .response_decoding_failure = err };
+    };
     return .{ .success = .{
         .total_tokens = result.total_tokens,
         .cached_content_token_count = result.cached_content_token_count,
@@ -1014,6 +1190,14 @@ test "invalid public request returns before allocation or network IO" {
         error.EmptyPrompt,
         client.generate(.{ .prompt = "" }),
     );
+    try std.testing.expectError(
+        error.EmptyBatchKey,
+        client.prepareGenerationBatchEntry("", .{ .prompt = "" }),
+    );
+    try std.testing.expectError(
+        error.EmptyPrompt,
+        client.prepareGenerationBatchEntry("key", .{ .prompt = "" }),
+    );
     const invalid_edit = EditRequest{
         .prompt = "",
         .base = .{ .name = "files/base", .mime = .jpeg },
@@ -1021,12 +1205,30 @@ test "invalid public request returns before allocation or network IO" {
     try std.testing.expectError(error.EmptyPrompt, client.countEditTokens(invalid_edit));
     try std.testing.expectError(error.EmptyPrompt, client.edit(invalid_edit));
     try std.testing.expectError(
+        error.EmptyBatchKey,
+        client.prepareEditBatchEntry("", invalid_edit),
+    );
+    try std.testing.expectError(
+        error.EmptyPrompt,
+        client.prepareEditBatchEntry("key", invalid_edit),
+    );
+    try std.testing.expectError(
         error.EmptyFileBytes,
         client.uploadFile(.{ .mime = .jpeg, .bytes = "" }),
     );
     try std.testing.expectError(error.InvalidFileName, client.getFile("abc123"));
     try std.testing.expectError(error.EmptyPageToken, client.listFilesPage(""));
     try std.testing.expectError(error.InvalidFileName, client.deleteFile("files/"));
+}
+
+test "public clients construct quiet request contexts" {
+    const client = try Client.init(std.testing.allocator, std.testing.io, .{
+        .api_key = "key",
+    });
+    const context = client.requestContext();
+
+    try std.testing.expect(!context.traffic_log_options.print_request);
+    try std.testing.expect(!context.traffic_log_options.print_response);
 }
 
 test "public generation options convert to the existing wire request" {
@@ -1457,6 +1659,129 @@ test "public edit types convert every MIME and role through existing serializer"
     try std.testing.expect(std.mem.indexOf(u8, request_json, "DO NOT") != null);
 }
 
+test "prepared Batch entry owns escaped key and exact request bytes" {
+    const gpa = std.testing.allocator;
+    const generate_request_json =
+        "{\"contents\": [{\"parts\": [{\"text\": \"exact bytes\"}]}]}";
+    var request = PreparedBatchRequest{
+        .generate_request_json = try gpa.dupe(u8, generate_request_json),
+        .total_tokens = 37,
+    };
+    defer request.deinit(gpa);
+
+    var entry = try prepareBatchEntry(gpa, "hero-\"001", request);
+    defer entry.deinit(gpa);
+
+    try std.testing.expectEqualStrings("hero-\"001", entry.key);
+    try std.testing.expectEqualStrings(
+        "{\"key\":\"hero-\\\"001\",\"request\":" ++ generate_request_json ++ "}",
+        entry.jsonl_record,
+    );
+    try std.testing.expect(entry.jsonl_record[entry.jsonl_record.len - 1] != '\n');
+    try std.testing.expectEqual(@as(u64, 37), entry.total_tokens);
+}
+
+test "prepared Batch entry enforces complete serialized record limit" {
+    const gpa = std.testing.allocator;
+    var request = PreparedBatchRequest{
+        .generate_request_json = try gpa.dupe(u8, "{}"),
+        .total_tokens = 1,
+    };
+    defer request.deinit(gpa);
+
+    const overhead = "{\"key\":\"".len + "\",\"request\":".len +
+        request.generate_request_json.len + "}".len;
+    std.debug.assert(overhead < max_batch_entry_bytes);
+
+    const exact_key = try gpa.alloc(u8, max_batch_entry_bytes - overhead);
+    defer gpa.free(exact_key);
+    @memset(exact_key, 'a');
+    var exact = try prepareBatchEntry(gpa, exact_key, request);
+    defer exact.deinit(gpa);
+    try std.testing.expectEqual(max_batch_entry_bytes, exact.jsonl_record.len);
+
+    const oversized_key = try gpa.alloc(u8, exact_key.len + 1);
+    defer gpa.free(oversized_key);
+    @memset(oversized_key, 'a');
+    try std.testing.expectError(
+        error.BatchEntryTooLong,
+        prepareBatchEntry(gpa, oversized_key, request),
+    );
+}
+
+test "prepared Batch request retains exact bytes on count success" {
+    const gpa = std.testing.allocator;
+    const generate_request_json = try gpa.dupe(u8, "{\"contents\": []}");
+    const original_pointer = generate_request_json.ptr;
+    var outcome = preparedBatchRequestOutcomeFromCountTokens(
+        gpa,
+        generate_request_json,
+        .{ .success = .{ .total_tokens = 19 } },
+    );
+
+    switch (outcome) {
+        .success => |*request| {
+            defer request.deinit(gpa);
+            try std.testing.expectEqual(original_pointer, request.generate_request_json.ptr);
+            try std.testing.expectEqualStrings(
+                "{\"contents\": []}",
+                request.generate_request_json,
+            );
+            try std.testing.expectEqual(@as(u64, 19), request.total_tokens);
+        },
+        .api_failure, .response_decoding_failure => return error.UnexpectedBatchPreparationFailure,
+    }
+}
+
+test "prepared Batch request cleans retained bytes on count failures" {
+    const gpa = std.testing.allocator;
+    var api_failure_outcome = preparedBatchRequestOutcomeFromCountTokens(
+        gpa,
+        try gpa.dupe(u8, "{}"),
+        .{ .api_failure = .{
+            .status = .bad_request,
+            .body = try gpa.dupe(u8, "{\"error\":\"complete body\"}"),
+        } },
+    );
+    switch (api_failure_outcome) {
+        .api_failure => |*failure| {
+            try std.testing.expectEqualStrings("{\"error\":\"complete body\"}", failure.body);
+            failure.deinit(gpa);
+        },
+        .success, .response_decoding_failure => return error.UnexpectedBatchPreparationOutcome,
+    }
+
+    var decoding_outcome = preparedBatchRequestOutcomeFromCountTokens(
+        gpa,
+        try gpa.dupe(u8, "{}"),
+        .{ .response_decoding_failure = error.MissingTotalTokens },
+    );
+    switch (decoding_outcome) {
+        .response_decoding_failure => |err| {
+            try std.testing.expectEqual(error.MissingTotalTokens, err);
+        },
+        .success => |*request| {
+            request.deinit(gpa);
+            return error.UnexpectedSuccess;
+        },
+        .api_failure => |*failure| {
+            failure.deinit(gpa);
+            return error.UnexpectedApiFailure;
+        },
+    }
+}
+
+test "prepared Batch public outcome surfaces malformed successes as Zig errors" {
+    try std.testing.expectError(
+        error.MissingTotalTokens,
+        preparedBatchEntryPublicOutcome(
+            std.testing.allocator,
+            "key",
+            .{ .response_decoding_failure = error.MissingTotalTokens },
+        ),
+    );
+}
+
 test "generation response classification transfers images and metadata" {
     const json =
         \\{
@@ -1759,7 +2084,7 @@ test "count token response classification decodes success" {
             "{\"totalTokens\":42,\"cachedContentTokenCount\":7}",
         ),
     };
-    const outcome = try countTokensOutcomeFromResponse(std.testing.allocator, &response);
+    const outcome = countTokensOutcomeFromResponse(std.testing.allocator, &response);
 
     switch (outcome) {
         .success => |result| {
@@ -1767,6 +2092,22 @@ test "count token response classification decodes success" {
             try std.testing.expectEqual(@as(?u64, 7), result.cached_content_token_count);
         },
         .api_failure => return error.UnexpectedApiFailure,
+        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
+    }
+}
+
+test "count token response classification accepts every 2xx status" {
+    var code: u16 = 200;
+    while (code <= 299) : (code += 1) {
+        var response = api.HttpResponse{
+            .status = @enumFromInt(code),
+            .body = try std.testing.allocator.dupe(u8, "{\"totalTokens\":1}"),
+        };
+        const outcome = countTokensOutcomeFromResponse(std.testing.allocator, &response);
+        switch (outcome) {
+            .success => |result| try std.testing.expectEqual(@as(u64, 1), result.total_tokens),
+            .api_failure, .response_decoding_failure => return error.UnexpectedCountTokensFailure,
+        }
     }
 }
 
@@ -1775,7 +2116,7 @@ test "count token response classification preserves API failure body" {
         .status = .too_many_requests,
         .body = try std.testing.allocator.dupe(u8, "{\"error\":\"quota\"}"),
     };
-    var outcome = try countTokensOutcomeFromResponse(std.testing.allocator, &response);
+    var outcome = countTokensOutcomeFromResponse(std.testing.allocator, &response);
 
     switch (outcome) {
         .success => return error.UnexpectedSuccess,
@@ -1784,6 +2125,7 @@ test "count token response classification preserves API failure body" {
             try std.testing.expectEqualStrings("{\"error\":\"quota\"}", failure.body);
             failure.deinit(std.testing.allocator);
         },
+        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
     }
 }
 
@@ -1793,8 +2135,15 @@ test "count token response classification frees malformed success body" {
         .body = try std.testing.allocator.dupe(u8, "{}"),
     };
 
-    try std.testing.expectError(
-        error.MissingTotalTokens,
-        countTokensOutcomeFromResponse(std.testing.allocator, &response),
-    );
+    var outcome = countTokensOutcomeFromResponse(std.testing.allocator, &response);
+    switch (outcome) {
+        .response_decoding_failure => |err| {
+            try std.testing.expectEqual(error.MissingTotalTokens, err);
+        },
+        .success => return error.UnexpectedSuccess,
+        .api_failure => |*failure| {
+            failure.deinit(std.testing.allocator);
+            return error.UnexpectedApiFailure;
+        },
+    }
 }

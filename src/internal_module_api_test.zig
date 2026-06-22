@@ -62,6 +62,8 @@ comptime {
     });
     assertExactPublicDecls("client", client, &.{
         "ApiFailure",
+        "BatchInputSummary",
+        "BatchValidationError",
         "Client",
         "ClientOptions",
         "CountTokensResult",
@@ -87,6 +89,8 @@ comptime {
         "Outcome",
         "OperationOutcome",
         "OutputMime",
+        "PreparedBatchEntry",
+        "PreparedBatchRequest",
         "Reference",
         "ReferenceRole",
         "RemoteError",
@@ -98,6 +102,9 @@ comptime {
         "UploadedImage",
         "editWithContext",
         "generateWithContext",
+        "max_batch_entries",
+        "max_batch_entry_bytes",
+        "max_batch_input_bytes",
         "max_edit_character_images",
         "max_edit_do_not_constraints",
         "max_edit_object_images",
@@ -105,6 +112,9 @@ comptime {
         "max_edit_reference_label_bytes",
         "max_edit_references",
         "max_file_upload_bytes",
+        "prepareEditBatchRequestWithContext",
+        "prepareGenerationBatchRequestWithContext",
+        "validateBatchInput",
     });
     assertExactPublicDecls("gen", gen, &.{
         "buildGenerateRequest",
@@ -148,10 +158,13 @@ comptime {
         "Outcome",
     });
     assertExactPublicDecls("batch", batch, &.{
+        "BatchInputSummary",
+        "BatchValidationError",
         "DownloadInfo",
         "ListPage",
         "OutputLineIterator",
         "OutputRecord",
+        "PreparedBatchEntry",
         "SubmitRequest",
         "buildEntryJson",
         "cancel",
@@ -163,6 +176,9 @@ comptime {
         "isCanonicalBatchName",
         "listJson",
         "listPage",
+        "max_batch_entries",
+        "max_batch_entry_bytes",
+        "max_batch_input_bytes",
         "max_entries",
         "max_entry_bytes",
         "max_input_bytes",
@@ -172,6 +188,7 @@ comptime {
         "status",
         "submit",
         "uploadInput",
+        "validateBatchInput",
         "validateInputJsonl",
         "validateOutputJsonl",
     });
@@ -308,8 +325,11 @@ comptime {
         "getFile",
         "init",
         "listFilesPage",
+        "prepareEditBatchEntry",
+        "prepareGenerationBatchEntry",
         "uploadFile",
     });
+    assertExactPublicDecls("client.BatchInputSummary", client.BatchInputSummary, &.{});
     assertExactPublicDecls("client.ClientOptions", client.ClientOptions, &.{});
     assertExactPublicDecls("client.CountTokensResult", client.CountTokensResult, &.{});
     assertExactPublicDecls("client.EditRequest", client.EditRequest, &.{});
@@ -350,7 +370,18 @@ comptime {
         client.OperationOutcome(client.GenerationResult),
         &.{},
     );
+    assertExactPublicDecls(
+        "client.OperationOutcome(PreparedBatchRequest)",
+        client.OperationOutcome(client.PreparedBatchRequest),
+        &.{},
+    );
     assertExactPublicDecls("client.OutputMime", client.OutputMime, &.{});
+    assertExactPublicDecls("client.PreparedBatchEntry", client.PreparedBatchEntry, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("client.PreparedBatchRequest", client.PreparedBatchRequest, &.{
+        "deinit",
+    });
     assertExactPublicDecls("client.Reference", client.Reference, &.{});
     assertExactPublicDecls("client.ReferenceRole", client.ReferenceRole, &.{});
     assertExactPublicDecls("client.RemoteError", client.RemoteError, &.{
@@ -403,6 +434,10 @@ comptime {
     );
 
     assertExactPublicDecls("batch.SubmitRequest", batch.SubmitRequest, &.{});
+    assertExactPublicDecls("batch.BatchInputSummary", batch.BatchInputSummary, &.{});
+    assertExactPublicDecls("batch.PreparedBatchEntry", batch.PreparedBatchEntry, &.{
+        "deinit",
+    });
     assertExactPublicDecls("batch.DownloadInfo", batch.DownloadInfo, &.{
         "deinit",
     });

@@ -22,7 +22,7 @@ comptime {
     }
 }
 
-test "dependency consumer compiles against typed generation edit and Files APIs" {
+test "dependency consumer compiles against typed generation edit Files and Batch preparation APIs" {
     const client = try nbimg.Client.init(std.testing.allocator, std.testing.io, .{
         .api_key = "borrowed-key",
     });
@@ -55,6 +55,8 @@ test "dependency consumer compiles against typed generation edit and Files APIs"
     const generate = nbimg.Client.generate;
     const edit = nbimg.Client.edit;
     const count_edit_tokens = nbimg.Client.countEditTokens;
+    const prepare_generation_batch_entry = nbimg.Client.prepareGenerationBatchEntry;
+    const prepare_edit_batch_entry = nbimg.Client.prepareEditBatchEntry;
     const upload_file = nbimg.Client.uploadFile;
     const get_file = nbimg.Client.getFile;
     const list_files_page = nbimg.Client.listFilesPage;
@@ -62,6 +64,8 @@ test "dependency consumer compiles against typed generation edit and Files APIs"
     _ = generate;
     _ = edit;
     _ = count_edit_tokens;
+    _ = prepare_generation_batch_entry;
+    _ = prepare_edit_batch_entry;
     _ = upload_file;
     _ = get_file;
     _ = list_files_page;
@@ -115,6 +119,19 @@ test "dependency consumer compiles against typed generation edit and Files APIs"
         .unknown = try std.testing.allocator.dupe(u8, "IMPORTED"),
     };
     defer unknown_source.deinit(std.testing.allocator);
+    var prepared_entry = nbimg.PreparedBatchEntry{
+        .key = try std.testing.allocator.dupe(u8, "hero-001"),
+        .jsonl_record = try std.testing.allocator.dupe(
+            u8,
+            "{\"key\":\"hero-001\",\"request\":{}}",
+        ),
+        .total_tokens = 42,
+    };
+    defer prepared_entry.deinit(std.testing.allocator);
+    const batch_summary: nbimg.BatchInputSummary = try nbimg.validateBatchInput(
+        prepared_entry.jsonl_record,
+    );
+    const batch_validation_error: nbimg.BatchValidationError = error.EmptyBatchKey;
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
     try std.testing.expectEqualStrings(
@@ -148,4 +165,10 @@ test "dependency consumer compiles against typed generation edit and Files APIs"
     try std.testing.expectEqual(@as(usize, 64), nbimg.max_edit_reference_label_bytes);
     try std.testing.expectEqual(@as(usize, 16), nbimg.max_edit_preserve_constraints);
     try std.testing.expectEqual(@as(usize, 16), nbimg.max_edit_do_not_constraints);
+    try std.testing.expectEqual(@as(usize, 1), batch_summary.entry_count);
+    try std.testing.expectEqual(prepared_entry.jsonl_record.len, batch_summary.byte_count);
+    try std.testing.expectEqual(error.EmptyBatchKey, batch_validation_error);
+    try std.testing.expectEqual(@as(usize, 5 * 1024 * 1024), nbimg.max_batch_entry_bytes);
+    try std.testing.expectEqual(@as(usize, 100), nbimg.max_batch_entries);
+    try std.testing.expectEqual(@as(usize, 512 * 1024 * 1024), nbimg.max_batch_input_bytes);
 }

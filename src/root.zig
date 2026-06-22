@@ -1,6 +1,8 @@
 const client = @import("client.zig");
 
 pub const ApiFailure = client.ApiFailure;
+pub const BatchInputSummary = client.BatchInputSummary;
+pub const BatchValidationError = client.BatchValidationError;
 pub const Client = client.Client;
 pub const ClientOptions = client.ClientOptions;
 pub const CountTokensResult = client.CountTokensResult;
@@ -25,6 +27,7 @@ pub const ImageSize = client.ImageSize;
 pub const InputImageMime = client.InputImageMime;
 pub const Outcome = client.Outcome;
 pub const OutputMime = client.OutputMime;
+pub const PreparedBatchEntry = client.PreparedBatchEntry;
 pub const Reference = client.Reference;
 pub const ReferenceRole = client.ReferenceRole;
 pub const RemoteError = client.RemoteError;
@@ -34,6 +37,9 @@ pub const ServiceTier = client.ServiceTier;
 pub const ThinkingLevel = client.ThinkingLevel;
 pub const ThinkingOptions = client.ThinkingOptions;
 pub const UploadedImage = client.UploadedImage;
+pub const max_batch_entries = client.max_batch_entries;
+pub const max_batch_entry_bytes = client.max_batch_entry_bytes;
+pub const max_batch_input_bytes = client.max_batch_input_bytes;
 pub const max_edit_character_images = client.max_edit_character_images;
 pub const max_edit_do_not_constraints = client.max_edit_do_not_constraints;
 pub const max_edit_object_images = client.max_edit_object_images;
@@ -41,6 +47,7 @@ pub const max_edit_preserve_constraints = client.max_edit_preserve_constraints;
 pub const max_edit_reference_label_bytes = client.max_edit_reference_label_bytes;
 pub const max_edit_references = client.max_edit_references;
 pub const max_file_upload_bytes = client.max_file_upload_bytes;
+pub const validateBatchInput = client.validateBatchInput;
 
 pub const api = @import("api.zig");
 pub const batch = @import("batch.zig");

@@ -51,6 +51,8 @@ comptime {
 
     assertExactPublicDecls("root", root, &.{
         "ApiFailure",
+        "BatchInputSummary",
+        "BatchValidationError",
         "Client",
         "ClientOptions",
         "CountTokensResult",
@@ -75,6 +77,7 @@ comptime {
         "InputImageMime",
         "Outcome",
         "OutputMime",
+        "PreparedBatchEntry",
         "Reference",
         "ReferenceRole",
         "RemoteError",
@@ -86,6 +89,9 @@ comptime {
         "UploadedImage",
         "api",
         "batch",
+        "max_batch_entries",
+        "max_batch_entry_bytes",
+        "max_batch_input_bytes",
         "max_edit_character_images",
         "max_edit_do_not_constraints",
         "max_edit_object_images",
@@ -93,6 +99,7 @@ comptime {
         "max_edit_reference_label_bytes",
         "max_edit_references",
         "max_file_upload_bytes",
+        "validateBatchInput",
     });
 
     assertExactPublicDecls("root.ApiFailure", root.ApiFailure, &.{
@@ -107,8 +114,11 @@ comptime {
         "getFile",
         "init",
         "listFilesPage",
+        "prepareEditBatchEntry",
+        "prepareGenerationBatchEntry",
         "uploadFile",
     });
+    assertExactPublicDecls("root.BatchInputSummary", root.BatchInputSummary, &.{});
     assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
     assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
     assertExactPublicDecls("root.EditRequest", root.EditRequest, &.{});
@@ -141,10 +151,18 @@ comptime {
     assertExactPublicDecls("root.InputImageMime", root.InputImageMime, &.{});
     assertExactPublicDecls("root.Outcome(CountTokensResult)", root.Outcome(root.CountTokensResult), &.{});
     assertExactPublicDecls("root.Outcome(GenerationResult)", root.Outcome(root.GenerationResult), &.{});
+    assertExactPublicDecls(
+        "root.Outcome(PreparedBatchEntry)",
+        root.Outcome(root.PreparedBatchEntry),
+        &.{},
+    );
     assertExactPublicDecls("root.Outcome(File)", root.Outcome(root.File), &.{});
     assertExactPublicDecls("root.Outcome(FileListPage)", root.Outcome(root.FileListPage), &.{});
     assertExactPublicDecls("root.Outcome(void)", root.Outcome(void), &.{});
     assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
+    assertExactPublicDecls("root.PreparedBatchEntry", root.PreparedBatchEntry, &.{
+        "deinit",
+    });
     assertExactPublicDecls("root.Reference", root.Reference, &.{});
     assertExactPublicDecls("root.ReferenceRole", root.ReferenceRole, &.{});
     assertExactPublicDecls("root.RemoteError", root.RemoteError, &.{

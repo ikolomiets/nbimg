@@ -5,14 +5,55 @@ const assert = std.debug.assert;
 const api = @import("api.zig");
 const build_options = @import("build_options");
 
-pub const max_entry_bytes = api.max_generate_request_field_bytes;
-pub const max_input_bytes = 512 * 1024 * 1024;
+pub const max_batch_entry_bytes = api.max_generate_request_field_bytes;
+pub const max_batch_entries = 100;
+pub const max_batch_input_bytes = 512 * 1024 * 1024;
+pub const max_entry_bytes = max_batch_entry_bytes;
+pub const max_input_bytes = max_batch_input_bytes;
 pub const max_output_bytes = 512 * 1024 * 1024;
-pub const max_entries = 100;
+pub const max_entries = max_batch_entries;
 const input_content_type = "application/jsonl";
 const canonical_batch_name_prefix = "batches/";
 const max_safe_key_bytes = 160;
 const truncated_safe_key_prefix_bytes = 120;
+
+/// Reports invalid caller-controlled Batch keys and JSONL input.
+pub const BatchValidationError = error{
+    EmptyBatchKey,
+    EmptyBatchInput,
+    InvalidBatchInput,
+    BatchEntryTooLong,
+    BatchTooManyEntries,
+    BatchInputTooLong,
+};
+
+const BatchInputValidationError = error{
+    EmptyBatchInput,
+    InvalidBatchInput,
+    BatchEntryTooLong,
+    BatchTooManyEntries,
+    BatchInputTooLong,
+};
+
+/// Summarizes one structurally valid borrowed Batch JSONL input.
+pub const BatchInputSummary = struct {
+    entry_count: usize,
+    byte_count: usize,
+};
+
+/// Owns one prepared Batch JSONL record and its response-correlation key.
+pub const PreparedBatchEntry = struct {
+    key: []u8,
+    jsonl_record: []u8,
+    total_tokens: u64,
+
+    /// Frees the key and JSONL record, then invalidates the value.
+    pub fn deinit(entry: *PreparedBatchEntry, gpa: std.mem.Allocator) void {
+        gpa.free(entry.key);
+        gpa.free(entry.jsonl_record);
+        entry.* = undefined;
+    }
+};
 
 /// Describes borrowed input and display names for a batch submission.
 ///
@@ -137,11 +178,15 @@ pub fn buildEntryJson(
     return list.toOwnedSlice(gpa);
 }
 
-/// Validates batch input byte, line, entry-size, and entry-count limits.
+/// Validates Batch input byte, line, entry-size, and entry-count limits.
 ///
 /// - Borrows `bytes`, allocates nothing, and mutates no state.
-/// - Returns specific empty, malformed, oversized-entry, oversized-input, or too-many-entry errors.
-pub fn validateInputJsonl(bytes: []const u8) !void {
+/// - Returns a non-owning summary or a specific structural validation error.
+pub fn validateBatchInput(bytes: []const u8) BatchValidationError!BatchInputSummary {
+    return validateBatchInputInternal(bytes);
+}
+
+fn validateBatchInputInternal(bytes: []const u8) BatchInputValidationError!BatchInputSummary {
     try validateInputByteCount(bytes.len);
 
     var entry_count: usize = 0;
@@ -162,9 +207,18 @@ pub fn validateInputJsonl(bytes: []const u8) !void {
     }
 
     if (entry_count == 0) return error.EmptyBatchInput;
+    return .{
+        .entry_count = entry_count,
+        .byte_count = bytes.len,
+    };
 }
 
-fn validateInputByteCount(byte_count: usize) !void {
+/// Compatibility wrapper for the legacy Batch module API.
+pub fn validateInputJsonl(bytes: []const u8) BatchInputValidationError!void {
+    _ = try validateBatchInputInternal(bytes);
+}
+
+fn validateInputByteCount(byte_count: usize) BatchInputValidationError!void {
     if (byte_count == 0) return error.EmptyBatchInput;
     if (byte_count > max_input_bytes) return error.BatchInputTooLong;
 }
@@ -771,11 +825,28 @@ test "buildEntryJson wraps request and escapes key" {
     );
 }
 
-test "validateInputJsonl accepts LF and CRLF entries" {
+test "PreparedBatchEntry owns and frees key and JSONL record" {
+    var entry = PreparedBatchEntry{
+        .key = try std.testing.allocator.dupe(u8, "hero-001"),
+        .jsonl_record = try std.testing.allocator.dupe(
+            u8,
+            "{\"key\":\"hero-001\",\"request\":{}}",
+        ),
+        .total_tokens = 42,
+    };
+
+    try std.testing.expectEqualStrings("hero-001", entry.key);
+    try std.testing.expectEqual(@as(u64, 42), entry.total_tokens);
+    entry.deinit(std.testing.allocator);
+}
+
+test "validateBatchInput summarizes LF and CRLF entries" {
     const input =
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\r\n" ++
         "{\"key\":\"two\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
-    try validateInputJsonl(input);
+    const summary = try validateBatchInput(input);
+    try std.testing.expectEqual(@as(usize, 2), summary.entry_count);
+    try std.testing.expectEqual(input.len, summary.byte_count);
 }
 
 test "validateInputJsonl accepts maximum entries and rejects one over maximum" {
@@ -805,7 +876,9 @@ test "validateInputJsonl accepts entry contents without semantic validation" {
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"one\"}]}]}}\n" ++
         "{\"key\":\"one\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"two\"}]}]}}\n";
 
-    try validateInputJsonl(input);
+    const summary = try validateBatchInput(input);
+    try std.testing.expectEqual(@as(usize, 5), summary.entry_count);
+    try std.testing.expectEqual(input.len, summary.byte_count);
 }
 
 test "validateInputJsonl rejects empty input and blank entries" {
@@ -857,6 +930,24 @@ test "validateInputByteCount enforces local input limit" {
         error.BatchInputTooLong,
         validateInputByteCount(max_input_bytes + 1),
     );
+}
+
+test "stable Batch admission limits match legacy names" {
+    try std.testing.expectEqual(max_batch_entry_bytes, max_entry_bytes);
+    try std.testing.expectEqual(max_batch_entries, max_entries);
+    try std.testing.expectEqual(max_batch_input_bytes, max_input_bytes);
+}
+
+test "BatchValidationError exposes deliberate validation errors" {
+    const errors = [_]BatchValidationError{
+        error.EmptyBatchKey,
+        error.EmptyBatchInput,
+        error.InvalidBatchInput,
+        error.BatchEntryTooLong,
+        error.BatchTooManyEntries,
+        error.BatchInputTooLong,
+    };
+    try std.testing.expectEqual(@as(usize, 6), errors.len);
 }
 
 test "buildSubmitRequestJson uses uploaded file and display name" {

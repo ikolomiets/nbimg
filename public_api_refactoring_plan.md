@@ -649,7 +649,7 @@ outcome used by later typed operations.
 
    **Depends on:** Items 6, 8, and 9.
 
-   **Status:** Next.
+   **Status:** Completed.
 
    **Result:** Consumers can validate Batch JSONL and prepare generation or
    edit entries without exposing generate-content JSON or count-token
@@ -722,6 +722,19 @@ outcome used by later typed operations.
    request-validity live targets only if request construction or countTokens
    envelope behavior changes.
 
+   **Validation completed:** Covered explicit-key and prepared-entry ownership,
+   retained phase-one request ownership and cleanup, quiet public contexts,
+   every 2xx countTokens status, complete API-failure bodies, malformed
+   successes, validation before allocation or network IO, byte-for-byte
+   request reuse, escaped keys, exact newline-free JSONL shape, exact and
+   oversized complete-entry boundaries, LF/CRLF summaries, structural-only
+   acceptance, blank records, and all admission limits. Exact package/internal
+   allowlists and the external-consumer test cover the additive API. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live targets were not run because request construction,
+   the countTokens envelope, transport, and endpoint behavior remain
+   wire-compatible.
+
    **Complete when:** Public Batch preparation and structural validation
    require no raw Gemini builders or response decoders, while the CLI remains
    behaviorally unchanged for the next migration.
@@ -729,6 +742,8 @@ outcome used by later typed operations.
 12. **Migrate CLI Batch-file preparation to the typed core**
 
    **Depends on:** Item 11.
+
+   **Status:** Next.
 
    **Result:** `gen --batch-file` and `edit --batch-file` share the validated
    preparation core with public methods while preserving atomic automatic-key
@@ -739,6 +754,10 @@ outcome used by later typed operations.
    - Route generation and edit Batch-file preparation through the allowlisted
      phase-one context-taking operations introduced by Item 11. CLI contexts
      retain request/response traffic logging and configured timeout behavior.
+     Use the existing `generationRequestFromCommand` and
+     `editRequestFromCommand` adapters so immediate and Batch modes convert CLI
+     options identically. Do not call the public explicit-key preparation
+     methods: automatic keys must still be derived under the file lock.
    - Apply the common response contract: accept every completed 2xx
      countTokens response, print complete non-2xx bodies, map malformed
      successful responses to exit code 3, and keep transport/timeout
@@ -747,6 +766,8 @@ outcome used by later typed operations.
      `PreparedBatchRequest`, pass its exact retained generate-content JSON into
      the locked append phase, and release it after append/receipt handling; do
      not rebuild it.
+     Split the current raw-response `runBatchRequest` orchestration into typed
+     phase-one outcome handling and the existing locked append/receipt phase.
    - Generate automatic keys from the locked file offset. For explicit
      `--batch-key`, perform duplicate inspection under the same exclusive lock.
      Key derivation, existing-file inspection, JSONL wrapping, append, and
@@ -755,7 +776,9 @@ outcome used by later typed operations.
      separators, limits, receipts, and rollback semantics.
    - Remove direct CLI dependencies on generation/edit request JSON builders,
      countTokens envelope construction, and raw countTokens response decoding
-     once the typed path has no remaining caller. Tighten internal allowlists.
+     once the typed path has no remaining caller. Keep the command builders
+     public internally only for their remaining `client.zig` caller, and
+     tighten internal allowlists to reflect the removed CLI edges.
    - Update README and implementation-design ownership text for the shared
      preparation core and CLI-owned locking/filesystem behavior.
 
@@ -779,6 +802,12 @@ outcome used by later typed operations.
 
    **Depends on:** Items 9 and 11.
 
+   **Status:** Planned.
+
+   This item is independent of Item 12 and may be developed in parallel, but
+   Item 12 remains the recommended next increment because it is smaller and
+   closes the current CLI preparation duplication.
+
    **Result:** Consumers can upload file-backed Batch input and create, get,
    list, or cancel remote Batch jobs without raw HTTP responses or public
    response decoders.
@@ -791,6 +820,11 @@ outcome used by later typed operations.
      this item. Item 14 adds file-backed output download separately.
    - Add `Client.uploadBatchInput`, `Client.createBatch`, `Client.getBatch`,
      `Client.cancelBatch`, and `Client.listBatchesPage`.
+   - Keep the public Batch request/result/state/stats types in `src/batch.zig`
+     and alias them through `client.zig` and `root.zig`, following Item 11.
+     Typed Batch cores in `batch.zig` may deliberately import
+     `files_domain.zig` and `operation.zig`; update the documented module
+     boundary rather than duplicating shared outcome or remote-error types.
    - Define borrowed `BatchInputUpload` with bytes and optional display name,
      and borrowed `BatchCreateRequest` with canonical input file name and
      display name. Creation continues to use the repository's fixed image
@@ -811,9 +845,17 @@ outcome used by later typed operations.
      Batch JSONL content type and return `OperationOutcome(File)`. Reuse the
      Item 9 upload response decoder and ownership; do not duplicate File wire
      parsing in `batch.zig` or expose arbitrary content-type strings publicly.
+     The Batch upload path must use `max_batch_input_bytes` and
+     `application/jsonl`; it must not inherit the image-only
+     `max_file_upload_bytes` admission limit or require an `InputImageMime`.
      As with image upload, transport or decoding errors after dispatch may
      leave a remote File whose name is unavailable; do not retry
      automatically.
+   - Move the currently private shared remote-error wire decoding out of the
+     Files operation implementation into one exact-allowlisted internal helper
+     in `files_domain.zig`, usable by both Files and Batch decoding. Keep the
+     public `RemoteError` type unchanged and do not implement a second
+     Status/details parser in `batch.zig`.
    - Keep upload and creation separate so callers retain the uploaded file name
      when non-idempotent creation fails. Treat every Zig error after dispatch
      from `Client.createBatch`—including transport and successful-response
@@ -837,7 +879,9 @@ outcome used by later typed operations.
      Absent state maps to `.unspecified`. Accept integral counters and priority
      from either decimal JSON strings or integral JSON numbers; reject
      negative counters, fractional values, overflow, malformed present
-     numeric values, and noncanonical present File names.
+     numeric values, noncanonical present File names, and malformed present
+     model names. A present model must use canonical non-empty `models/...`
+     form.
    - Decode the documented long-running `Operation` wrapper and the observed
      SDK/discovery placements already accepted by the legacy decoder: Batch
      fields may be at the operation root, directly under `metadata`, directly
@@ -846,7 +890,10 @@ outcome used by later typed operations.
      SDK-style `dest.fileName`. Get/list may observe inline input/output or jobs
      created for other models; preserve available model and common metadata
      while representing absent file input/output as null. Do not expose inline
-     requests or responses.
+     requests or responses. Decode a top-level long-running-operation `error`
+     into `BatchJob.error`, preserving code, message, and details. Creation
+     decoding requires at least the canonical Batch name; all other fields may
+     be absent in the initial operation response.
    - Return typed outcomes consistently: uploads return `Outcome(File)`,
      create/get return `Outcome(BatchJob)`, cancel returns
      `Outcome(void)`, and listing returns `Outcome(BatchListPage)`.
@@ -888,6 +935,8 @@ outcome used by later typed operations.
 
    **Depends on:** Item 13.
 
+   **Status:** Planned.
+
    **Result:** Consumers can download and process file-backed Batch output
    through a bounded borrowed-record visitor without internal line iterators or
    eager retention of decoded results.
@@ -915,14 +964,21 @@ outcome used by later typed operations.
      the public visitor types and orchestration that converts decoded generated
      files into `GenerationResult` in `client.zig`. Do not extract another
      shared generation-domain module unless a second non-client owner appears.
+   - Add a new exact-allowlisted internal decoded-record type in `batch.zig`
+     that owns the key and a tagged compact response-JSON or error-JSON
+     payload. Keep the legacy `OutputRecord` shape unchanged until Item 15;
+     it currently discards per-record error details and is therefore
+     insufficient for the typed visitor. Decode the error JSON through the
+     shared remote-error helper introduced by Item 13.
    - Export the stable output admission limit as `max_batch_output_bytes`.
      Retain at most the complete bounded raw JSONL body plus one decoded record
      and its images. Decode records sequentially, invoke the visitor, then
      release that record before continuing.
    - The typed decoder is strict: malformed JSONL, empty records, malformed
      response/error records, malformed remote errors, and generated-image
-     decoding failures are successful-response decoding failures. Remote error
-     records and duplicate keys are valid records.
+     decoding failures are successful-response decoding failures. A record
+     must have exactly one of response or error. Remote error records and
+     duplicate keys are valid records.
    - The public method returns `Outcome(BatchOutputSummary)`. The internal
      context-taking core uses the shared stage-aware outcome for HTTP and
      decoding stages, while visitor callback errors remain outer Zig errors.
@@ -954,6 +1010,8 @@ outcome used by later typed operations.
 
    **Depends on:** Items 12, 13, and 14.
 
+   **Status:** Planned.
+
    **Result:** CLI Batch commands and the public client share typed operation
    cores, allowing the legacy package-level `batch` export and raw-response
    presentation seams to be removed.
@@ -963,6 +1021,10 @@ outcome used by later typed operations.
    - Migrate Batch input upload, create, get/status, and cancel/list to the
      context-taking typed cores introduced by Item 13, and download to the
      visitor core introduced by Item 14.
+     `batch download` first calls the typed get/status core, requires a
+     succeeded job with a canonical output file name, then passes that name to
+     the typed visitor download core; it must not issue a second status request
+     inside the download core.
    - Apply the common response contract while preserving diagnostics, traffic
      logging, timeout reporting, the ambiguous-creation warning, exit-code
      categories, and non-idempotent no-retry behavior.
@@ -970,6 +1032,7 @@ outcome used by later typed operations.
      malformed successful create response is also reported as ambiguous but
      retains exit code 3; a completed non-2xx response is definitive and exits
      1.
+     Preserve the current `OK` stdout result for a successful `batch cancel`.
    - Replace raw successful-response presentation for `batch submit`, `status`,
      and `list` with deliberate CLI-owned JSON serialization of
      `BatchJob` and `BatchListPage`. Use camelCase field names. A job object
@@ -1029,6 +1092,8 @@ outcome used by later typed operations.
 
    **Depends on:** Items 8, 10, 12, and 15.
 
+   **Status:** Planned.
+
    **Result:** `api.zig` remains an internal shared implementation module and
    is no longer part of the package contract.
 
@@ -1058,6 +1123,8 @@ outcome used by later typed operations.
 
    **Depends on:** Item 16.
 
+   **Status:** Planned.
+
    **Result:** Confirm the incrementally hardened public API and minimize
    remaining internal visibility.
 
@@ -1073,9 +1140,11 @@ outcome used by later typed operations.
    - Verify that CLI name parsing, environment lookup, output naming, safe-key
      encoding, typed Batch JSON presentation, and filesystem effects are
      CLI-owned or internal-only.
-   - Verify that no runtime HTTP-status, service-tier-decoding, raw-success-body,
-     or tolerant-record-decoding policy remains. Distinct operations may retain
-     distinct decoders only when their typed result contracts genuinely differ.
+   - Verify that no caller-selectable runtime HTTP-status or service-tier
+     policy, raw-success-body presentation seam, or tolerant-record-decoding
+     policy remains. Unknown reported service-tier spellings must consistently
+     remain decoding errors. Distinct operations may retain distinct decoders
+     only when their typed result contracts genuinely differ.
    - Make cross-file declarations private where completed migrations removed
      their callers, and tighten internal module allowlists.
 
@@ -1092,6 +1161,8 @@ outcome used by later typed operations.
 
    **Depends on:** Items 1 through 17.
 
+   **Status:** Planned.
+
    **Result:** Declare the already usable client API stable and ensure all
    documentation and examples match it.
 
@@ -1102,7 +1173,8 @@ outcome used by later typed operations.
      audit unless that audit finds a correctness defect.
    - Reduce the package allowlist to the exact `Client`, configuration,
      outcome, request/result, input/output MIME, enum, ownership, and
-     documented-limit declarations.
+     documented-limit declarations, plus deliberate pure validation functions
+     such as `validateBatchInput`.
    - Consolidate the incremental README examples added with Items 4 through 15
      into complete client initialization, ownership, API-failure handling,
      generation, edit, Files, Batch preparation, and remote Batch workflows.
@@ -1128,7 +1200,7 @@ outcome used by later typed operations.
 
 ## Schema Baseline for Remaining Remote APIs
 
-Items 9 through 15 use the current official
+Remaining remote Items 13 through 15 use the current official
 [Files API](https://ai.google.dev/api/files),
 [Batch API reference](https://ai.google.dev/api/batch-api), and
 [Batch guide](https://ai.google.dev/gemini-api/docs/batch-api) as their schema
@@ -1143,10 +1215,14 @@ counters, signed priority, timestamps, and file-backed
 place state under `metadata` and file output directly under
 `response.responsesFile`, while SDK guide examples still expose `JOB_STATE_*`
 and `dest.fileName`. Item 13 therefore deliberately accepts all listed
-representations. The guide currently advertises a 2 GB Batch input-file
-maximum; this refactoring deliberately retains the repository's existing
-512 MiB admission limit. Raising that resource bound is a separate design
-change, not an incidental API-refactoring side effect.
+representations. The REST reference states that file-backed output records are
+written in input order, which Item 14 preserves through visitor order. The
+guide currently advertises a 2 GB Batch input-file maximum; this refactoring
+deliberately retains the repository's existing 512 MiB admission limit.
+Raising that resource bound is a separate design change, not an incidental
+API-refactoring side effect. The reference also documents Batch delete and
+update methods, but they remain outside this plan because the current CLI has
+no corresponding workflow.
 
 ## Validation Policy for Future Refactorings
 

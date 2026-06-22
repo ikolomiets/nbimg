@@ -58,8 +58,9 @@ The code is split into eleven source files:
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
-  returned validation errors, public Files methods, and conversion to and from
-  the existing command wire paths.
+  returned validation errors, public Files and Batch-preparation methods,
+  retained phase-one Batch request ownership, and conversion to and from the
+  existing command wire paths.
 - `src/operation.zig` owns shared `ApiFailure`, `Outcome(T)`, and internal
   stage-aware `OperationOutcome(T)` response types.
 - `src/files_domain.zig` owns the public Files request, result, state, source,
@@ -74,11 +75,12 @@ The code is split into eleven source files:
   request bounds and envelope assembly, generateContent/countTokens JSON posting,
   generic resumable byte uploads, generated response decoding, and response log
   sanitization.
-- `src/batch.zig` owns Batch JSONL entry serialization and validation, Batch
-  input upload configuration, create/status/cancel/list request construction,
+- `src/batch.zig` owns public Batch input validation and prepared-entry value
+  types, stable admission limits, legacy JSONL entry serialization, Batch input
+  upload configuration, create/status/cancel/list request construction,
   canonical `batches/...` validation, response-name and list-page decoding,
-  bounded output download, output-record decoding, safe output keys, pagination
-  token handling, and full JSON pretty-printing.
+  bounded output download, output-record decoding, safe output keys,
+  pagination token handling, and full JSON pretty-printing.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
@@ -152,6 +154,22 @@ runs before allocation or network IO. Completed non-2xx responses preserve
 their bounded bodies as `ApiFailure`; malformed successful response bodies are
 Zig errors at the public method boundary.
 
+`Client.prepareGenerationBatchEntry` and `Client.prepareEditBatchEntry` require
+an explicit non-empty key and return `Outcome(PreparedBatchEntry)`. The key and
+complete JSONL record are owned and released with
+`PreparedBatchEntry.deinit`. The record omits its trailing newline. Each
+operation builds one exact generate-content request, retains it through
+countTokens validation, and inserts those bytes unchanged into the Batch
+record. Internal `prepareGenerationBatchRequestWithContext` and
+`prepareEditBatchRequestWithContext` seams expose the retained phase-one
+request only to the future CLI migration. Public callers use quiet contexts.
+
+`validateBatchInput` performs allocation-free structural validation and returns
+`BatchInputSummary`. It counts LF/CRLF-aware non-empty records and enforces
+`max_batch_entry_bytes`, `max_batch_entries`, and `max_batch_input_bytes`
+without parsing JSON. Legacy `batch.validateInputJsonl` and limit names remain
+compatibility wrappers.
+
 The remaining command-domain namespace is temporarily available:
 
 ```zig
@@ -165,8 +183,8 @@ The internal module interfaces are intentionally narrow:
 
 - `cli` exports only `run` for executable assembly.
 - `client` exports only the deliberate supported client declarations and their
-  ownership methods plus context-taking generated-content seams and the
-  generic internal operation outcome.
+  ownership methods plus context-taking generated-content and Batch phase-one
+  seams and the generic internal operation outcome.
 - `operation` exports only shared typed-operation outcome and API-failure
   ownership declarations.
 - `files_domain` exports only deliberate public Files domain declarations.
@@ -180,10 +198,12 @@ The internal module interfaces are intentionally narrow:
   operations shared by the public client and CLI. Raw transport helpers and
   typed response decoders remain private. Shared uploaded-name decoding is
   exposed only by `api`.
-- `batch` exports the CLI-consumed models and limits, ownership/iteration
-  methods, upload/submit/status/download/cancel/list operations, response
-  decoders, and JSONL/output helpers. Wire constants, submit serialization,
-  byte-count validation, and URL construction remain internal.
+- `batch` exports the deliberate Batch input types, validation function, stable
+  limits, and the CLI-consumed compatibility models, limits,
+  ownership/iteration methods, upload/submit/status/download/cancel/list
+  operations, response decoders, and JSONL/output helpers. Wire constants,
+  submit serialization, byte-count validation, and URL construction remain
+  internal.
 - `api` exports only shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
   transport, resumable upload support, response decoders, request context and
@@ -251,9 +271,11 @@ typed uploads, canonical names, and page tokens, invokes the shared resumable
 byte-upload transport, builds paginated list and file-resource URLs, and
 decodes uploaded/listed/fetched File metadata.
 
-`src/batch.zig` owns Gemini Batch API semantics. It enforces the 5 MiB
-serialized-entry and 512 MiB local file limits, counts entries, leaves submit
-entry JSON and key validation to Gemini, uploads bytes as
+`src/batch.zig` owns Gemini Batch API semantics. Its public structural validator
+enforces the 5 MiB serialized-entry, 100-entry, and 512 MiB input limits and
+returns byte and entry counts without parsing JSON. Prepared entries own their
+explicit keys and complete newline-free JSONL records. Legacy submit validation
+leaves entry JSON and key semantics to Gemini, uploads bytes as
 `application/jsonl`, submits the uploaded `files/...` name to the fixed image
 model, builds status URLs from canonical `batches/...` names, builds paginated
 list URLs, validates listed operation names, preserves complete operation
@@ -1227,6 +1249,13 @@ helper:
 `api.decodeCountTokensResponse` extracts `totalTokens` and optional
 `cachedContentTokenCount` from successful responses.
 
+Typed Batch preparation retains the exact generated request allocation through
+countTokens classification. A successful phase-one result owns those bytes and
+the total token count; phase two wraps the same bytes in the public JSONL
+record, enforces the complete serialized-record limit, and then releases the
+phase-one allocation. Non-2xx bodies transfer into `ApiFailure`, while malformed
+2xx responses become Zig errors at the public method boundary.
+
 The live request-validity tests call these helpers directly. User-facing
 `--batch-file` mode instead builds the command's `GenerateContentRequest` once,
 wraps those exact bytes with
@@ -1373,6 +1402,9 @@ Allocator ownership is explicit:
   `RemoteError.deinit`, `batch.ListPage.deinit`, `GeneratedFile.deinit`,
   `GeneratedFiles.deinit`, `GeneratedImage.deinit`, and
   `GenerationResult.deinit` release owned allocations.
+- `PreparedBatchRequest.deinit` releases the internally retained exact
+  generate-content JSON; `PreparedBatchEntry.deinit` releases the public key
+  and complete JSONL record.
 
 Partial decode and public-result conversion failures clean up already-decoded
 file buffers and metadata with `errdefer`.
@@ -1387,6 +1419,11 @@ Current tests cover:
 - Grounding tool serialization for web, image, and combined web/image modes.
 - The exact generated JSON request for `countTokens`.
 - Decoding `countTokens` responses.
+- Typed generation/edit Batch preparation, retained request-byte reuse,
+  explicit-key ownership, full-record limits, all 2xx countTokens statuses,
+  complete API failures, and malformed successful responses.
+- Structural Batch input summaries, LF/CRLF records, admission limits, blank
+  records, and acceptance without JSON parsing.
 - Batch entry and receipt JSON serialization.
 - Batch option parsing, output-directory conflicts, automatic offset keys,
   separator insertion, duplicate-key rejection, and malformed-file
