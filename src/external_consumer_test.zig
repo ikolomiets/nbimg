@@ -14,6 +14,9 @@ comptime {
     if (@hasDecl(nbimg, "gen")) {
         @compileError("public package exposes the legacy generation module");
     }
+    if (@hasDecl(nbimg, "edit")) {
+        @compileError("public package exposes the legacy edit module");
+    }
 }
 
 test "dependency consumer compiles against typed generation and edit APIs" {

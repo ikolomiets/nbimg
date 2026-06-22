@@ -79,7 +79,6 @@ comptime {
         "UploadedImage",
         "api",
         "batch",
-        "edit",
         "files",
         "max_edit_character_images",
         "max_edit_do_not_constraints",

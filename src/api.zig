@@ -1227,29 +1227,6 @@ pub fn decodeCountTokensResponse(gpa: std.mem.Allocator, response_json: []const 
     };
 }
 
-/// Decodes an optional service tier from a borrowed response body.
-///
-/// - Uses `gpa` only for temporary parsing storage and returns no owned allocation.
-/// - Returns allocation or JSON parsing errors and mutates no input or global state.
-pub fn decodeResponseServiceTier(gpa: std.mem.Allocator, response_json: []const u8) !?ServiceTier {
-    const Response = struct {
-        usageMetadata: ?UsageMetadata = null,
-
-        const UsageMetadata = struct {
-            serviceTier: ?[]const u8 = null,
-        };
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const usage_metadata = parsed.value.usageMetadata orelse return null;
-    const service_tier_name = usage_metadata.serviceTier orelse return null;
-    return ServiceTier.fromName(service_tier_name);
-}
-
 /// Decodes and owns generated image files from a borrowed JSON response.
 ///
 /// - Allocates the result with `gpa`; the caller must invoke `GeneratedFiles.deinit`.
@@ -1837,24 +1814,6 @@ test "decodeCountTokensResponse rejects missing total token count" {
         error.MissingTotalTokens,
         decodeCountTokensResponse(std.testing.allocator, "{\"cachedContentTokenCount\":3}"),
     );
-}
-
-test "decodeResponseServiceTier decodes usage metadata service tier" {
-    const result = try decodeResponseServiceTier(
-        std.testing.allocator,
-        "{\"usageMetadata\":{\"serviceTier\":\"standard\"}}",
-    );
-
-    try std.testing.expectEqual(ServiceTier.standard, result.?);
-}
-
-test "decodeResponseServiceTier returns null when usage metadata omits service tier" {
-    const result = try decodeResponseServiceTier(
-        std.testing.allocator,
-        "{\"usageMetadata\":{\"totalTokenCount\":7}}",
-    );
-
-    try std.testing.expectEqual(@as(?ServiceTier, null), result);
 }
 
 fn expectImageResponseAspectRatio(aspect_ratio: ImageAspectRatio, expected_json: []const u8) !void {

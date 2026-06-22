@@ -54,7 +54,7 @@ The code is split into nine source files:
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
 - `src/root.zig` exposes the supported typed client declarations and retains
-  the legacy package modules as `api`, `batch`, `edit`, and `files`.
+  the legacy package modules as `api`, `batch`, and `files`.
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
@@ -78,8 +78,8 @@ The code is split into nine source files:
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
-  content construction, edit manifest text, File API URI derivation, and
-  countTokens wrapping.
+  validation and content construction, edit manifest text, and File API URI
+  derivation.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
   construction, upload/list/get response decoding, and
   Files API endpoint handling.
@@ -133,18 +133,18 @@ bound. `Client.edit` returns `Outcome(GenerationResult)`;
 `generateWithContext` and `editWithContext` are internal public seams that
 accept an explicit `api.RequestContext` and shared generated-content response
 policy. Public methods supply a quiet context and the public-client policy;
-immediate CLI generation supplies its logging-enabled context and CLI policy.
-The public policy accepts any 2xx and rejects unknown reported service tiers.
-The CLI policy requires HTTP 200 and treats unknown tiers as absent. A tagged
-internal outcome distinguishes success, completed API failure, and
+immediate CLI generation and edit supply their logging-enabled context and CLI
+policy. The public policy accepts any 2xx and rejects unknown reported service
+tiers. The CLI policy requires HTTP 200 and treats unknown tiers as absent. A
+tagged internal outcome distinguishes success, completed API failure, and
 response-decoding failure so callers can preserve different error contracts.
-Public client response traffic is not logged. Immediate CLI edit remains on
-the legacy path until its separate migration.
+Both immediate commands share CLI result ownership, priority-downgrade
+warnings, output writing, diagnostics, and exit-code handling. Public client
+response traffic is not logged.
 
 The previous command-domain namespace remains temporarily available:
 
 ```zig
-nbimg.edit.*
 nbimg.files.*
 nbimg.batch.*
 ```
@@ -161,9 +161,8 @@ The internal module interfaces are intentionally narrow:
   CLI Batch-file preparation. Token-count request helpers remain
   module-internal.
 - `edit` exports the CLI/client-consumed wire request models and limits,
-  edit-specific bounded validation, generation and token-count operations,
-  generation-request construction, and label validation. Prompt-fragment,
-  File URI, and countTokens-envelope builders remain internal.
+  edit-specific bounded validation, generation-request construction, and label
+  validation. Prompt-fragment and File URI builders remain internal.
 - `files` exports upload/file/list models, their ownership methods,
   upload/list/get/delete operations, response decoders, and the upload-size
   limit. Shared uploaded-name decoding is exposed only by `api`.
@@ -201,9 +200,9 @@ transport.
 Command-domain modules must not depend on each other. `src/gen.zig`,
 `src/edit.zig`, `src/files.zig`, and `src/batch.zig` may import only
 `api.zig`, `std`, and `build_options` for project-local/shared functionality.
-`src/client.zig` is the package façade and may import `gen.zig` and `api.zig`
-to convert validated public requests into the existing internal operation
-path.
+`src/client.zig` is the package façade and may import `gen.zig`, `edit.zig`,
+and `api.zig` to convert validated public requests into the existing internal
+request paths.
 Cross-command workflows
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
@@ -225,8 +224,9 @@ preparation, and privately wraps that shape for countTokens live validation.
 `src/edit.zig` owns Gemini native image editing semantics for the fixed `nano2`
 model. It accepts uploaded File API resource names plus MIME types, derives
 their model-facing `file_uri` values from the common Gemini File API prefix,
-interleaves role anchor text and `file_data` parts, and wraps the same request
-shape for `countTokens`.
+and interleaves role anchor text and `file_data` parts. The typed client uses
+the resulting generateContent shape for immediate edits and countTokens; CLI
+Batch-file preparation continues to call the internal builder directly.
 
 `src/files.zig` owns Gemini Files API semantics. It receives shared image MIME
 types from `src/api.zig`, applies image extension and size policy, invokes the
@@ -809,8 +809,8 @@ Only one model is currently wired:
 gemini-3.1-flash-image
 ```
 
-The internal model enum names it `nano2`. Typed generation and
-`edit.generateContent` send `POST` requests to:
+The internal model enum names it `nano2`. Typed generation and edit operations
+send `POST` requests to:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent
@@ -1139,19 +1139,20 @@ parameter is not exposed. Deletion of the uploaded input is not implemented.
 
 ## CountTokens Validation Helper
 
-`gen.countGenerateContentRequestTokens` and
-`edit.countGenerateContentRequestTokens` send the current generated request
-shape to Gemini's `countTokens` endpoint:
+`Client.countGenerateTokens`, `Client.countEditTokens`, and CLI Batch-file
+preparation send the current generated request shape to Gemini's `countTokens`
+endpoint:
 
 ```text
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:countTokens
 ```
 
-The command-level request body is built by `gen.buildCountTokensRequest` or
-`edit.buildCountTokensRequest`. Both wrappers build their command-specific
-`generateContent` JSON and then use the shared `api` countTokens envelope helper
-to add the model field that Google requires inside nested
-`generateContentRequest` payloads:
+The typed client builds command-specific `generateContent` JSON through the
+internal generation or edit builder, then uses the shared `api` countTokens
+envelope helper to add the model field that Google requires inside nested
+`generateContentRequest` payloads. CLI Batch preparation builds the same raw
+request through its internal command builder and applies the same envelope
+helper:
 
 ```json
 {
@@ -1267,9 +1268,10 @@ PMMIapvKNtLj_uMPq8a8oQs-0-0.jpg
 Writes are exclusive. If a target file already exists, the write fails instead
 of overwriting it.
 
-`cli.writeGeneratedFiles` asserts that at least one decoded file is present.
+`cli.writeGenerationResult` asserts that at least one decoded image is present.
 This assertion is paired with `api.decodeGeneratedFiles`, which rejects
-responses that produce zero generated files.
+responses that produce zero generated files, and the typed client transfers
+those decoded images into `GenerationResult`.
 
 Batch-file preparation does not write generated output. `cli.appendBatchRequest` opens or
 creates the selected JSONL file with read/write access and an exclusive

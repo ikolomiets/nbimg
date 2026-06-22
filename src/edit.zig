@@ -193,40 +193,6 @@ pub fn validateRequest(request: EditRequest) ValidationError!void {
     if (field_bytes > api.max_generate_request_field_bytes) return error.RequestTooLong;
 }
 
-/// Submits a borrowed image-edit request to the Gemini API.
-///
-/// - Borrows request data; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote generation.
-pub fn generateContent(
-    context: *const api.RequestContext,
-    request: EditRequest,
-) !api.HttpResponse {
-    assert(context.api_key.len > 0);
-    assertValidEditRequest(request);
-
-    const request_json = try buildGenerateRequest(context.gpa, request);
-    defer context.gpa.free(request_json);
-
-    return api.postGenerateContentJson(context, .nano2, request_json);
-}
-
-/// Counts tokens for a borrowed image-edit request through the Gemini API.
-///
-/// - Borrows request data; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns request-building, allocation, I/O, HTTP, timeout, or logging errors and performs a remote request.
-pub fn countGenerateContentRequestTokens(
-    context: *const api.RequestContext,
-    request: EditRequest,
-) !api.HttpResponse {
-    assert(context.api_key.len > 0);
-    assertValidEditRequest(request);
-
-    const request_json = try buildCountTokensRequest(context.gpa, request);
-    defer context.gpa.free(request_json);
-
-    return api.postCountTokensJson(context, .nano2, request_json);
-}
-
 /// Builds an owned Gemini generate-content JSON request for an image edit.
 ///
 /// - Borrows all request slices for the call; the returned JSON is owned by `gpa`.
@@ -267,15 +233,6 @@ pub fn buildGenerateRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 
         .generation_options = request.generation_options,
         .request_options = request.request_options,
     });
-}
-
-fn buildCountTokensRequest(gpa: std.mem.Allocator, request: EditRequest) ![]u8 {
-    assertValidEditRequest(request);
-
-    const generate_request_json = try buildGenerateRequest(gpa, request);
-    defer gpa.free(generate_request_json);
-
-    return api.buildCountTokensRequestFromGenerateContentJson(gpa, .nano2, generate_request_json);
 }
 
 /// Reports whether a reference label follows the bounded uppercase identifier format.
@@ -971,53 +928,6 @@ test "buildGenerateRequest uses base character role language" {
     try std.testing.expect(std.mem.indexOf(u8, request, "primary character identity reference") != null);
     try std.testing.expect(std.mem.indexOf(u8, request, "PRESERVE FROM BASE_IMAGE") == null);
     try std.testing.expect(std.mem.indexOf(u8, request, "DO NOT") == null);
-}
-
-test "buildCountTokensRequest wraps edit generate content request" {
-    const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, .{
-        .prompt = live_prompt,
-        .base = .{
-            .name = live_base_name,
-            .mime = .jpeg,
-        },
-    });
-    defer gpa.free(request);
-
-    try std.testing.expect(std.mem.startsWith(
-        u8,
-        request,
-        "{\"generateContentRequest\":{\"model\":\"models/gemini-3.1-flash-image\",",
-    ));
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"file_data\"") != null);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
-    defer parsed.deinit();
-}
-
-test "buildCountTokensRequest wraps edit request-level controls" {
-    const gpa = std.testing.allocator;
-    const request = try buildCountTokensRequest(gpa, .{
-        .prompt = live_prompt,
-        .request_options = .{
-            .system_instruction = "Preserve the subject identity.",
-            .service_tier = .standard,
-            .store = false,
-        },
-        .base = .{
-            .name = live_base_name,
-            .mime = .jpeg,
-        },
-    });
-    defer gpa.free(request);
-
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"generateContentRequest\":{") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"systemInstruction\":{\"parts\":[{\"text\":\"Preserve the subject identity.\"}]}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"serviceTier\":\"standard\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, request, "\"store\":false") != null);
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, request, .{});
-    defer parsed.deinit();
 }
 
 test "isValidLabel accepts ASCII screaming snake case" {

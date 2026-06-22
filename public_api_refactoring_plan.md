@@ -399,11 +399,13 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Depends on:** Item 7.
 
+   **Status:** Completed.
+
    **Result:** Immediate `nbimg edit` and the public client share one typed
    operation core, allowing the legacy package-level `edit` export to be
    removed.
 
-   **Proposed changes:**
+   **Completed changes:**
 
    - Migrate immediate CLI edit execution to the context-taking typed edit
      operation introduced by Item 7.
@@ -432,24 +434,58 @@ an intermediate state that requires the next item to build or pass tests.
    **Compatibility:** Removes the undocumented `nbimg.edit` package path. CLI
    behavior remains unchanged.
 
-   **Validation:** Add CLI parity tests for HTTP 200 success, non-200 responses
-   including other 2xx statuses, malformed success, absent/known/unknown
-   reported service tiers, priority-tier downgrade, file writing, timeout
-   diagnostics, and exit-code mapping. Run exact package/internal allowlists,
-   the external-consumer compile test, all offline validation, and the
-   ReleaseSafe build. Live validation is unnecessary unless request fields or
-   transport behavior change.
+   **Validation completed:** Covered complete edit adaptation with borrowed
+   prompts, image names, labels, stop sequences, and constraints; every image
+   MIME and reference role; HTTP 200, other 2xx, and non-2xx response policy;
+   malformed successes; absent, recognized, and unknown service tiers;
+   priority downgrade detection; generated output naming and exclusive writes;
+   timeout diagnostics; shared CLI outcome exit-code mapping; exact package
+   and internal allowlists; and external-consumer compilation. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live validation was unnecessary because request fields
+   and transport behavior did not change.
 
    **Complete when:** Immediate CLI edit and `Client.edit` share the typed
    operation core, Batch preparation still works, and `nbimg.edit` is no
    longer package-accessible.
 
-9. **Add typed Files operations**
+## Response Contract for the Remaining Sequence
 
-   **Depends on:** Item 7.
+Items 6 and 8 preserved historical CLI response behavior while generation and
+edit moved onto typed cores. That compatibility split is temporary. The
+remaining CLI migrations define the replacement behavior rather than
+preserving every legacy response-classification detail.
+
+Items 9 through 16 use one response contract:
+
+- Every completed HTTP 2xx response is eligible for success. Non-2xx responses
+  become owned API failures.
+- A successful response must decode according to the operation's typed result.
+  Malformed successful responses remain successful-response decoding failures.
+- An absent reported service tier is `null`; an unrecognized reported
+  service-tier spelling is `error.UnsupportedServiceTier` for both library and
+  CLI callers.
+- Traffic logging remains a request-context concern. It does not affect status
+  acceptance or response decoding.
+- Internal typed operations use one generic stage-aware
+  `OperationOutcome(T)`. Do not introduce runtime HTTP-status or decoding
+  policy enums solely to distinguish CLI callers from public methods.
+- Where the CLI needs a different presentation, duplicate-key decision, local
+  filename rule, or filesystem failure strategy, keep that behavior in the CLI
+  adapter or callback. Do not encode presentation or local side effects as
+  transport response policies.
+
+Item 9 removes the temporary `GeneratedContentResponsePolicy` and
+`GeneratedContentOperationOutcome` declarations while introducing the generic
+outcome used by later typed operations.
+
+9. **Unify response semantics and add typed Files operations**
+
+   **Depends on:** Items 7 and 8.
 
    **Result:** Consumers can upload, get, list, and delete Gemini files through
-   typed methods without changing CLI execution.
+   typed methods, and generation/edit no longer carry separate CLI and public
+   response policies.
 
    **Proposed changes:**
 
@@ -491,25 +527,28 @@ an intermediate state that requires the next item to build or pass tests.
      expose endpoint URLs, MIME spellings, or transport chunking limits.
    - Keep pagination explicit; a convenience iterator remains a separate
      proposal.
-   - Introduce one internal `HttpStatusPolicy` with `any_2xx` and `ok_only`,
-     plus a generic stage-aware `OperationOutcome(T)` that distinguishes typed
-     success, owned API failure, and successful-response decoding failure.
-     Refactor the existing generated-content seam to use this shared outcome
-     and status policy while retaining a separate generated-content decoding
-     policy for strict versus unknown-service-tier-tolerant decoding. Reuse
-     these internal primitives for Files, countTokens preparation, and Batch
-     operations rather than adding operation-specific policy/outcome unions.
+   - Introduce one generic stage-aware `OperationOutcome(T)` that distinguishes
+     typed success, owned API failure, and successful-response decoding
+     failure. Refactor generation and edit to use it, then remove
+     `GeneratedContentResponsePolicy` and
+     `GeneratedContentOperationOutcome`.
+   - Apply the common response contract to generation and edit immediately:
+     both public methods and CLI callers accept all 2xx statuses and reject an
+     unknown reported service-tier spelling. Keep absent tiers as `null`.
    - Add context-taking internal typed Files operations so public methods use
-     quiet contexts with `any_2xx`, and Item 10 can reuse them with CLI logging
-     and `ok_only`.
+     quiet contexts and Item 10 can reuse the same operations with CLI traffic
+     logging. The context changes logging and timeout inputs only; it does not
+     select response semantics.
    - Keep CLI Files commands and the legacy package export unchanged. Extend
      the exact package allowlist and external-consumer compile tests for the
      additive API.
    - Add README and implementation-design examples for upload, get, explicit
      pagination, delete, ownership, and API failures.
 
-   **Compatibility:** Additive. The undocumented `nbimg.files` path remains
-   temporarily available.
+   **Compatibility:** The typed Files API is additive and the undocumented
+   `nbimg.files` path remains temporarily available. Immediate `gen` and
+   `edit` intentionally change to accept every 2xx response and to reject an
+   unknown reported service tier instead of treating it as absent.
 
    **Validation:** Test every input MIME; image and non-image returned MIME
    metadata; every known and unknown state/source case; absent and populated
@@ -517,13 +556,16 @@ an intermediate state that requires the next item to build or pass tests.
    size values; canonical decoded names; successful and malformed response
    decoding; all 2xx delete statuses and arbitrary successful delete bodies;
    pagination; ownership and partial cleanup; exact validation errors before
-   allocation/network IO; API failures; oversized failure bodies; the shared
-   response-policy seam; exact allowlists; and external-consumer compilation.
-   Run affected Files live targets only when transport, request behavior, or
-   decoded schema fields change.
+   allocation/network IO; API failures; oversized failure bodies; unified
+   generation/edit status and service-tier handling; removal of both temporary
+   generated-content policy declarations; the generic stage-aware outcome;
+   exact allowlists; and external-consumer compilation. Run affected Files live
+   targets only when transport, request behavior, or decoded schema fields
+   change.
 
    **Complete when:** Files consumers require no public response decoders or
-   resumable-upload mechanics.
+   resumable-upload mechanics, and generation/edit have no caller-selectable
+   response policy.
 
 10. **Migrate CLI Files commands to typed operations**
 
@@ -542,10 +584,9 @@ an intermediate state that requires the next item to build or pass tests.
    - Preserve pagination, printed JSON shape, diagnostics, traffic logging,
      timeout reporting, and exit codes. The current CLI has no upload-progress
      UI, so this migration introduces none.
-   - Preserve the CLI's exact HTTP policy independently of the public methods:
-     CLI Files commands continue to require HTTP 200 even though the public
-     typed operations accept any 2xx response. Use the shared internal
-     `ok_only` policy rather than changing CLI behavior.
+   - Apply the common response contract: every Files CLI command accepts all
+     completed 2xx responses, matching the public methods. Do not add a
+     CLI-specific HTTP status policy.
    - Keep local path-extension MIME inference and presentation formatting in
      the CLI. Preserve the current CLI metadata field set and omission rules;
      newly supported public fields such as download URI and processing error
@@ -555,12 +596,14 @@ an intermediate state that requires the next item to build or pass tests.
    - Update README and implementation-design architecture text for the
      supported Files API and CLI-owned presentation.
 
-   **Compatibility:** Removes the undocumented `nbimg.files` package path. CLI
-   behavior remains unchanged.
+   **Compatibility:** Removes the undocumented `nbimg.files` package path.
+   Files commands intentionally broaden successful-status handling from HTTP
+   200 to every 2xx response; command syntax and documented output remain
+   unchanged.
 
-   **Validation:** Add CLI parity tests for every Files command, HTTP 200 and
-   other 2xx responses, pagination, API failures, malformed successes, upload
-   behavior, timeout diagnostics, and exit-code mapping. Run exact
+   **Validation:** Add CLI tests for every Files command, multiple successful
+   2xx statuses, pagination, API failures, malformed successes, upload behavior,
+   timeout diagnostics, and exit-code mapping. Run exact
    package/internal allowlists, the external-consumer compile test, all offline
    validation, and the ReleaseSafe build. Run affected live Files targets only
    when transport or request behavior changes.
@@ -588,10 +631,10 @@ an intermediate state that requires the next item to build or pass tests.
    - Introduce private context-taking preparation operations so public methods
      use quiet contexts and CLI Batch-file preparation retains its existing
      request/response traffic logging.
-   - Reuse the shared `HttpStatusPolicy` and `OperationOutcome(T)` from Item 9.
-     Public preparation uses `any_2xx`; CLI Batch-file preparation uses
-     `ok_only`, prints the complete non-200 body, maps malformed successful
-     countTokens responses to exit code 3, and preserves timeout diagnostics.
+   - Reuse `OperationOutcome(T)` from Item 9. Public and CLI preparation both
+     accept every 2xx response. The CLI prints complete non-2xx bodies, maps
+     malformed successful countTokens responses to exit code 3, and preserves
+     timeout diagnostics without selecting a response policy.
    - Implement preparation as an explicit two-phase internal workflow. Phase
      one converts and validates the typed generation or edit request, retains
      the exact owned generate-content JSON, and validates that request through
@@ -626,16 +669,16 @@ an intermediate state that requires the next item to build or pass tests.
 
    **Compatibility:** Additive until package access to the old Batch helpers is
    removed by Item 13. CLI Batch-file output, generated keys, locking, and
-   receipts remain unchanged.
+   receipts remain unchanged; successful countTokens handling broadens from
+   HTTP 200 to every 2xx response.
 
-   **Validation:** Test explicit-key ownership, context logging and response
-   policy selection, public acceptance of all 2xx statuses, CLI rejection of
-   non-200 statuses including other 2xx responses, complete count-token API
-   failure bodies, malformed count-token success responses and CLI exit-code-3
-   mapping, timeout diagnostics, byte-for-byte reuse of the validated
-   generate-content JSON, exact JSONL shape, structural validation summaries
-   without JSON parsing, generated keys under lock, all limits, duplicate
-   handling, rollback after partial writes, and CLI receipts.
+   **Validation:** Test explicit-key ownership, context logging, common
+   acceptance of multiple 2xx statuses, complete count-token API failure bodies,
+   malformed count-token success responses and CLI exit-code-3 mapping, timeout
+   diagnostics, byte-for-byte reuse of the validated generate-content JSON,
+   exact JSONL shape, structural validation summaries without JSON parsing,
+   generated keys under lock, all limits, duplicate handling, rollback after
+   partial writes, and CLI receipts.
 
    **Complete when:** Public Batch preparation requires no raw Gemini JSON, and
    CLI automatic keys are still derived atomically from the locked file
@@ -677,8 +720,8 @@ an intermediate state that requires the next item to build or pass tests.
    - Define borrowed `BatchOutputRecordView` with a borrowed key and a tagged
      result containing either `*const GenerationResult` or
      `*const RemoteError`. The view and all nested data are valid only for the
-     visitor call. Preserve duplicate keys; duplicate handling remains caller
-     or CLI policy.
+     visitor call. Preserve duplicate keys; duplicate handling remains a
+     caller or CLI decision.
    - Define `BatchOutputVisitor` as an opaque caller context plus a callback
      with the conceptual signature
      `fn (*anyopaque, BatchOutputRecordView) anyerror!void`. Define
@@ -692,8 +735,9 @@ an intermediate state that requires the next item to build or pass tests.
      `files/...` name from `BatchOperation` and performs one HTTP request; it
      does not repeat the Batch status request.
    - Export the stable output admission limit as `max_batch_output_bytes`.
-   - Reuse the shared internal status policy and stage-aware outcome. Public
-     methods accept any 2xx status; internal CLI callers select HTTP 200.
+   - Reuse the shared generic stage-aware outcome. Every typed Batch operation
+     accepts any completed 2xx status; there is no caller-selectable status
+     policy.
    - Keep safe local filenames, duplicate-key handling, output file writing,
      raw JSON presentation, and all current CLI Batch commands unchanged.
      Extend the exact package allowlist and external-consumer compile tests for
@@ -701,7 +745,7 @@ an intermediate state that requires the next item to build or pass tests.
    - Keep the current bounded download transport: retain at most the complete
      `max_batch_output_bytes` JSONL body plus one decoded record and its images.
      Decode records sequentially, invoke the visitor, then release that
-     record before continuing. The public strict path stops on malformed JSONL,
+     record before continuing. The typed decoder stops on malformed JSONL,
      malformed records, or image decoding errors; it never returns an eager
      aggregate of all records or decoded images.
    - Add README and implementation-design examples for upload, creation,
@@ -731,51 +775,57 @@ an intermediate state that requires the next item to build or pass tests.
    **Depends on:** Item 12.
 
    **Result:** CLI Batch commands and the public client share typed operation
-   cores, allowing the legacy package-level `batch` export to be removed
-   without changing current CLI presentation.
+   cores, allowing the legacy package-level `batch` export and raw-response
+   presentation seams to be removed.
 
    **Proposed changes:**
 
    - Migrate Batch input upload, create, get/status, cancel, list, and download
      to the context-taking typed cores introduced by Item 12.
-   - Preserve the CLI's exact HTTP policy, diagnostics, traffic logging,
-     timeout reporting, ambiguous-creation warning, exit codes, and
-     non-idempotent no-retry behavior through internal policy-bearing seams.
-   - Keep an internal raw-response presentation path for `batch submit`,
-     `status`, and `list` so their complete pretty-printed JSON remains
-     byte-for-byte equivalent after formatting. Implement this as an internal
-     success-body capture policy on the shared request/transport core: public
-     methods decode typed results, while CLI presentation callers retain the
-     complete bounded successful body. The raw result variant is not
-     package-visible and does not require a second network request.
+   - Apply the common response contract while preserving diagnostics, traffic
+     logging, timeout reporting, the ambiguous-creation warning, exit-code
+     categories, and non-idempotent no-retry behavior.
+   - Replace raw successful-response presentation for `batch submit`, `status`,
+     and `list` with deliberate CLI-owned JSON serialization of
+     `BatchOperation` and `BatchListPage`. Define and document the exact CLI
+     JSON fields and omission rules during this item. Do not retain complete raw
+     success bodies or expose unknown wire fields merely to preserve historical
+     pretty-printed output.
    - Keep safe output keys, duplicate-key handling, local filename generation,
-     exclusive file writes, and presentation formatting in `src/cli.zig`.
-     Add an internal tolerant record-visitor policy for Batch download so the
-     CLI preserves its current behavior of continuing after malformed records,
-     remote error records, duplicate keys, image decode failures, and
-     individual file-write failures. The supported public visitor remains
-     strict.
+     exclusive file writes, and presentation formatting in `src/cli.zig`. Use
+     the same strict Batch output decoder as the public visitor: malformed
+     JSONL, malformed records, and image decode failures stop the command as
+     successful-response decoding failures. Remote error records and duplicate
+     keys are valid typed records and remain visible to the CLI callback.
+     Decisions to continue after an individual file-write failure or to report
+     duplicate output names remain CLI callback behavior, not a decoder policy.
    - Remove `batch` from `src/root.zig` and the package allowlist after every
      CLI command uses the typed operation cores. Tighten the internal Batch and
      shared API allowlists.
    - Update README and implementation-design architecture text to distinguish
-     the supported typed Batch API, internal raw presentation seam, and
-     CLI-owned filesystem policy.
+     the supported typed Batch API, deliberate CLI JSON presentation, and
+     CLI-owned filesystem behavior.
 
    **Compatibility:** Removes the undocumented `nbimg.batch` package path. CLI
-   commands retain their existing output, diagnostics, and side effects.
+   command syntax remains stable, but successful status handling broadens to
+   every 2xx response, submit/status/list output moves from raw wire JSON to
+   documented typed CLI JSON, and malformed downloaded output becomes a
+   command failure instead of a tolerated record.
 
-   **Validation:** Add CLI parity tests for upload/create ambiguity, HTTP 200
-   versus other 2xx responses, status and list raw JSON formatting,
-   cancellation, pagination, download bounds, malformed/error/duplicate
-   records, existing files, write failures, timeout diagnostics, and exit-code
-   mapping. Run exact package/internal allowlists, external-consumer tests, all
-   offline validation, and the ReleaseSafe build. Never run the billable,
-   non-idempotent submit/status live target without explicit authorization.
+   **Validation:** Add CLI tests for upload/create ambiguity, multiple
+   successful 2xx statuses, the documented typed submit/status/list JSON
+   schemas, cancellation, pagination, download bounds, strict malformed-record
+   handling, typed remote-error records, duplicate keys, existing files, write
+   failures, timeout diagnostics, and exit-code mapping. Assert that no raw
+   success-body capture or Batch decoder policy remains. Run exact
+   package/internal allowlists, external-consumer tests, all offline validation,
+   and the ReleaseSafe build. Never run the billable, non-idempotent
+   submit/status live target without explicit authorization.
 
    **Complete when:** Every CLI Batch command shares typed operation cores with
-   the public client, raw JSON presentation remains internal, and
-   `nbimg.batch` is no longer package-accessible.
+   the public client, CLI JSON is produced from typed values, no raw
+   successful-response or tolerant-decoder seam remains, and `nbimg.batch` is
+   no longer package-accessible.
 
 14. **Remove the legacy shared API namespace**
 
@@ -823,8 +873,11 @@ an intermediate state that requires the next item to build or pass tests.
    - Verify that public domain enums expose no wire serialization or CLI
      parsing methods.
    - Verify that CLI name parsing, environment lookup, output naming, safe-key
-     encoding, raw Batch JSON presentation, and filesystem effects are
+     encoding, typed Batch JSON presentation, and filesystem effects are
      CLI-owned or internal-only.
+   - Verify that no runtime HTTP-status, service-tier-decoding, raw-success-body,
+     or tolerant-record-decoding policy remains. Distinct operations may retain
+     distinct decoders only when their typed result contracts genuinely differ.
    - Make cross-file declarations private where completed migrations removed
      their callers, and tighten internal module allowlists.
 
@@ -856,7 +909,8 @@ an intermediate state that requires the next item to build or pass tests.
      into complete client initialization, ownership, API-failure handling,
      generation, edit, Files, Batch preparation, and remote Batch workflows.
    - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal
-     module boundaries.
+     module boundaries, the common response contract, and deliberate CLI JSON
+     schemas.
    - Retain the historical pre-refactoring label on `public_api_analysis.md`
      and continue recording completed refactorings in this document.
    - Keep compile-only external-consumer examples synchronized with the
@@ -931,12 +985,12 @@ referenced path and command.
 - Public client calls are quiet by default. Existing CLI traffic logging uses
   internal request-context configuration and is not a supported library
   interface.
-- Typed generation and edit operations share context-taking internal cores
-  with their eventual CLI migrations; public methods supply quiet contexts and
-  CLI callers supply logging-enabled contexts.
-- Public typed operations classify every completed 2xx response as successful;
-  CLI migrations retain each command's current HTTP 200-only policy through
-  internal response-policy seams.
+- Typed operations share context-taking internal cores with their CLI callers;
+  public methods supply quiet contexts and CLI callers supply logging-enabled
+  contexts. Context selection does not change response semantics.
+- Every typed operation and migrated CLI command classifies a completed 2xx
+  response as eligible for success and a non-2xx response as an owned API
+  failure. No runtime HTTP-status policy is part of the final internal design.
 - `InputImageMime` is distinct from generated `OutputMime`; both support JPEG,
   PNG, and WebP without exposing MIME spellings or path parsing.
 - Generated-image candidate and part fields are zero-based response-array
@@ -955,13 +1009,16 @@ referenced path and command.
 - Batch preparation validates and retains one exact generate-content JSON
   value before key generation; it never rebuilds the request between
   `countTokens` validation and JSONL wrapping.
-- The first typed Batch download API eagerly owns the bounded raw JSONL during
-  decoding and returns all decoded records and image bytes. Its documented
-  peak memory can exceed `max_batch_output_bytes`; streaming is a separate
-  future API.
+- The typed Batch download API retains the bounded raw JSONL body, decodes one
+  record at a time, invokes a borrowed visitor, and releases that record before
+  continuing. It does not eagerly retain all decoded records or image bytes.
 - Transport failures from non-idempotent Batch creation are always reported as
   ambiguous and are never retried automatically.
-- CLI behavior remains stable throughout the sequence unless a separate
-  user-facing change is explicitly approved.
+- Items 9 through 13 deliberately replace historical CLI response semantics:
+  all 2xx statuses are accepted, unknown reported service tiers are decoding
+  failures, Batch submit/status/list output is serialized from typed values,
+  and malformed downloaded Batch records fail the command. Command syntax,
+  traffic logging, timeout reporting, and non-idempotent no-retry behavior
+  remain stable unless an item states otherwise.
 - The project remains Zig standard-library-only and retains a flat module
   layout unless a deliberate façade module is needed.

@@ -182,11 +182,12 @@ non-success HTTP response is returned as `.api_failure`; its complete bounded
 body is owned and must be released with `ApiFailure.deinit`. Successful edits
 return `GenerationResult` and use the same `deinit` contract as generation.
 
-The existing `api`, `edit`, `files`, and `batch` package paths remain available
+The existing `api`, `files`, and `batch` package paths remain available
 temporarily for compatibility. They are implementation-oriented legacy APIs
 rather than the supported typed client contract. The undocumented `nbimg.gen`
-path has been removed; CLI Batch-file preparation still uses an internal
-generation request builder.
+and `nbimg.edit` paths have been removed. Immediate CLI generation and edit use
+the typed operation cores; CLI Batch-file preparation still uses internal
+generation and edit request builders.
 
 ## Usage
 

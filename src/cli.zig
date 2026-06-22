@@ -357,7 +357,7 @@ pub fn run(init: std.process.Init) u8 {
 
     return switch (parsed_command.command) {
         .gen => |gen| runGen(init, gpa, &request_context, &gen),
-        .edit => |edit| runEdit(init, gpa, &request_context, edit),
+        .edit => |edit| runEdit(init, gpa, &request_context, &edit),
         .files_upload => |files_upload| runFilesUpload(init, gpa, &request_context, files_upload),
         .files_list => runFilesList(init, gpa, &request_context),
         .files_get => |files_get| runFilesGet(init, gpa, &request_context, files_get),
@@ -423,20 +423,52 @@ fn runGen(
         return exit_failure;
     };
 
-    return switch (outcome) {
-        .success => |*result| runGeneratedResult(gpa, init.io, command, result),
+    return runGeneratedContentOutcome(
+        gpa,
+        init.io,
+        command.request_options,
+        command.out_dir,
+        &outcome,
+    );
+}
+
+fn runGeneratedContentOutcome(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    request_options: api.RequestOptions,
+    out_dir: ?[]const u8,
+    outcome: *client.GeneratedContentOperationOutcome,
+) u8 {
+    return switch (outcome.*) {
+        .success => |*result| runGeneratedResult(
+            gpa,
+            io,
+            request_options,
+            out_dir,
+            result,
+        ),
         .api_failure => |*failure| api_failure: {
             defer failure.deinit(gpa);
             std.debug.print(
                 "error: API request failed with HTTP {d}\n{s}\n",
                 .{ @intFromEnum(failure.status), failure.body },
             );
-            break :api_failure exit_failure;
+            break :api_failure generatedContentOutcomeExitCode(outcome);
         },
         .response_decoding_failure => |err| response_decoding_failure: {
             std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-            break :response_decoding_failure exit_response_parse;
+            break :response_decoding_failure generatedContentOutcomeExitCode(outcome);
         },
+    };
+}
+
+fn generatedContentOutcomeExitCode(
+    outcome: *const client.GeneratedContentOperationOutcome,
+) u8 {
+    return switch (outcome.*) {
+        .success => exit_success,
+        .api_failure => exit_failure,
+        .response_decoding_failure => exit_response_parse,
     };
 }
 
@@ -546,13 +578,14 @@ fn generationRequestOptionsFromCommand(
 fn runGeneratedResult(
     gpa: std.mem.Allocator,
     io: std.Io,
-    command: *const GenCommand,
+    request_options: api.RequestOptions,
+    out_dir: ?[]const u8,
     result: *client.GenerationResult,
 ) u8 {
     defer result.deinit(gpa);
-    warnIfGenerationPriorityDowngraded(command.request_options, result.*);
+    warnIfPriorityDowngraded(request_options, result.*);
 
-    writeGenerationResult(io, command.out_dir, result.*) catch |err| {
+    writeGenerationResult(io, out_dir, result.*) catch |err| {
         std.debug.print("error: failed to write generated files: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -563,24 +596,23 @@ fn runEdit(
     init: std.process.Init,
     gpa: std.mem.Allocator,
     context: *const api.RequestContext,
-    command: EditCommand,
+    command: *const EditCommand,
 ) u8 {
-    const edit_request = api_edit.EditRequest{
-        .prompt = command.prompt,
-        .output_options = command.output_options,
-        .grounding_options = command.grounding_options,
-        .thinking_options = command.thinking_options,
-        .safety_options = command.safety_options,
-        .generation_options = command.generation_options,
-        .request_options = command.request_options,
-        .base = command.base,
-        .base_role = command.base_role,
-        .references = command.referenceSlice(),
-        .preserves = command.preserveSlice(),
-        .do_nots = command.doNotSlice(),
-    };
-
     if (command.batch_file) |batch_file| {
+        const edit_request = api_edit.EditRequest{
+            .prompt = command.prompt,
+            .output_options = command.output_options,
+            .grounding_options = command.grounding_options,
+            .thinking_options = command.thinking_options,
+            .safety_options = command.safety_options,
+            .generation_options = command.generation_options,
+            .request_options = command.request_options,
+            .base = command.base,
+            .base_role = command.base_role,
+            .references = command.referenceSlice(),
+            .preserves = command.preserveSlice(),
+            .do_nots = command.doNotSlice(),
+        };
         const generate_request_json = api_edit.buildGenerateRequest(gpa, edit_request) catch |err| {
             std.debug.print("error: failed to build edit request: {s}\n", .{@errorName(err)});
             return exit_failure;
@@ -597,33 +629,83 @@ fn runEdit(
         );
     }
 
-    var response = api_edit.generateContent(context, edit_request) catch |err| {
+    var references: [client.max_edit_references]client.Reference = undefined;
+    var outcome = client.editWithContext(
+        context,
+        editRequestFromCommand(command, &references),
+        .immediate_cli,
+    ) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
 
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: API request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
+    return runGeneratedContentOutcome(
+        gpa,
+        init.io,
+        command.request_options,
+        command.out_dir,
+        &outcome,
+    );
+}
+
+fn editRequestFromCommand(
+    command: *const EditCommand,
+    references: *[client.max_edit_references]client.Reference,
+) client.EditRequest {
+    assert(command.reference_count <= references.len);
+    for (command.referenceSlice(), references[0..command.reference_count]) |reference, *typed| {
+        typed.* = .{
+            .role = editReferenceRoleFromCommand(reference.role),
+            .label = reference.label,
+            .image = editUploadedImageFromCommand(reference.image),
+        };
     }
-    warnIfPriorityDowngraded(gpa, command.request_options, response.body);
 
-    var files = api.decodeGeneratedFiles(gpa, response.body) catch |err| {
-        std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
+    return .{
+        .prompt = command.prompt,
+        .output_options = generationOutputOptionsFromCommand(command.output_options),
+        .grounding_options = .{
+            .web = command.grounding_options.web,
+            .image = command.grounding_options.image,
+        },
+        .thinking_options = generationThinkingOptionsFromCommand(command.thinking_options),
+        .safety_options = if (command.safety_options) |options|
+            generationSafetyOptionsFromCommand(options)
+        else
+            null,
+        .generation_options = generationOptionsFromCommand(&command.generation_options),
+        .request_options = generationRequestOptionsFromCommand(command.request_options),
+        .base = editUploadedImageFromCommand(command.base),
+        .base_role = editReferenceRoleFromCommand(command.base_role),
+        .references = references[0..command.reference_count],
+        .preserves = command.preserveSlice(),
+        .do_nots = command.doNotSlice(),
     };
-    defer files.deinit(gpa);
+}
 
-    writeGeneratedFiles(init.io, command.out_dir, files) catch |err| {
-        std.debug.print("error: failed to write generated files: {s}\n", .{@errorName(err)});
-        return exit_failure;
+fn editUploadedImageFromCommand(image: api_edit.UploadedImage) client.UploadedImage {
+    return .{
+        .name = image.name,
+        .mime = switch (image.mime) {
+            .jpeg => .jpeg,
+            .png => .png,
+            .webp => .webp,
+        },
     };
+}
 
-    return exit_success;
+fn editReferenceRoleFromCommand(role: api_edit.ReferenceRole) client.ReferenceRole {
+    return switch (role) {
+        .scene => .scene,
+        .character => .character,
+        .object => .object,
+        .style => .style,
+        .pose => .pose,
+        .composition => .composition,
+        .background => .background,
+        .texture => .texture,
+        .image => .image,
+    };
 }
 
 const BatchAppendResult = struct {
@@ -1200,28 +1282,10 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
 }
 
 fn warnIfPriorityDowngraded(
-    gpa: std.mem.Allocator,
-    request_options: api.RequestOptions,
-    response_body: []const u8,
-) void {
-    const requested_service_tier = request_options.service_tier orelse return;
-    if (requested_service_tier != .priority) return;
-
-    const actual_service_tier = api.decodeResponseServiceTier(gpa, response_body) catch return;
-    const reported_service_tier = actual_service_tier orelse return;
-    if (reported_service_tier != .standard) return;
-
-    std.debug.print(
-        "warning: requested Gemini service tier priority, but the response reports standard\n",
-        .{},
-    );
-}
-
-fn warnIfGenerationPriorityDowngraded(
     request_options: api.RequestOptions,
     result: client.GenerationResult,
 ) void {
-    if (!generationPriorityDowngraded(request_options, result)) return;
+    if (!priorityDowngraded(request_options, result)) return;
 
     std.debug.print(
         "warning: requested Gemini service tier priority, but the response reports standard\n",
@@ -1229,7 +1293,7 @@ fn warnIfGenerationPriorityDowngraded(
     );
 }
 
-fn generationPriorityDowngraded(
+fn priorityDowngraded(
     request_options: api.RequestOptions,
     result: client.GenerationResult,
 ) bool {
@@ -1241,15 +1305,32 @@ fn generationPriorityDowngraded(
 }
 
 fn printApiRequestError(context: *const api.RequestContext, err: anyerror) void {
+    var buffer: [256]u8 = undefined;
+    const diagnostic = apiRequestErrorDiagnostic(&buffer, context, err) catch {
+        std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+        return;
+    };
+    std.debug.print("{s}", .{diagnostic});
+}
+
+fn apiRequestErrorDiagnostic(
+    buffer: []u8,
+    context: *const api.RequestContext,
+    err: anyerror,
+) ![]const u8 {
     if (err == error.Timeout) {
-        std.debug.print(
+        return std.fmt.bufPrint(
+            buffer,
             "error: API request timed out after {d} seconds\n",
             .{context.timeout.toSeconds()},
         );
-        return;
     }
 
-    std.debug.print("error: API request failed: {s}\n", .{@errorName(err)});
+    return std.fmt.bufPrint(
+        buffer,
+        "error: API request failed: {s}\n",
+        .{@errorName(err)},
+    );
 }
 
 fn shouldReadPromptFromStdin(args: []const [:0]const u8, parse_error: ParseError) bool {
@@ -3045,27 +3126,6 @@ fn openOutputDir(io: std.Io, out_dir: ?[]const u8) !OutputDir {
     };
 }
 
-fn writeGeneratedFiles(io: std.Io, out_dir: ?[]const u8, files: api.GeneratedFiles) !void {
-    assert(files.items.len > 0);
-
-    const output_dir = try openOutputDir(io, out_dir);
-    defer output_dir.close(io);
-
-    for (files.items) |file| {
-        var name_buffer: [128]u8 = undefined;
-        const name = try std.fmt.bufPrint(
-            &name_buffer,
-            "{s}-{d}-{d}.{s}",
-            .{ files.response_id, file.candidate_index, file.part_index, file.mime.extension() },
-        );
-        try output_dir.dir.writeFile(io, .{
-            .sub_path = name,
-            .data = file.bytes,
-            .flags = .{ .exclusive = true },
-        });
-    }
-}
-
 fn writeGenerationResult(
     io: std.Io,
     out_dir: ?[]const u8,
@@ -3279,39 +3339,6 @@ fn appendFailedKey(
     try failed_keys.append(gpa, owned_key);
 }
 
-test "writeGeneratedFiles writes generated images under relative output directory" {
-    const gpa = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
-    defer gpa.free(out_dir);
-
-    var items = [_]api.GeneratedFile{
-        .{
-            .candidate_index = 0,
-            .part_index = 0,
-            .mime = .png,
-            .bytes = @constCast(&[_]u8{1}),
-        },
-    };
-    const files = api.GeneratedFiles{
-        .response_id = @constCast("test-response"),
-        .items = &items,
-    };
-
-    try writeGeneratedFiles(std.testing.io, out_dir, files);
-
-    const written = try tmp_dir.dir.readFileAlloc(
-        std.testing.io,
-        "test-response-0-0.png",
-        gpa,
-        .limited(1024),
-    );
-    defer gpa.free(written);
-    try std.testing.expectEqualSlices(u8, &.{1}, written);
-}
-
 test "generation CLI adapter maps every option and borrows stop sequences" {
     var generation_options = api.GenerationOptions{
         .max_output_tokens = 4096,
@@ -3376,6 +3403,144 @@ test "generation CLI adapter maps every option and borrows stop sequences" {
     try std.testing.expectEqual(@as(?bool, false), request.request_options.store);
 }
 
+test "edit CLI adapter maps every option and borrows nested request data" {
+    var generation_options = api.GenerationOptions{
+        .max_output_tokens = 4096,
+        .temperature = 0.7,
+        .top_p = 0.95,
+        .seed = -42,
+        .presence_penalty = -1.5,
+        .frequency_penalty = 1.25,
+        .response_logprobs = true,
+        .logprobs = 5,
+    };
+    generation_options.appendStopSequence("END");
+    generation_options.appendStopSequence("STOP");
+
+    var command = EditCommand{
+        .prompt = "Restyle BASE_IMAGE",
+        .output_options = .{ .aspect_ratio = .r4_5, .image_size = .k4 },
+        .grounding_options = .{ .web = true, .image = true },
+        .thinking_options = .{ .level = .high, .include_thoughts = true },
+        .safety_options = .{ .threshold = .off },
+        .generation_options = generation_options,
+        .request_options = .{
+            .system_instruction = "Follow the manifest.",
+            .cached_content = "cachedContents/edit",
+            .service_tier = .priority,
+            .store = false,
+        },
+        .base = .{ .name = "files/base", .mime = .jpeg },
+        .base_role = .scene,
+    };
+    const roles = [_]api_edit.ReferenceRole{
+        .character,
+        .object,
+        .style,
+        .pose,
+        .composition,
+        .background,
+        .texture,
+        .image,
+    };
+    const labels = [_][]const u8{
+        "CHARACTER_A",
+        "OBJECT_A",
+        "STYLE_A",
+        "POSE_A",
+        "COMPOSITION_A",
+        "BACKGROUND_A",
+        "TEXTURE_A",
+        "IMAGE_A",
+    };
+    const names = [_][]const u8{
+        "files/character",
+        "files/object",
+        "files/style",
+        "files/pose",
+        "files/composition",
+        "files/background",
+        "files/texture",
+        "files/image",
+    };
+    const mimes = [_]api.ImageMime{
+        .png,
+        .webp,
+        .jpeg,
+        .png,
+        .webp,
+        .jpeg,
+        .png,
+        .webp,
+    };
+    for (roles, labels, names, mimes, 0..) |role, label, name, mime, index| {
+        command.references[index] = .{
+            .role = role,
+            .label = label,
+            .image = .{ .name = name, .mime = mime },
+        };
+    }
+    command.reference_count = roles.len;
+    command.preserves[0] = "identity";
+    command.preserves[1] = "geometry";
+    command.preserve_count = 2;
+    command.do_nots[0] = "change the logo";
+    command.do_not_count = 1;
+
+    var references: [client.max_edit_references]client.Reference = undefined;
+    const request = editRequestFromCommand(&command, &references);
+
+    try std.testing.expectEqual(command.prompt.ptr, request.prompt.ptr);
+    try std.testing.expectEqual(client.ImageAspectRatio.r4_5, request.output_options.aspect_ratio.?);
+    try std.testing.expectEqual(client.ImageSize.k4, request.output_options.image_size.?);
+    try std.testing.expect(request.grounding_options.web);
+    try std.testing.expect(request.grounding_options.image);
+    try std.testing.expectEqual(client.ThinkingLevel.high, request.thinking_options.level.?);
+    try std.testing.expect(request.thinking_options.include_thoughts);
+    try std.testing.expectEqual(client.HarmBlockThreshold.off, request.safety_options.?.threshold);
+    try std.testing.expectEqual(@as(?u32, 4096), request.generation_options.max_output_tokens);
+    try std.testing.expectEqual(@as(?f64, 0.7), request.generation_options.temperature);
+    try std.testing.expectEqual(@as(?f64, 0.95), request.generation_options.top_p);
+    try std.testing.expectEqual(@as(?i32, -42), request.generation_options.seed);
+    try std.testing.expectEqual(@as(?f64, -1.5), request.generation_options.presence_penalty);
+    try std.testing.expectEqual(@as(?f64, 1.25), request.generation_options.frequency_penalty);
+    try std.testing.expect(request.generation_options.response_logprobs);
+    try std.testing.expectEqual(@as(?u8, 5), request.generation_options.logprobs);
+    try std.testing.expectEqual(
+        command.generation_options.stopSequenceSlice().ptr,
+        request.generation_options.stop_sequences.ptr,
+    );
+    try std.testing.expectEqual(
+        command.request_options.system_instruction.?.ptr,
+        request.request_options.system_instruction.?.ptr,
+    );
+    try std.testing.expectEqual(
+        command.request_options.cached_content.?.ptr,
+        request.request_options.cached_content.?.ptr,
+    );
+    try std.testing.expectEqual(client.ServiceTier.priority, request.request_options.service_tier.?);
+    try std.testing.expectEqual(@as(?bool, false), request.request_options.store);
+    try std.testing.expectEqual(command.base.name.ptr, request.base.name.ptr);
+    try std.testing.expectEqual(client.InputImageMime.jpeg, request.base.mime);
+    try std.testing.expectEqual(client.ReferenceRole.scene, request.base_role);
+    try std.testing.expectEqual(references[0..roles.len].ptr, request.references.ptr);
+    try std.testing.expectEqual(roles.len, request.references.len);
+    inline for (0..roles.len) |index| {
+        try std.testing.expectEqual(
+            editReferenceRoleFromCommand(roles[index]),
+            request.references[index].role,
+        );
+        try std.testing.expectEqual(labels[index].ptr, request.references[index].label.ptr);
+        try std.testing.expectEqual(names[index].ptr, request.references[index].image.name.ptr);
+        try std.testing.expectEqual(
+            editUploadedImageFromCommand(command.references[index].image).mime,
+            request.references[index].image.mime,
+        );
+    }
+    try std.testing.expectEqual(command.preserveSlice().ptr, request.preserves.ptr);
+    try std.testing.expectEqual(command.doNotSlice().ptr, request.do_nots.ptr);
+}
+
 test "writeGenerationResult writes PNG JPEG and WebP names exclusively" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
@@ -3416,27 +3581,68 @@ test "writeGenerationResult writes PNG JPEG and WebP names exclusively" {
     }
 }
 
-test "generation priority downgrade detection requires requested priority and reported standard" {
+test "generated content priority downgrade requires requested priority and reported standard" {
     const result = client.GenerationResult{
         .response_id = @constCast("response"),
         .images = &.{},
         .reported_service_tier = .standard,
     };
-    try std.testing.expect(generationPriorityDowngraded(
+    try std.testing.expect(priorityDowngraded(
         .{ .service_tier = .priority },
         result,
     ));
-    try std.testing.expect(!generationPriorityDowngraded(
+    try std.testing.expect(!priorityDowngraded(
         .{ .service_tier = .standard },
         result,
     ));
 
     var absent = result;
     absent.reported_service_tier = null;
-    try std.testing.expect(!generationPriorityDowngraded(
+    try std.testing.expect(!priorityDowngraded(
         .{ .service_tier = .priority },
         absent,
     ));
+}
+
+test "generated content CLI outcome maps response stages to exit codes" {
+    const success = client.GeneratedContentOperationOutcome{
+        .success = .{
+            .response_id = @constCast("response"),
+            .images = &.{},
+            .reported_service_tier = null,
+        },
+    };
+    const api_failure = client.GeneratedContentOperationOutcome{
+        .api_failure = .{
+            .status = .service_unavailable,
+            .body = @constCast("{\"error\":\"unavailable\"}"),
+        },
+    };
+    const decoding_failure = client.GeneratedContentOperationOutcome{
+        .response_decoding_failure = error.UnexpectedEndOfInput,
+    };
+
+    try std.testing.expectEqual(exit_success, generatedContentOutcomeExitCode(&success));
+    try std.testing.expectEqual(exit_failure, generatedContentOutcomeExitCode(&api_failure));
+    try std.testing.expectEqual(
+        exit_response_parse,
+        generatedContentOutcomeExitCode(&decoding_failure),
+    );
+}
+
+test "API request timeout diagnostic includes configured whole seconds" {
+    const context = api.RequestContext{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .api_key = "key",
+        .timeout = .fromSeconds(37),
+    };
+    var buffer: [128]u8 = undefined;
+    const diagnostic = try apiRequestErrorDiagnostic(&buffer, &context, error.Timeout);
+    try std.testing.expectEqualStrings(
+        "error: API request timed out after 37 seconds\n",
+        diagnostic,
+    );
 }
 
 test "processBatchOutput writes valid images and reports malformed error and duplicate records" {
