@@ -222,14 +222,16 @@ body is owned and must be released with `ApiFailure.deinit`. Successful edits
 return `GenerationResult` and use the same `deinit` contract as generation.
 Generation and edit reject unknown reported service-tier spellings as
 successful-response decoding failures.
-Immediate CLI generation and edit use the same response contract.
+Immediate CLI generation, edit, and Files commands use the same response
+contract.
 
-The existing `api`, `files`, and `batch` package paths remain available
+The existing `api` and `batch` package paths remain available
 temporarily for compatibility. They are implementation-oriented legacy APIs
-rather than the supported typed client contract. The undocumented `nbimg.gen`
-and `nbimg.edit` paths have been removed. Immediate CLI generation and edit use
-the typed operation cores; CLI Batch-file preparation still uses internal
-generation and edit request builders.
+rather than the supported typed client contract. The undocumented `nbimg.gen`,
+`nbimg.edit`, and `nbimg.files` paths have been removed. Immediate CLI
+generation, edit, and Files commands use the typed operation cores; CLI
+Batch-file preparation still uses internal generation and edit request
+builders.
 
 ## Usage
 
@@ -673,7 +675,11 @@ canonical `files/...` form; bare file IDs are rejected. `files list` has no
 command-specific options.
 
 The upload, list, and get commands print JSON metadata to stdout.
-The delete command prints `OK` on success.
+`sizeBytes` remains a decimal JSON string. Known state and source values use
+Gemini's uppercase spellings, unknown spellings are preserved, and normalized
+unspecified values are omitted. CLI JSON does not include typed-only
+`download_uri` or `processing_error` fields. Every completed 2xx response is
+accepted; the delete command prints `OK` on success.
 
 Files API uploads are temporary. Treat `expirationTime` in upload/list/get
 metadata as the deadline for reusing a `files/ID` reference. A response like

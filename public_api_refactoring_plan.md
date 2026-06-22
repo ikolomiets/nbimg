@@ -470,6 +470,9 @@ Items 9 through 17 use one response contract:
 - Internal typed operations use one generic stage-aware
   `OperationOutcome(T)`. Do not introduce runtime HTTP-status or decoding
   policy enums solely to distinguish CLI callers from public methods.
+- Caller callbacks and local side effects can still fail through the outer Zig
+  error channel. Do not misclassify visitor or filesystem errors as malformed
+  successful API responses.
 - Where the CLI needs a different presentation, duplicate-key decision, local
   filename rule, or filesystem failure strategy, keep that behavior in the CLI
   adapter or callback. Do not encode presentation or local side effects as
@@ -576,46 +579,47 @@ outcome used by later typed operations.
 
    **Depends on:** Item 9.
 
-   **Status:** Next.
+   **Status:** Completed.
 
    **Result:** CLI Files commands and the public client share typed operation
    cores, allowing the legacy package-level `files` export to be removed.
 
-   **Proposed changes:**
+   **Completed changes:**
 
-   - Migrate upload, get, list, and delete commands to the context-taking typed
+   - Migrated upload, get, list, and delete commands to the context-taking typed
      operations introduced by Item 9.
-   - Call the context-taking operations directly from the CLI rather than
+   - Called the context-taking operations directly from the CLI rather than
      constructing a public `Client`; this preserves the CLI logging-enabled
      request context without creating a second response path.
-   - Add narrow CLI adapters from parsed command values and path-derived MIME
-     into public Files request values. Keep local path parsing and complete
-     file reads in the CLI.
-   - Preserve pagination, printed JSON shape, diagnostics, traffic logging,
-     timeout reporting, and exit codes. The current CLI has no upload-progress
-     UI, so this migration introduces none.
-   - Apply the common response contract: every Files CLI command accepts all
-     completed 2xx responses, matching the public methods. Do not add a
+   - Added narrow CLI adapters from parsed command values and path-derived MIME
+     into public Files request values. Local path parsing and complete file
+     reads remain in the CLI.
+   - Preserved pagination, printed JSON shape, diagnostics, traffic logging,
+     timeout reporting, and exit codes. The migration added no upload-progress
+     UI.
+   - Applied the common response contract: every Files CLI command accepts all
+     completed 2xx responses, matching the public methods, without a
      CLI-specific HTTP status policy.
-   - Keep local path-extension MIME inference and presentation formatting in
-     the CLI. Preserve the current CLI metadata field set and omission rules
+   - Kept local path-extension MIME inference and presentation formatting in
+     the CLI. The existing CLI metadata field set and omission rules remain
      where the typed model retains the distinction; newly supported public
      fields such as download URI and processing error do not change CLI JSON
      output in this migration.
-   - Add explicit typed-to-CLI presentation adapters: format `size_bytes` back
-     to the existing decimal JSON string, render known state/source tags with
+   - Added explicit typed-to-CLI presentation adapters that format `size_bytes`
+     as the existing decimal JSON string, render known state/source tags with
      their documented uppercase spellings, preserve unknown spellings, and
      omit `.unspecified` because Item 9 intentionally normalizes absent and
-     explicit `*_UNSPECIFIED` values. Omit fields that the legacy CLI did not
-     print. Do not reintroduce owned wire strings into the typed File model for
-     presentation convenience.
-   - Delete the legacy Files `FileUpload`, `File`, and `FileListPage` models and
-     their public response decoders once the CLI has no caller. Keep only raw
-     transport helpers that remain private implementation details beneath the
-     typed operations, and tighten the command-module import/API allowlists.
-   - Remove `files` from `src/root.zig` and the package allowlist after all CLI
-     callers use the typed core. Tighten the internal module allowlists.
-   - Update README and implementation-design architecture text for the
+     explicit `*_UNSPECIFIED` values. Fields that the legacy CLI did not print
+     remain omitted without reintroducing owned wire strings into the typed
+     File model.
+   - Deleted the legacy Files `FileUpload`, `File`, and `FileListPage` models and
+     their public response decoders. Raw transport helpers remain private
+     implementation details beneath the typed operations, and the
+     command-module import/API allowlists are tightened.
+   - Removed `files` from `src/root.zig` and the package allowlist after all CLI
+     callers moved to the typed core, and tightened the internal module
+     allowlists.
+   - Updated README and implementation-design architecture text for the
      supported Files API and CLI-owned presentation.
 
    **Compatibility:** Removes the undocumented `nbimg.files` package path.
@@ -625,14 +629,18 @@ outcome used by later typed operations.
    omitted like absent metadata because the typed model deliberately
    normalizes those cases.
 
-   **Validation:** Add CLI tests for every Files command, multiple successful
-   2xx statuses, typed-to-CLI metadata formatting, known and unknown
-   state/source values, pagination, API failures, malformed successes, upload
-   behavior, timeout diagnostics, and exit-code mapping. Assert that the
-   legacy Files models and public decoders are gone. Run exact
-   package/internal allowlists, the external-consumer compile test, all offline
-   validation, and the ReleaseSafe build. Run affected live Files targets only
-   when transport or request behavior changes.
+   **Validation completed:** Covered every Files CLI outcome type,
+   representative non-200 2xx upload/get/list responses, all 2xx delete
+   statuses, API failures, malformed successes, path-derived upload MIME
+   conversion, decimal size formatting, every known and unknown state/source
+   branch, unspecified and typed-only metadata omission, JSON escaping,
+   pagination ownership transfer and aggregation, retained upload admission
+   behavior, and timeout diagnostics. Exact package/internal allowlists and
+   the external-consumer compile assertion verify that the legacy Files
+   models, public decoders, and `nbimg.files` export are gone. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. Live Files targets were not run because transport,
+   endpoints, request fields, and the decoded schema were unchanged.
 
    **Complete when:** CLI Files commands and public methods share typed
    operation cores and `nbimg.files` is no longer package-accessible.
@@ -640,6 +648,8 @@ outcome used by later typed operations.
 11. **Introduce deliberate Batch-input validation and public preparation**
 
    **Depends on:** Items 6, 8, and 9.
+
+   **Status:** Next.
 
    **Result:** Consumers can validate Batch JSONL and prepare generation or
    edit entries without exposing generate-content JSON or count-token
@@ -653,31 +663,38 @@ outcome used by later typed operations.
      keys. Each operation performs count-token validation and returns an owned
      `Outcome(PreparedBatchEntry)` so completed count-token API failures remain
      distinguishable from Zig errors. `PreparedBatchEntry` contains the owned
-     key, one complete JSONL record without a trailing newline, and token count,
-     and provides `deinit(allocator)`.
+     key, one complete JSONL record without a trailing newline, and total token
+     count, and provides `deinit(allocator)`.
    - Keep Batch-specific public value types and pure validation/entry helpers
      in `src/batch.zig`, then alias them through `client.zig` and `root.zig`.
      Do not add a separate Batch-domain module unless a real import cycle
      appears; unlike Item 9, the new names do not conflict with retained legacy
      Batch types.
-   - Introduce private context-taking phase-one preparation operations in
-     `client.zig`. They use quiet contexts for public methods and return the
-     generic stage-aware `OperationOutcome(T)` from Item 9.
-   - Implement preparation as an explicit two-phase internal workflow. Phase
-     one converts and validates the typed generation or edit request, retains
-     the exact owned generate-content JSON, and validates that request through
-     `countTokens`. Phase two wraps those exact retained bytes with the explicit
-     public key. Do not rebuild the request between validation and JSONL entry
-     construction.
-   - Refactor count-token response classification to the shared stage-aware
-     outcome without migrating the CLI yet. Public preparation accepts every
-     2xx response, preserves complete non-2xx bodies as `ApiFailure`, and
-     returns malformed successful countTokens responses as Zig errors.
+   - Define an internal owned `PreparedBatchRequest` containing the exact
+     generate-content JSON and total token count, with `deinit(allocator)`.
+     Introduce context-taking generation and edit phase-one preparation
+     operations in `client.zig` that return
+     `OperationOutcome(PreparedBatchRequest)`. These functions are `pub` only
+     as exact-allowlisted internal cross-module seams so Item 12 can call them;
+     they are not re-exported through `src/root.zig`.
+   - Before the two-phase workflow, validate the explicit public key before
+     request allocation or network IO. Phase one converts and validates the
+     typed generation or edit request, retains the exact owned
+     generate-content JSON, and validates that request through `countTokens`.
+     Phase two wraps those exact retained bytes, enforces the complete
+     entry-size limit, and transfers the key, entry, and token count into
+     `PreparedBatchEntry`. Do not rebuild the request between validation and
+     JSONL entry construction.
+   - Refactor `Client.countGenerateTokens` and `Client.countEditTokens` to use
+     the same context-taking count-token classification used by phase one.
+     Internal classification returns the shared stage-aware outcome; public
+     methods convert malformed successful countTokens responses to Zig errors.
+     Do not migrate the CLI Batch-file path in this item.
    - Expose `validateBatchInput(bytes) !BatchInputSummary`, returning a
-     non-owning summary with entry count and byte count. Preserve the existing
-     structural validation: byte, line, entry-size, and entry-count limits
-     without parsing JSON or revalidating the semantics of existing request
-     objects.
+     non-owning summary with `entry_count` and `byte_count`. Preserve the
+     existing structural validation: total bytes, non-empty CRLF/LF-aware
+     records, complete record size, and record count, without parsing JSON or
+     revalidating the semantics of existing request objects.
    - Export `BatchValidationError` containing `EmptyBatchKey`,
      `EmptyBatchInput`, `InvalidBatchInput`, `BatchEntryTooLong`,
      `BatchTooManyEntries`, and `BatchInputTooLong`. Generation/edit request
@@ -693,14 +710,15 @@ outcome used by later typed operations.
      preparation, ownership, validation summaries, and writing JSONL lines.
 
    **Compatibility:** Additive until package access to the old Batch helpers is
-   removed by Item 14. CLI behavior remains unchanged.
+   removed by Item 15. CLI behavior remains unchanged.
 
-   **Validation:** Test explicit-key ownership, quiet-context behavior, every
-   successful 2xx class, complete count-token API failure bodies, malformed
-   count-token successes, validation before allocation/network IO,
-   byte-for-byte reuse of the validated generate-content JSON, exact JSONL
-   shape, structural validation summaries without JSON parsing, all limits,
-   exact allowlists, and external-consumer compilation. Run generation/edit
+   **Validation:** Test explicit-key ownership, phase-one ownership and
+   cleanup, quiet-context behavior, every successful 2xx class, complete
+   count-token API failure bodies, malformed count-token successes, validation
+   before allocation/network IO, byte-for-byte reuse of the validated
+   generate-content JSON, exact JSONL shape, complete-entry size enforcement,
+   structural validation summaries without JSON parsing, all limits, exact
+   allowlists, and external-consumer compilation. Run generation/edit
    request-validity live targets only if request construction or countTokens
    envelope behavior changes.
 
@@ -718,15 +736,17 @@ outcome used by later typed operations.
 
    **Proposed changes:**
 
-   - Route generation and edit Batch-file preparation through the phase-one
-     context-taking operations introduced by Item 11. CLI contexts retain
-     request/response traffic logging and configured timeout behavior.
+   - Route generation and edit Batch-file preparation through the allowlisted
+     phase-one context-taking operations introduced by Item 11. CLI contexts
+     retain request/response traffic logging and configured timeout behavior.
    - Apply the common response contract: accept every completed 2xx
      countTokens response, print complete non-2xx bodies, map malformed
      successful responses to exit code 3, and keep transport/timeout
      diagnostics unchanged.
-   - Keep count-token validation outside the file lock. Pass the exact retained
-     generate-content JSON into the locked append phase; do not rebuild it.
+   - Keep count-token validation outside the file lock. Hold one
+     `PreparedBatchRequest`, pass its exact retained generate-content JSON into
+     the locked append phase, and release it after append/receipt handling; do
+     not rebuild it.
    - Generate automatic keys from the locked file offset. For explicit
      `--batch-key`, perform duplicate inspection under the same exclusive lock.
      Key derivation, existing-file inspection, JSONL wrapping, append, and
@@ -755,32 +775,45 @@ outcome used by later typed operations.
    validation core, and automatic keys are still derived atomically from the
    locked file offset.
 
-13. **Add typed remote Batch operations**
+13. **Add typed remote Batch job management**
 
    **Depends on:** Items 9 and 11.
 
-   **Result:** Consumers can manage remote Batch jobs without raw HTTP
-   responses or public response decoders.
+   **Result:** Consumers can upload file-backed Batch input and create, get,
+   list, or cancel remote Batch jobs without raw HTTP responses or public
+   response decoders.
 
    **Proposed changes:**
 
    - Limit the supported remote Batch API to the existing file-backed
-     workflows: upload input, create, get, list, cancel, and download a
-     file-backed output. Inline requests/responses and Batch deletion are
-     explicitly out of scope for this refactoring sequence.
+     management workflows: upload input, create, get, list, and cancel. Inline
+     creation, Batch update/delete, and output download are out of scope for
+     this item. Item 14 adds file-backed output download separately.
    - Add `Client.uploadBatchInput`, `Client.createBatch`, `Client.getBatch`,
-     `Client.cancelBatch`, `Client.listBatchesPage`, and
-     `Client.downloadBatchOutputRecords`.
+     `Client.cancelBatch`, and `Client.listBatchesPage`.
    - Define borrowed `BatchInputUpload` with bytes and optional display name,
      and borrowed `BatchCreateRequest` with canonical input file name and
-     display name. Extend `BatchValidationError` in this item with remote
-     operation validation errors for invalid Batch names, invalid File names,
-     invalid display names, and present empty page tokens. Validate every
-     public input before allocation or network IO.
+     display name. Creation continues to use the repository's fixed image
+     model; this refactoring does not add a public model selector. Extend
+     `BatchValidationError` in this item with remote
+     operation errors `InvalidBatchName`, `InvalidFileName`,
+     `InvalidDisplayName`, and `EmptyPageToken`. Validate every public input
+     before allocation or network IO.
+   - Keep listing explicit and narrow: `listBatchesPage` accepts only an
+     optional continuation token and uses the existing fixed page size.
+     Although the current REST reference documents standard `filter` and
+     `returnPartialSuccess` query fields, exposing them is outside this
+     refactoring's existing-workflow scope.
+   - `Client.uploadBatchInput` structurally validates the complete JSONL input
+     with `validateBatchInput` before upload. It does not parse or semantically
+     revalidate nested request objects.
    - Generalize the internal typed Files upload core just enough to accept the
      Batch JSONL content type and return `OperationOutcome(File)`. Reuse the
      Item 9 upload response decoder and ownership; do not duplicate File wire
      parsing in `batch.zig` or expose arbitrary content-type strings publicly.
+     As with image upload, transport or decoding errors after dispatch may
+     leave a remote File whose name is unavailable; do not retry
+     automatically.
    - Keep upload and creation separate so callers retain the uploaded file name
      when non-idempotent creation fails. Treat every Zig error after dispatch
      from `Client.createBatch`—including transport and successful-response
@@ -790,10 +823,10 @@ outcome used by later typed operations.
      than this ambiguous category.
    - Define `BatchState` as a tagged union with `unspecified`, `pending`,
      `running`, `succeeded`, `failed`, `cancelled`, `expired`, and
-     `unknown: []u8`. Normalize equivalent documented `JOB_STATE_*` and
-     observed legacy `BATCH_STATE_*` spellings to known tags; own the original
-     spelling only for `.unknown`. Do not invent `queued` or `cancelling`
-     states that are absent from the current API contract.
+     `unknown: []u8`. Normalize equivalent REST `BATCH_STATE_*` and SDK-guide
+     `JOB_STATE_*` spellings to known tags; own the original spelling only for
+     `.unknown`. Do not invent `queued` or `cancelling` states that are absent
+     from the current API contract.
    - Reuse `RemoteError` from Item 9. Define `BatchStats` with optional `u64`
      request, successful, failed, and pending counts. Define owned `BatchJob`
      with canonical name; optional owned display name, model, create/update/end
@@ -801,38 +834,25 @@ outcome used by later typed operations.
      optional signed priority; `BatchState`; `BatchStats`; and optional
      `RemoteError`. Define `BatchListPage` as owned jobs plus an optional
      continuation token. Every owning type provides `deinit(allocator)`.
-     Malformed present numeric values and noncanonical present File names are
-     decoding failures.
+     Absent state maps to `.unspecified`. Accept integral counters and priority
+     from either decimal JSON strings or integral JSON numbers; reject
+     negative counters, fractional values, overflow, malformed present
+     numeric values, and noncanonical present File names.
    - Decode the documented long-running `Operation` wrapper and the observed
      SDK/discovery placements already accepted by the legacy decoder: Batch
-     fields may be at the root, under metadata, or under response/batch.
-     Get/list may observe inline input/output or jobs created for other models;
-     preserve available model and common metadata while representing absent
-     file input/output as null. Do not expose inline requests or responses.
-   - Define borrowed `BatchOutputRecordView` with a borrowed key and a tagged
-     result containing either `*const GenerationResult` or
-     `*const RemoteError`. The view and all nested data are valid only for the
-     visitor call. Preserve duplicate keys; duplicate handling remains a
-     caller or CLI decision.
-   - Define `BatchOutputVisitor` as an opaque caller context plus a callback
-     with the conceptual signature
-     `fn (*anyopaque, BatchOutputRecordView) anyerror!void`. Define
-     `BatchOutputSummary` with total, successful, and failed record counts.
-     Visitor errors propagate unchanged and stop processing.
-   - Avoid a `client.zig`/`batch.zig` cycle: keep transport, Batch job/list
-     decoding, bounded JSONL iteration, and wire-record decoding in
-     `batch.zig`; keep `BatchOutputRecordView`, `BatchOutputVisitor`, and the
-     orchestration that converts decoded generated files into the
-     client-owned `GenerationResult` in `client.zig`. Do not extract another
-     shared generation-domain module unless a second non-client owner appears.
+     fields may be at the operation root, directly under `metadata`, directly
+     under `response`, or under `response.batch`. File-backed output may be
+     represented as `output.responsesFile`, `response.responsesFile`, or the
+     SDK-style `dest.fileName`. Get/list may observe inline input/output or jobs
+     created for other models; preserve available model and common metadata
+     while representing absent file input/output as null. Do not expose inline
+     requests or responses.
    - Return typed outcomes consistently: uploads return `Outcome(File)`,
      create/get return `Outcome(BatchJob)`, cancel returns
-     `Outcome(void)`, listing returns `Outcome(BatchListPage)`, and
-     `downloadBatchOutputRecords(output_file_name, visitor)` returns
-     `Outcome(BatchOutputSummary)`. Download accepts the canonical output
-     `files/...` name from `BatchJob` and performs one HTTP request; it
-     does not repeat the Batch status request.
-   - Export the stable output admission limit as `max_batch_output_bytes`.
+     `Outcome(void)`, and listing returns `Outcome(BatchListPage)`.
+   - Add exact-allowlisted context-taking typed cores for upload, create, get,
+     cancel, and list. Public methods supply quiet contexts; Item 15 reuses the
+     same cores with CLI traffic logging. These seams are not package exports.
    - Reuse the shared generic stage-aware outcome. Every typed Batch operation
      accepts any completed 2xx status; there is no caller-selectable status
      policy.
@@ -840,15 +860,9 @@ outcome used by later typed operations.
      raw JSON presentation, and all current CLI Batch commands unchanged.
      Extend the exact package allowlist and external-consumer compile tests for
      the additive API.
-   - Keep the current bounded download transport: retain at most the complete
-     `max_batch_output_bytes` JSONL body plus one decoded record and its images.
-     Decode records sequentially, invoke the visitor, then release that
-     record before continuing. The typed decoder stops on malformed JSONL,
-     malformed records, or image decoding errors; it never returns an eager
-     aggregate of all records or decoded images.
    - Add README and implementation-design examples for upload, creation,
-     status, cancellation, listing, download, record-view lifetimes, visitor
-     errors, and ambiguous creation failures.
+     status, cancellation, listing, ownership, pagination, and ambiguous
+     creation failures.
 
    **Compatibility:** Additive. The undocumented `nbimg.batch` path and all CLI
    Batch command behavior remain unchanged.
@@ -858,24 +872,87 @@ outcome used by later typed operations.
    prefixes for every applicable state, every BatchStats field, signed
    priority, wrapper placements, unknown-state preservation, absent file
    input/output for inline jobs, malformed numeric and resource-name fields,
-   every successful 2xx cancellation body shape, output bounds,
+   structural upload validation, every successful 2xx cancellation body shape,
+   preserved remote failure details, no automatic retry after ambiguous
+   creation failure, exact allowlists, and external-consumer compilation.
+   Update and run the read-only, non-billable Batch list live target against
+   the typed decoder. Never run the billable submit/status live target without
+   explicit authorization; if it is not authorized, report create-specific
+   live validation as an explicit gap.
+
+   **Complete when:** Package consumers can manage file-backed Batch jobs
+   without raw response bodies or public wire decoders, while output download
+   and all CLI Batch paths remain unchanged for the next items.
+
+14. **Add typed Batch output download**
+
+   **Depends on:** Item 13.
+
+   **Result:** Consumers can download and process file-backed Batch output
+   through a bounded borrowed-record visitor without internal line iterators or
+   eager retention of decoded results.
+
+   **Proposed changes:**
+
+   - Add `Client.downloadBatchOutputRecords(output_file_name, visitor)`,
+     accepting the canonical output `files/...` name from `BatchJob`. It
+     performs one Files download request and does not repeat the Batch status
+     request.
+   - Define borrowed `BatchOutputRecordView` with a borrowed key and a tagged
+     result containing either `*const GenerationResult` or
+     `*const RemoteError`. The view and all nested data are valid only for the
+     visitor call. Invoke the visitor in downloaded JSONL order. Preserve
+     duplicate keys; duplicate handling remains a caller or CLI decision.
+   - Define `BatchOutputVisitor` as an opaque caller context plus a callback
+     with the conceptual signature
+     `fn (*anyopaque, BatchOutputRecordView) anyerror!void`. Define
+     `BatchOutputSummary` with total, successful, and failed record counts.
+     Visitor errors propagate unchanged as outer Zig errors and stop
+     processing; they are not reclassified as successful-response decoding
+     failures.
+   - Avoid a `client.zig`/`batch.zig` cycle: keep bounded download transport,
+     CRLF-aware JSONL iteration, and wire-record decoding in `batch.zig`; keep
+     the public visitor types and orchestration that converts decoded generated
+     files into `GenerationResult` in `client.zig`. Do not extract another
+     shared generation-domain module unless a second non-client owner appears.
+   - Export the stable output admission limit as `max_batch_output_bytes`.
+     Retain at most the complete bounded raw JSONL body plus one decoded record
+     and its images. Decode records sequentially, invoke the visitor, then
+     release that record before continuing.
+   - The typed decoder is strict: malformed JSONL, empty records, malformed
+     response/error records, malformed remote errors, and generated-image
+     decoding failures are successful-response decoding failures. Remote error
+     records and duplicate keys are valid records.
+   - The public method returns `Outcome(BatchOutputSummary)`. The internal
+     context-taking core uses the shared stage-aware outcome for HTTP and
+     decoding stages, while visitor callback errors remain outer Zig errors.
+     Every completed 2xx download response is eligible for decoding.
+   - Keep safe local filenames, duplicate-key policy, output file writing, and
+     all current CLI Batch download behavior unchanged.
+   - Add README and implementation-design examples for download, record-view
+     lifetimes, duplicate keys, remote errors, callback errors, and peak
+     ownership.
+
+   **Compatibility:** Additive. The undocumented `nbimg.batch` path and CLI
+   Batch download behavior remain unchanged.
+
+   **Validation:** Cover canonical output names before allocation/network IO,
+   every completed 2xx class, complete API failures, output bounds,
    full-body-plus-one-record peak ownership, callback errors and partial
    cleanup, typed success and failure views, preserved remote failure details,
-   malformed JSONL/records/images, duplicate-key preservation, no automatic
-   retry after ambiguous creation failure, exact allowlists, and
-   external-consumer compilation. Update and run the read-only, non-billable
-   Batch list live target against the typed decoder. Never run the billable
-   submit/status live target without explicit authorization; if it is not
-   authorized, report create-specific live validation as an explicit gap.
+   malformed JSONL/records/errors/images, duplicate-key preservation, exact
+   allowlists, and external-consumer compilation. A live output download
+   requires a completed billable Batch job; do not create one without explicit
+   authorization, and otherwise report live download validation as an explicit
+   gap.
 
-   **Complete when:** Package consumers can use every remote Batch workflow
+   **Complete when:** Package consumers can process file-backed Batch output
    without raw response bodies, public wire decoders, internal line iterators,
-   or presentation helpers, while the record-visitor download contract and
-   existing CLI Batch paths remain explicit and unchanged.
+   or eager decoded-result aggregates.
 
-14. **Migrate CLI Batch commands to typed operations**
+15. **Migrate CLI Batch commands to typed operations**
 
-   **Depends on:** Items 12 and 13.
+   **Depends on:** Items 12, 13, and 14.
 
    **Result:** CLI Batch commands and the public client share typed operation
    cores, allowing the legacy package-level `batch` export and raw-response
@@ -883,21 +960,31 @@ outcome used by later typed operations.
 
    **Proposed changes:**
 
-   - Migrate Batch input upload, create, get/status, cancel, list, and download
-     to the context-taking typed cores introduced by Item 13.
+   - Migrate Batch input upload, create, get/status, and cancel/list to the
+     context-taking typed cores introduced by Item 13, and download to the
+     visitor core introduced by Item 14.
    - Apply the common response contract while preserving diagnostics, traffic
      logging, timeout reporting, the ambiguous-creation warning, exit-code
      categories, and non-idempotent no-retry behavior.
+     A create transport failure remains an ambiguous exit-1 failure; a
+     malformed successful create response is also reported as ambiguous but
+     retains exit code 3; a completed non-2xx response is definitive and exits
+     1.
    - Replace raw successful-response presentation for `batch submit`, `status`,
      and `list` with deliberate CLI-owned JSON serialization of
-     `BatchJob` and `BatchListPage`. Define and document the exact CLI
-     JSON fields and omission rules during this item. Do not retain complete raw
-     success bodies or expose unknown wire fields merely to preserve historical
-     pretty-printed output.
-     Include the typed job name, display name, model, state, timestamps,
-     priority, input/output File names, all BatchStats counts, and remote error
-     when present so the migration does not discard the useful documented
-     metadata currently visible in raw output.
+     `BatchJob` and `BatchListPage`. Use camelCase field names. A job object
+     always includes `name`; it includes `displayName`, `model`, `state`,
+     `createTime`, `updateTime`, `endTime`, `priority`, `inputFileName`,
+     `outputFileName`, `batchStats`, and `error` only when represented by the
+     typed value. Render known states as documented uppercase
+     `BATCH_STATE_*` spellings, preserve unknown spellings, and omit
+     `.unspecified`. Render priority and all BatchStats counters as decimal
+     JSON strings. Omit `batchStats` when every counter is absent; otherwise
+     omit only absent counters inside it. Render `RemoteError` as `code`,
+     `message`, and embedded `details`, omitting absent fields. `batch submit`
+     and `batch status` print one job object; `batch list` prints
+     `{"batches":[...]}`. Do not retain complete raw success bodies or expose
+     unknown wire fields merely to preserve historical pretty-printed output.
    - Keep safe output keys, duplicate-key handling, local filename generation,
      exclusive file writes, and presentation formatting in `src/cli.zig`. Use
      the same strict Batch output decoder as the public visitor: malformed
@@ -906,6 +993,9 @@ outcome used by later typed operations.
      keys are valid typed records and remain visible to the CLI callback.
      Decisions to continue after an individual file-write failure or to report
      duplicate output names remain CLI callback behavior, not a decoder policy.
+     Decoder failures map to exit code 3; visitor/local filesystem failures
+     remain outer Zig errors and map to exit code 1 unless the callback records
+     them and intentionally continues.
    - Remove `batch` from `src/root.zig` and the package allowlist after every
      CLI command uses the typed operation cores. Tighten the internal Batch and
      shared API allowlists.
@@ -935,9 +1025,9 @@ outcome used by later typed operations.
    successful-response or tolerant-decoder seam remains, and `nbimg.batch` is
    no longer package-accessible.
 
-15. **Remove the legacy shared API namespace**
+16. **Remove the legacy shared API namespace**
 
-   **Depends on:** Items 8, 10, 12, and 14.
+   **Depends on:** Items 8, 10, 12, and 15.
 
    **Result:** `api.zig` remains an internal shared implementation module and
    is no longer part of the package contract.
@@ -964,9 +1054,9 @@ outcome used by later typed operations.
    **Complete when:** No package-visible declaration exposes transport or
    Gemini wire implementation details.
 
-16. **Audit public invariants and reduce internal seams**
+17. **Audit public invariants and reduce internal seams**
 
-   **Depends on:** Item 15.
+   **Depends on:** Item 16.
 
    **Result:** Confirm the incrementally hardened public API and minimize
    remaining internal visibility.
@@ -975,7 +1065,7 @@ outcome used by later typed operations.
 
    - Audit that every public operation returns validation errors rather than
      asserting on caller input. Do not defer known public invariant work from
-     Items 4 through 14 to this item.
+     Items 4 through 15 to this item.
    - Retain assertions only for internal programmer errors and paired
      trust-boundary invariants.
    - Verify that public domain enums expose no wire serialization or CLI
@@ -998,9 +1088,9 @@ outcome used by later typed operations.
    **Complete when:** Every package declaration has a documented consumer use
    case and every remaining internal `pub` has a current cross-file caller.
 
-17. **Finalize and document the stable package contract**
+18. **Finalize and document the stable package contract**
 
-   **Depends on:** Items 1 through 16.
+   **Depends on:** Items 1 through 17.
 
    **Result:** Declare the already usable client API stable and ensure all
    documentation and examples match it.
@@ -1013,7 +1103,7 @@ outcome used by later typed operations.
    - Reduce the package allowlist to the exact `Client`, configuration,
      outcome, request/result, input/output MIME, enum, ownership, and
      documented-limit declarations.
-   - Consolidate the incremental README examples added with Items 4 through 14
+   - Consolidate the incremental README examples added with Items 4 through 15
      into complete client initialization, ownership, API-failure handling,
      generation, edit, Files, Batch preparation, and remote Batch workflows.
    - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal
@@ -1038,7 +1128,7 @@ outcome used by later typed operations.
 
 ## Schema Baseline for Remaining Remote APIs
 
-Items 9 through 14 use the current official
+Items 9 through 15 use the current official
 [Files API](https://ai.google.dev/api/files),
 [Batch API reference](https://ai.google.dev/api/batch-api), and
 [Batch guide](https://ai.google.dev/gemini-api/docs/batch-api) as their schema
@@ -1046,11 +1136,17 @@ baseline. Recheck these sources when starting each item because File metadata,
 Batch operation wrappers, and state spellings are remote versioned behavior.
 Schema drift may require additive unknown variants or decoder compatibility,
 but must not silently expand the file-backed workflow scope selected above.
-The June 22, 2026 review confirmed that the REST reference documents
-`BATCH_STATE_*`, all four `BatchStats` counters, signed priority, timestamps,
-and file-backed `inputConfig.fileName`/`output.responsesFile`, while current
-guide examples still expose `JOB_STATE_*` and `dest.fileName`. Item 13
-therefore deliberately accepts both representations.
+The June 22, 2026 review confirmed that the REST reference documents the
+long-running `Operation` wrapper, `BATCH_STATE_*`, all four `BatchStats`
+counters, signed priority, timestamps, and file-backed
+`inputConfig.fileName`/`output.responsesFile`. Current REST guide examples
+place state under `metadata` and file output directly under
+`response.responsesFile`, while SDK guide examples still expose `JOB_STATE_*`
+and `dest.fileName`. Item 13 therefore deliberately accepts all listed
+representations. The guide currently advertises a 2 GB Batch input-file
+maximum; this refactoring deliberately retains the repository's existing
+512 MiB admission limit. Raising that resource bound is a separate design
+change, not an incidental API-refactoring side effect.
 
 ## Validation Policy for Future Refactorings
 
@@ -1067,7 +1163,10 @@ or the build graph change.
 Use focused offline tests before live validation. New or changed Gemini request
 fields require the relevant non-billable live validity target. Files live
 tests may create and delete remote resources. The billable, non-idempotent
-Batch submit/status target must run only with explicit user authorization.
+Batch submit/status target must run only with explicit user authorization. If
+a changed Batch create field has no non-billable validation path and live
+creation is not authorized, report that validation gap instead of claiming
+complete live coverage.
 
 The offline transport tests bind ephemeral loopback sockets for local HTTP
 servers. In a sandbox that blocks `bind`, run `zig build test` with the narrow
@@ -1120,8 +1219,12 @@ referenced path and command.
 - Batch JSONL prepared-entry values omit the trailing newline; callers or the
   CLI writer add record separators when persisting multiple entries.
 - Batch preparation validates and retains one exact generate-content JSON
-  value before key generation; it never rebuilds the request between
-  `countTokens` validation and JSONL wrapping.
+  value before CLI automatic-key generation; public explicit keys are
+  validated first. Neither path rebuilds the request between `countTokens`
+  validation and JSONL wrapping.
+- Typed Batch creation remains fixed to the repository's image model. Typed
+  listing exposes explicit pagination only; standard Batch list filtering and
+  partial-success controls remain out of scope.
 - The typed Batch download API retains the bounded raw JSONL body, decodes one
   record at a time, invokes a borrowed visitor, and releases that record before
   continuing. It does not eagerly retain all decoded records or image bytes.
@@ -1129,7 +1232,7 @@ referenced path and command.
   transport and successful-response decoding failures, are treated as
   ambiguous and are never retried automatically. Completed non-2xx API
   failures remain definitive service responses.
-- Items 9 through 14 deliberately replace historical CLI response semantics:
+- Items 9 through 15 deliberately replace historical CLI response semantics:
   all 2xx statuses are accepted, unknown reported service tiers are decoding
   failures, Batch submit/status/list output is serialized from typed values,
   and malformed downloaded Batch records fail the command. Command syntax,

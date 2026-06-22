@@ -1,4 +1,4 @@
-//! Gemini Files API upload and list handling.
+//! Typed Gemini Files API operations and response decoding.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -7,13 +7,8 @@ const build_options = @import("build_options");
 const file_domain = @import("files_domain.zig");
 const operation = @import("operation.zig");
 
-pub const max_upload_bytes = 64 * 1024 * 1024;
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
-
-comptime {
-    assert(max_upload_bytes == file_domain.max_file_upload_bytes);
-}
 
 const WireRemoteError = struct {
     code: ?i64 = null,
@@ -37,112 +32,22 @@ const WireFile = struct {
     @"error": ?WireRemoteError = null,
 };
 
-/// Describes borrowed image bytes and metadata for a Files API upload.
-///
-/// - All slices remain caller-owned and must outlive the upload call.
-/// - The value allocates nothing and mutates no state.
-pub const FileUpload = struct {
-    mime: api.ImageMime,
-    bytes: []const u8,
-    display_name: ?[]const u8 = null,
-};
-
-/// Owns a decoded Files API resource and its optional metadata strings.
-///
-/// - Every populated slice must be released with `deinit` using the originating allocator.
-/// - The value otherwise owns no external state.
-pub const File = struct {
-    name: []u8,
-    display_name: ?[]u8 = null,
-    mime_type: ?[]u8 = null,
-    size_bytes: ?[]u8 = null,
-    create_time: ?[]u8 = null,
-    update_time: ?[]u8 = null,
-    expiration_time: ?[]u8 = null,
-    sha256_hash: ?[]u8 = null,
-    uri: ?[]u8 = null,
-    state: ?[]u8 = null,
-    source: ?[]u8 = null,
-
-    /// Frees a decoded file and invalidates the value.
-    ///
-    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
-    /// - Mutates only `file` and allocator state.
-    pub fn deinit(file: *File, gpa: std.mem.Allocator) void {
-        gpa.free(file.name);
-        file.deinitMetadata(gpa);
-        file.* = undefined;
-    }
-
-    fn deinitMetadata(file: *File, gpa: std.mem.Allocator) void {
-        freeOptional(gpa, file.display_name);
-        freeOptional(gpa, file.mime_type);
-        freeOptional(gpa, file.size_bytes);
-        freeOptional(gpa, file.create_time);
-        freeOptional(gpa, file.update_time);
-        freeOptional(gpa, file.expiration_time);
-        freeOptional(gpa, file.sha256_hash);
-        freeOptional(gpa, file.uri);
-        freeOptional(gpa, file.state);
-        freeOptional(gpa, file.source);
-
-        file.display_name = null;
-        file.mime_type = null;
-        file.size_bytes = null;
-        file.create_time = null;
-        file.update_time = null;
-        file.expiration_time = null;
-        file.sha256_hash = null;
-        file.uri = null;
-        file.state = null;
-        file.source = null;
-    }
-};
-
-/// Owns one page of decoded file resources and an optional continuation token.
-///
-/// - All nested allocations must be released with `deinit` using their originating allocator.
-/// - The value otherwise owns no external state.
-pub const FileListPage = struct {
-    files: []File,
-    next_page_token: ?[]u8 = null,
-
-    /// Frees a file-list page and invalidates the value.
-    ///
-    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
-    /// - Mutates only `page` and allocator state.
-    pub fn deinit(page: *FileListPage, gpa: std.mem.Allocator) void {
-        for (page.files) |*file| file.deinit(gpa);
-        gpa.free(page.files);
-        if (page.next_page_token) |token| gpa.free(token);
-        page.* = undefined;
-    }
-};
-
-/// Uploads borrowed image bytes through the Gemini Files API.
-///
-/// - Borrows upload fields for the call; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP, protocol, timeout, or logging errors and creates remote file state.
-pub fn uploadFile(
+fn uploadFile(
     context: *const api.RequestContext,
-    file: FileUpload,
+    file: file_domain.FileUpload,
 ) !api.HttpResponse {
     assert(context.api_key.len > 0);
     assert(file.bytes.len > 0);
-    if (file.display_name) |display_name| assert(isValidDisplayName(display_name));
+    if (file.display_name) |display_name| assert(api.isValidDisplayName(display_name));
 
     return api.uploadResumableBytes(context, .{
-        .content_type = file.mime.apiName(),
+        .content_type = wireImageMime(file.mime).apiName(),
         .bytes = file.bytes,
         .display_name = file.display_name,
     });
 }
 
-/// Fetches one Files API page using an optional borrowed continuation token.
-///
-/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
-pub fn listFilesPage(
+fn listFilesPage(
     context: *const api.RequestContext,
     page_token: ?[]const u8,
 ) !api.HttpResponse {
@@ -155,11 +60,7 @@ pub fn listFilesPage(
     return api.getJson(context, url);
 }
 
-/// Fetches one canonical Files API resource.
-///
-/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
-pub fn getFile(
+fn getFile(
     context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
@@ -172,11 +73,7 @@ pub fn getFile(
     return api.getJson(context, url);
 }
 
-/// Deletes one canonical Files API resource.
-///
-/// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
-/// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates remote file state.
-pub fn deleteFile(
+fn deleteFile(
     context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
@@ -196,11 +93,7 @@ pub fn uploadFileWithContext(
 ) !operation.OperationOutcome(file_domain.File) {
     try validateUpload(upload);
 
-    var response = try uploadFile(context, .{
-        .mime = wireImageMime(upload.mime),
-        .bytes = upload.bytes,
-        .display_name = upload.display_name,
-    });
+    var response = try uploadFile(context, upload);
     return typedFileOutcomeFromResponse(
         file_domain.File,
         context.gpa,
@@ -266,105 +159,6 @@ fn deleteOutcomeFromResponse(
     }
     response.deinit(gpa);
     return .{ .success = {} };
-}
-
-fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
-    return api.decodeUploadedFileName(gpa, response_json);
-}
-
-/// Decodes an upload response into an owned file resource.
-///
-/// - Borrows `response_json`; all returned strings are owned by `gpa` and require `File.deinit`.
-/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
-pub fn decodeUploadedFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
-    const Response = struct {
-        file: ?WireFile = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const file = parsed.value.file orelse return error.MissingFileName;
-    const name = file.name orelse return error.MissingFileName;
-    if (name.len == 0) return error.MissingFileName;
-
-    return ownedFileFromResponse(gpa, file);
-}
-
-/// Decodes a file response into an owned file resource.
-///
-/// - Borrows `response_json`; all returned strings are owned by `gpa` and require `File.deinit`.
-/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
-pub fn decodeFile(gpa: std.mem.Allocator, response_json: []const u8) !File {
-    var parsed = try std.json.parseFromSlice(WireFile, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    return ownedFileFromResponse(gpa, parsed.value);
-}
-
-/// Decodes a file-list response into an owned page.
-///
-/// - Borrows `response_json`; all returned slices are owned by `gpa` and require `FileListPage.deinit`.
-/// - Returns allocation, JSON parsing, or missing-name errors and mutates no input or global state.
-pub fn decodeFileListPage(gpa: std.mem.Allocator, response_json: []const u8) !FileListPage {
-    const Response = struct {
-        files: []const WireFile = &.{},
-        nextPageToken: ?[]const u8 = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    var files: std.ArrayList(File) = .empty;
-    errdefer {
-        for (files.items) |*file| file.deinit(gpa);
-        files.deinit(gpa);
-    }
-
-    try files.ensureTotalCapacity(gpa, parsed.value.files.len);
-    for (parsed.value.files) |response_file| {
-        files.appendAssumeCapacity(try ownedFileFromResponse(gpa, response_file));
-    }
-
-    const next_page_token: ?[]u8 = if (parsed.value.nextPageToken) |token| token: {
-        if (token.len == 0) break :token null;
-        break :token try gpa.dupe(u8, token);
-    } else null;
-    errdefer if (next_page_token) |token| gpa.free(token);
-
-    return .{
-        .files = try files.toOwnedSlice(gpa),
-        .next_page_token = next_page_token,
-    };
-}
-
-fn ownedFileFromResponse(gpa: std.mem.Allocator, response_file: anytype) !File {
-    const name = response_file.name orelse return error.MissingFileName;
-    if (name.len == 0) return error.MissingFileName;
-
-    var owned_file = File{
-        .name = try gpa.dupe(u8, name),
-    };
-    errdefer owned_file.deinit(gpa);
-
-    owned_file.display_name = try dupeOptional(gpa, response_file.displayName);
-    owned_file.mime_type = try dupeOptional(gpa, response_file.mimeType);
-    owned_file.size_bytes = try dupeOptional(gpa, response_file.sizeBytes);
-    owned_file.create_time = try dupeOptional(gpa, response_file.createTime);
-    owned_file.update_time = try dupeOptional(gpa, response_file.updateTime);
-    owned_file.expiration_time = try dupeOptional(gpa, response_file.expirationTime);
-    owned_file.sha256_hash = try dupeOptional(gpa, response_file.sha256Hash);
-    owned_file.uri = try dupeOptional(gpa, response_file.uri);
-    owned_file.state = try dupeOptional(gpa, response_file.state);
-    owned_file.source = try dupeOptional(gpa, response_file.source);
-
-    return owned_file;
 }
 
 fn decodeTypedUploadedFile(
@@ -632,16 +426,8 @@ fn isFileIdPathSegmentChar(byte: u8) bool {
     };
 }
 
-fn isValidDisplayName(display_name: []const u8) bool {
-    return api.isValidDisplayName(display_name);
-}
-
 fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
     return if (value) |bytes| try gpa.dupe(u8, bytes) else null;
-}
-
-fn freeOptional(gpa: std.mem.Allocator, value: ?[]u8) void {
-    if (value) |bytes| gpa.free(bytes);
 }
 
 fn filesListBaseUrl() []const u8 {
@@ -936,6 +722,109 @@ test "typed File response classification accepts success and preserves failures"
     }
 }
 
+test "typed upload get and list accept representative non-200 2xx responses" {
+    var upload_response = api.HttpResponse{
+        .status = .created,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"file\":{\"name\":\"files/uploaded\"}}",
+        ),
+    };
+    var upload_outcome = typedFileOutcomeFromResponse(
+        file_domain.File,
+        std.testing.allocator,
+        &upload_response,
+        decodeTypedUploadedFile,
+    );
+    switch (upload_outcome) {
+        .success => |*file| file.deinit(std.testing.allocator),
+        .api_failure, .response_decoding_failure => return error.UnexpectedUploadFailure,
+    }
+
+    var get_response = api.HttpResponse{
+        .status = .accepted,
+        .body = try std.testing.allocator.dupe(u8, "{\"name\":\"files/fetched\"}"),
+    };
+    var get_outcome = typedFileOutcomeFromResponse(
+        file_domain.File,
+        std.testing.allocator,
+        &get_response,
+        decodeTypedFile,
+    );
+    switch (get_outcome) {
+        .success => |*file| file.deinit(std.testing.allocator),
+        .api_failure, .response_decoding_failure => return error.UnexpectedGetFailure,
+    }
+
+    var list_response = api.HttpResponse{
+        .status = .partial_content,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"files\":[{\"name\":\"files/listed\"}]}",
+        ),
+    };
+    var list_outcome = typedFileOutcomeFromResponse(
+        file_domain.FileListPage,
+        std.testing.allocator,
+        &list_response,
+        decodeTypedFileListPage,
+    );
+    switch (list_outcome) {
+        .success => |*page| page.deinit(std.testing.allocator),
+        .api_failure, .response_decoding_failure => return error.UnexpectedListFailure,
+    }
+}
+
+test "typed upload and list report malformed successful responses" {
+    var upload_response = api.HttpResponse{
+        .status = .accepted,
+        .body = try std.testing.allocator.dupe(u8, "{\"file\":{}}"),
+    };
+    var upload_outcome = typedFileOutcomeFromResponse(
+        file_domain.File,
+        std.testing.allocator,
+        &upload_response,
+        decodeTypedUploadedFile,
+    );
+    switch (upload_outcome) {
+        .response_decoding_failure => |err| {
+            try std.testing.expectEqual(error.MissingFileName, err);
+        },
+        .success => |*file| {
+            file.deinit(std.testing.allocator);
+            return error.UnexpectedUploadSuccess;
+        },
+        .api_failure => |*failure| {
+            failure.deinit(std.testing.allocator);
+            return error.UnexpectedUploadApiFailure;
+        },
+    }
+
+    var list_response = api.HttpResponse{
+        .status = .partial_content,
+        .body = try std.testing.allocator.dupe(u8, "{\"files\":[{}]}"),
+    };
+    var list_outcome = typedFileOutcomeFromResponse(
+        file_domain.FileListPage,
+        std.testing.allocator,
+        &list_response,
+        decodeTypedFileListPage,
+    );
+    switch (list_outcome) {
+        .response_decoding_failure => |err| {
+            try std.testing.expectEqual(error.MissingFileName, err);
+        },
+        .success => |*page| {
+            page.deinit(std.testing.allocator);
+            return error.UnexpectedListSuccess;
+        },
+        .api_failure => |*failure| {
+            failure.deinit(std.testing.allocator);
+            return error.UnexpectedListApiFailure;
+        },
+    }
+}
+
 test "typed File delete accepts every 2xx status and arbitrary bodies" {
     var code: u16 = 200;
     while (code <= 299) : (code += 1) {
@@ -965,131 +854,6 @@ test "typed File delete preserves non-success response bodies" {
         .success => return error.UnexpectedSuccess,
         .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
     }
-}
-
-test "decodeUploadedFileName returns owned file name" {
-    const gpa = std.testing.allocator;
-    const name = try decodeUploadedFileName(
-        gpa,
-        "{\"file\":{\"name\":\"files/abc123\",\"displayName\":\"good_night.jpeg\"}}",
-    );
-    defer gpa.free(name);
-
-    try std.testing.expectEqualStrings("files/abc123", name);
-}
-
-test "decodeUploadedFile returns observed Gemini file fields" {
-    const gpa = std.testing.allocator;
-    var file = try decodeUploadedFile(
-        gpa,
-        "{\"file\":{\"name\":\"files/abc123\",\"displayName\":\"good_night.jpeg\",\"mimeType\":\"image/jpeg\",\"sizeBytes\":\"229046\",\"createTime\":\"2026-05-18T08:14:20.799526Z\",\"updateTime\":\"2026-05-18T08:14:20.799526Z\",\"expirationTime\":\"2026-05-20T08:14:20.425492423Z\",\"sha256Hash\":\"hash\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc123\",\"state\":\"ACTIVE\",\"source\":\"UPLOADED\"}}",
-    );
-    defer file.deinit(gpa);
-
-    try std.testing.expectEqualStrings("files/abc123", file.name);
-    try std.testing.expectEqualStrings("good_night.jpeg", file.display_name.?);
-    try std.testing.expectEqualStrings("image/jpeg", file.mime_type.?);
-    try std.testing.expectEqualStrings("229046", file.size_bytes.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", file.create_time.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", file.update_time.?);
-    try std.testing.expectEqualStrings("2026-05-20T08:14:20.425492423Z", file.expiration_time.?);
-    try std.testing.expectEqualStrings("hash", file.sha256_hash.?);
-    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/abc123", file.uri.?);
-    try std.testing.expectEqualStrings("ACTIVE", file.state.?);
-    try std.testing.expectEqualStrings("UPLOADED", file.source.?);
-}
-
-test "decodeFile returns observed Gemini file fields" {
-    const gpa = std.testing.allocator;
-    var file = try decodeFile(
-        gpa,
-        "{\"name\":\"files/abc123\",\"displayName\":\"good_night.jpeg\",\"mimeType\":\"image/jpeg\",\"sizeBytes\":\"229046\",\"createTime\":\"2026-05-18T08:14:20.799526Z\",\"updateTime\":\"2026-05-18T08:14:20.799526Z\",\"expirationTime\":\"2026-05-20T08:14:20.425492423Z\",\"sha256Hash\":\"hash\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc123\",\"state\":\"ACTIVE\",\"source\":\"UPLOADED\"}",
-    );
-    defer file.deinit(gpa);
-
-    try std.testing.expectEqualStrings("files/abc123", file.name);
-    try std.testing.expectEqualStrings("good_night.jpeg", file.display_name.?);
-    try std.testing.expectEqualStrings("image/jpeg", file.mime_type.?);
-    try std.testing.expectEqualStrings("229046", file.size_bytes.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", file.create_time.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", file.update_time.?);
-    try std.testing.expectEqualStrings("2026-05-20T08:14:20.425492423Z", file.expiration_time.?);
-    try std.testing.expectEqualStrings("hash", file.sha256_hash.?);
-    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/abc123", file.uri.?);
-    try std.testing.expectEqualStrings("ACTIVE", file.state.?);
-    try std.testing.expectEqualStrings("UPLOADED", file.source.?);
-}
-
-test "decodeUploadedFileName rejects missing file name" {
-    try std.testing.expectError(
-        error.MissingFileName,
-        decodeUploadedFileName(std.testing.allocator, "{\"file\":{}}"),
-    );
-}
-
-test "decodeFile rejects missing file name" {
-    try std.testing.expectError(
-        error.MissingFileName,
-        decodeFile(std.testing.allocator, "{}"),
-    );
-}
-
-test "decodeFile rejects empty file name" {
-    try std.testing.expectError(
-        error.MissingFileName,
-        decodeFile(std.testing.allocator, "{\"name\":\"\"}"),
-    );
-}
-
-test "decodeUploadedFileName rejects empty file name" {
-    try std.testing.expectError(
-        error.MissingFileName,
-        decodeUploadedFileName(std.testing.allocator, "{\"file\":{\"name\":\"\"}}"),
-    );
-}
-
-test "decodeFileListPage decodes file metadata and next page token" {
-    const gpa = std.testing.allocator;
-    var page = try decodeFileListPage(
-        gpa,
-        "{\"files\":[{\"name\":\"files/one\",\"displayName\":\"one\",\"mimeType\":\"image/jpeg\",\"sizeBytes\":\"229046\",\"createTime\":\"2026-05-18T08:14:20.799526Z\",\"updateTime\":\"2026-05-18T08:14:20.799526Z\",\"expirationTime\":\"2026-05-20T08:14:20.425492423Z\",\"sha256Hash\":\"hash-one\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/one\",\"state\":\"ACTIVE\",\"source\":\"UPLOADED\"},{\"name\":\"files/two\",\"displayName\":\"two\",\"mimeType\":\"image/png\",\"sizeBytes\":\"123\"}],\"nextPageToken\":\"next-token\"}",
-    );
-    defer page.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 2), page.files.len);
-    try std.testing.expectEqualStrings("files/one", page.files[0].name);
-    try std.testing.expectEqualStrings("one", page.files[0].display_name.?);
-    try std.testing.expectEqualStrings("image/jpeg", page.files[0].mime_type.?);
-    try std.testing.expectEqualStrings("229046", page.files[0].size_bytes.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", page.files[0].create_time.?);
-    try std.testing.expectEqualStrings("2026-05-18T08:14:20.799526Z", page.files[0].update_time.?);
-    try std.testing.expectEqualStrings("2026-05-20T08:14:20.425492423Z", page.files[0].expiration_time.?);
-    try std.testing.expectEqualStrings("hash-one", page.files[0].sha256_hash.?);
-    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/one", page.files[0].uri.?);
-    try std.testing.expectEqualStrings("ACTIVE", page.files[0].state.?);
-    try std.testing.expectEqualStrings("UPLOADED", page.files[0].source.?);
-    try std.testing.expectEqualStrings("files/two", page.files[1].name);
-    try std.testing.expectEqualStrings("two", page.files[1].display_name.?);
-    try std.testing.expectEqualStrings("image/png", page.files[1].mime_type.?);
-    try std.testing.expectEqualStrings("123", page.files[1].size_bytes.?);
-    try std.testing.expectEqual(@as(?[]u8, null), page.files[1].create_time);
-    try std.testing.expectEqualStrings("next-token", page.next_page_token.?);
-}
-
-test "decodeFileListPage accepts empty response" {
-    const gpa = std.testing.allocator;
-    var page = try decodeFileListPage(gpa, "{}");
-    defer page.deinit(gpa);
-
-    try std.testing.expectEqual(@as(usize, 0), page.files.len);
-    try std.testing.expectEqual(@as(?[]u8, null), page.next_page_token);
-}
-
-test "decodeFileListPage rejects missing listed file name" {
-    try std.testing.expectError(
-        error.MissingFileName,
-        decodeFileListPage(std.testing.allocator, "{\"files\":[{}]}"),
-    );
 }
 
 test "buildListFilesUrl percent-encodes page token" {
@@ -1250,7 +1014,7 @@ fn uploadSampleImage(context: *const api.RequestContext) !file_domain.File {
         std.testing.io,
         sample_image_path,
         gpa,
-        .limited(max_upload_bytes),
+        .limited(file_domain.max_file_upload_bytes),
     );
     defer gpa.free(bytes);
     if (bytes.len == 0) return error.EmptyUploadFile;

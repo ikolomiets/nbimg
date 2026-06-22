@@ -54,7 +54,7 @@ The code is split into eleven source files:
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
 - `src/root.zig` exposes the supported typed client declarations and retains
-  the legacy package modules as `api`, `batch`, and `files`.
+  the legacy package modules as `api` and `batch`.
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
@@ -85,8 +85,8 @@ The code is split into eleven source files:
   validation and content construction, edit manifest text, and File API URI
   derivation.
 - `src/files.zig` owns Files API behavior: upload/list/get/delete request
-  construction, legacy and typed response decoding, typed response
-  classification, and Files API endpoint handling.
+  construction, typed response decoding and classification, and Files API
+  endpoint handling.
 
 The supported package API is a typed client:
 
@@ -152,10 +152,9 @@ runs before allocation or network IO. Completed non-2xx responses preserve
 their bounded bodies as `ApiFailure`; malformed successful response bodies are
 Zig errors at the public method boundary.
 
-The previous command-domain namespace remains temporarily available:
+The remaining command-domain namespace is temporarily available:
 
 ```zig
-nbimg.files.*
 nbimg.batch.*
 ```
 
@@ -177,9 +176,9 @@ The internal module interfaces are intentionally narrow:
 - `edit` exports the CLI/client-consumed wire request models and limits,
   edit-specific bounded validation, generation-request construction, and label
   validation. Prompt-fragment and File URI builders remain internal.
-- `files` exports legacy upload/file/list models and raw operations for CLI
-  compatibility, plus typed context-taking operations for the public client.
-  Typed response decoders remain private. Shared uploaded-name decoding is
+- `files` exports only the four typed context-taking upload/get/list/delete
+  operations shared by the public client and CLI. Raw transport helpers and
+  typed response decoders remain private. Shared uploaded-name decoding is
   exposed only by `api`.
 - `batch` exports the CLI-consumed models and limits, ownership/iteration
   methods, upload/submit/status/download/cancel/list operations, response
@@ -245,10 +244,10 @@ and interleaves role anchor text and `file_data` parts. The typed client uses
 the resulting generateContent shape for immediate edits and countTokens; CLI
 Batch-file preparation continues to call the internal builder directly.
 
-`src/files.zig` owns Gemini Files API semantics. Legacy CLI operations receive
-wire image MIME types from `src/api.zig`; typed operations receive public
-`FileUpload` values from `src/files_domain.zig`. The module validates typed
-uploads, canonical names, and page tokens, invokes the shared resumable
+`src/files.zig` owns Gemini Files API semantics. Its typed operations receive
+public `FileUpload` values from `src/files_domain.zig`; the CLI converts
+path-derived wire image MIME values before calling them. The module validates
+typed uploads, canonical names, and page tokens, invokes the shared resumable
 byte-upload transport, builds paginated list and file-resource URLs, and
 decodes uploaded/listed/fetched File metadata.
 
@@ -948,8 +947,8 @@ the local file name from `--path` as Gemini's `displayName` metadata field.
 ```
 
 The second request uploads the file bytes and finalizes the upload. The CLI
-reads the file into memory with a `64 MiB` limit represented by
-`files.max_upload_bytes`. The accepted upload MIME types are:
+reads the file into memory with the public `64 MiB`
+`max_file_upload_bytes` limit. The accepted upload MIME types are:
 
 - `.jpg` / `.jpeg` -> `image/jpeg`
 - `.png` -> `image/png`
@@ -964,10 +963,13 @@ On successful upload, `nbimg files upload` parses the upload response:
 and prints normalized, pretty-printed File metadata JSON to stdout using the
 same object shape as `files get`, without Gemini's outer `file` wrapper.
 Callers that need the uploaded resource name should read the `name` field from
-that JSON. Response decoding requires a non-empty `name`. The upload File
-decoder also copies currently observed optional Gemini metadata fields when
-present: `displayName`, `mimeType`, `sizeBytes`, `createTime`, `updateTime`,
-`expirationTime`, `sha256Hash`, `uri`, `state`, and `source`.
+that JSON. Typed response decoding requires a canonical `files/...` name. The
+CLI presentation includes `displayName`, `mimeType`, decimal-string
+`sizeBytes`, `createTime`, `updateTime`, `expirationTime`, `sha256Hash`, `uri`,
+`state`, and `source` when present. It intentionally omits typed-only
+`download_uri` and `processing_error` metadata. Known state/source tags render
+with uppercase wire spellings, unknown spellings are preserved, and normalized
+`.unspecified` values are omitted.
 
 Listing sends:
 
@@ -1007,9 +1009,11 @@ ID path segment is percent-encoded. A successful response is decoded as one
 File metadata object and printed to stdout as a pretty-printed JSON object with
 the same camelCase field names returned by Gemini.
 
-Non-OK responses are not parsed as File metadata. They are surfaced as normal
-API failures with the HTTP status and raw response body, and the CLI exits with
-failure. For inaccessible file resources, Gemini may return HTTP 403
+Completed non-2xx responses are not parsed as File metadata. They are surfaced
+as normal API failures with the HTTP status and raw response body, and the CLI
+exits with failure. Every 2xx response is decoded as File metadata; malformed
+successful metadata exits with the response-parse status. For inaccessible
+file resources, Gemini may return HTTP 403
 `PERMISSION_DENIED`; this is a likely indication that a previously uploaded
 reference has expired or been deleted, but it can also indicate a missing file
 or a file from another API key/project.
@@ -1021,14 +1025,13 @@ DELETE https://generativelanguage.googleapis.com/v1beta/files/{id}
 ```
 
 `nbimg files delete --name files/ID` uses the same canonical resource-name and
-percent-encoded path behavior as `files get`. On HTTP 200 OK, the CLI prints
-`OK` to stdout and exits 0. The success response body is not user-useful; the
-live delete test asserts that Gemini currently returns an empty JSON object,
-observed as `{}` plus trailing whitespace. Missing or already-deleted files are
-surfaced as normal non-OK API failures, preserving the response body in
-diagnostics; live validation currently observes HTTP 403 `PERMISSION_DENIED`
-for those cases. The same status is expected for expired uploads that are no
-longer usable as edit references.
+percent-encoded path behavior as `files get`. On any completed 2xx response,
+the CLI prints `OK` to stdout and exits 0. The success response body is
+discarded without decoding. Missing or already-deleted files are surfaced as
+normal non-2xx API failures, preserving the response body in diagnostics; live
+validation currently observes HTTP 403 `PERMISSION_DENIED` for those cases.
+The same status is expected for expired uploads that are no longer usable as
+edit references.
 
 Files API traffic logging uses the same request-context options as `gen`.
 Headers are not logged. JSON request and response bodies are logged to stderr
@@ -1348,12 +1351,10 @@ Allocator ownership is explicit:
   stays in `src/cli.zig`.
 - `batch.uploadInput` receives already-read validated JSONL bytes; CLI
   filesystem IO stays in `src/cli.zig`.
-- `files.decodeUploadedFile` returns owned File metadata for upload
-  responses. The CLI uses this for upload stdout.
-  `files.decodeUploadedFileName` remains as a helper that returns only an
-  owned copy of the uploaded `files/...` name.
-- `files.decodeFile` and `files.decodeFileListPage` return owned File
-  metadata. `decodeFileListPage` also returns an optional owned next page token.
+- Typed Files operations return owned File metadata for upload, get, and list
+  responses. A typed `FileListPage` also owns its optional next page token; the
+  CLI transfers File ownership into its aggregate before deinitializing each
+  page.
 - `batch.decodeListPage` returns owned JSON for every complete operation and
   an optional owned next page token. The CLI transfers those operation buffers
   into the aggregate list before deinitializing each page.
@@ -1367,8 +1368,8 @@ Allocator ownership is explicit:
   buffers, one owned response ID, and an optional owned reported service-tier
   spelling. The typed client transfers the response ID and image buffers into
   `GenerationResult` without copying image bytes.
-- `HttpResponse.deinit`, both legacy and typed `FileListPage.deinit`,
-  typed `File.deinit`, `FileState.deinit`, `FileSource.deinit`,
+- `HttpResponse.deinit`, typed `FileListPage.deinit`, `File.deinit`,
+  `FileState.deinit`, `FileSource.deinit`,
   `RemoteError.deinit`, `batch.ListPage.deinit`, `GeneratedFile.deinit`,
   `GeneratedFiles.deinit`, `GeneratedImage.deinit`, and
   `GenerationResult.deinit` release owned allocations.
@@ -1398,13 +1399,14 @@ Current tests cover:
 - Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
-- Decoding Files API upload, list, and get responses.
 - Typed Files validation, image and opaque MIME metadata, numeric size bounds,
   pagination, download URI, known and unknown state/source values, remote
   errors, all 2xx delete statuses, malformed successes, API failures, and
   partial-allocation cleanup.
-- Files API metadata JSON output shape, omitted optional fields, and string
-  escaping.
+- Files CLI outcome-to-exit mapping, pagination ownership transfer and
+  aggregation, metadata JSON output shape, decimal size strings, known and
+  unknown state/source rendering, unspecified and typed-only metadata
+  omission, and string escaping.
 - Files API file-resource URL construction and canonical file-name validation.
 - Files API list URL page-token encoding.
 - Redaction of known inline base64 fields in logged response JSON.

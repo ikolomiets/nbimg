@@ -17,6 +17,9 @@ comptime {
     if (@hasDecl(nbimg, "edit")) {
         @compileError("public package exposes the legacy edit module");
     }
+    if (@hasDecl(nbimg, "files")) {
+        @compileError("public package exposes the legacy Files module");
+    }
 }
 
 test "dependency consumer compiles against typed generation edit and Files APIs" {

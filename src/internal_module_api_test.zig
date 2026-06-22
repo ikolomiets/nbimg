@@ -126,21 +126,10 @@ comptime {
         "ValidationError",
     });
     assertExactPublicDecls("files", files, &.{
-        "File",
-        "FileListPage",
-        "FileUpload",
-        "decodeFile",
-        "decodeFileListPage",
-        "decodeUploadedFile",
         "deleteFileWithContext",
-        "deleteFile",
         "getFileWithContext",
-        "getFile",
         "listFilesPageWithContext",
-        "listFilesPage",
-        "max_upload_bytes",
         "uploadFileWithContext",
-        "uploadFile",
     });
     assertExactPublicDecls("file_domain", file_domain, &.{
         "File",
@@ -380,14 +369,6 @@ comptime {
     assertExactPublicDecls("edit.UploadedImage", edit.UploadedImage, &.{});
     assertExactPublicDecls("edit.Reference", edit.Reference, &.{});
     assertExactPublicDecls("edit.EditRequest", edit.EditRequest, &.{});
-
-    assertExactPublicDecls("files.FileUpload", files.FileUpload, &.{});
-    assertExactPublicDecls("files.File", files.File, &.{
-        "deinit",
-    });
-    assertExactPublicDecls("files.FileListPage", files.FileListPage, &.{
-        "deinit",
-    });
 
     assertExactPublicDecls("file_domain.FileUpload", file_domain.FileUpload, &.{});
     assertExactPublicDecls("file_domain.File", file_domain.File, &.{

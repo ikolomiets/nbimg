@@ -1376,7 +1376,7 @@ fn runFilesUpload(
     };
 
     const cwd = std.Io.Dir.cwd();
-    const bytes = cwd.readFileAlloc(init.io, command.path, gpa, .limited(api_files.max_upload_bytes)) catch |err| {
+    const bytes = cwd.readFileAlloc(init.io, command.path, gpa, .limited(client.max_file_upload_bytes)) catch |err| {
         std.debug.print("error: failed to read upload file: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
@@ -1387,42 +1387,15 @@ fn runFilesUpload(
         return exit_usage;
     }
 
-    var response = api_files.uploadFile(context, .{
-        .mime = mime,
+    var outcome = api_files.uploadFileWithContext(context, .{
+        .mime = inputImageMimeFromApi(mime),
         .bytes = bytes,
         .display_name = command.display_name,
     }) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: API request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
-    }
-
-    var file = api_files.decodeUploadedFile(gpa, response.body) catch |err| {
-        std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
-    };
-    defer file.deinit(gpa);
-
-    const output = fileMetadataJson(gpa, file) catch |err| {
-        std.debug.print("error: failed to format uploaded file metadata: {s}\n", .{@errorName(err)});
-        return exit_failure;
-    };
-    defer gpa.free(output);
-
-    writeStdoutLine(init.io, output) catch |err| {
-        std.debug.print("error: failed to print uploaded file metadata: {s}\n", .{@errorName(err)});
-        return exit_failure;
-    };
-
-    return exit_success;
+    return runFileMetadataOutcome(init.io, gpa, &outcome, .upload);
 }
 
 fn runFilesList(
@@ -1433,35 +1406,28 @@ fn runFilesList(
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
-    var files: std.ArrayList(api_files.File) = .empty;
+    var files: std.ArrayList(client.File) = .empty;
     defer {
         for (files.items) |*file| file.deinit(gpa);
         files.deinit(gpa);
     }
 
     while (true) {
-        var response = api_files.listFilesPage(context, page_token) catch |err| {
+        var outcome = api_files.listFilesPageWithContext(context, page_token) catch |err| {
             printApiRequestError(context, err);
             return exit_failure;
         };
-        defer response.deinit(gpa);
 
         if (page_token) |token| {
             gpa.free(token);
             page_token = null;
         }
 
-        if (response.status != .ok) {
-            std.debug.print(
-                "error: API request failed with HTTP {d}\n{s}\n",
-                .{ @intFromEnum(response.status), response.body },
-            );
-            return exit_failure;
-        }
-
-        var page = api_files.decodeFileListPage(gpa, response.body) catch |err| {
-            std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-            return exit_response_parse;
+        var page = switch (outcome) {
+            .success => |page| page,
+            .api_failure, .response_decoding_failure => {
+                return reportFilesOutcomeFailure(client.FileListPage, gpa, &outcome);
+            },
         };
         defer page.deinit(gpa);
 
@@ -1494,38 +1460,11 @@ fn runFilesGet(
     context: *const api.RequestContext,
     command: FilesGetCommand,
 ) u8 {
-    var response = api_files.getFile(context, command.name) catch |err| {
+    var outcome = api_files.getFileWithContext(context, command.name) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: API request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
-    }
-
-    var file = api_files.decodeFile(gpa, response.body) catch |err| {
-        std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
-    };
-    defer file.deinit(gpa);
-
-    const output = fileMetadataJson(gpa, file) catch |err| {
-        std.debug.print("error: failed to format file metadata: {s}\n", .{@errorName(err)});
-        return exit_failure;
-    };
-    defer gpa.free(output);
-
-    writeStdoutLine(init.io, output) catch |err| {
-        std.debug.print("error: failed to print file metadata: {s}\n", .{@errorName(err)});
-        return exit_failure;
-    };
-
-    return exit_success;
+    return runFileMetadataOutcome(init.io, gpa, &outcome, .get);
 }
 
 fn runFilesDelete(
@@ -1534,18 +1473,16 @@ fn runFilesDelete(
     context: *const api.RequestContext,
     command: FilesDeleteCommand,
 ) u8 {
-    var response = api_files.deleteFile(context, command.name) catch |err| {
+    var outcome = api_files.deleteFileWithContext(context, command.name) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
 
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: API request failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
+    switch (outcome) {
+        .success => {},
+        .api_failure, .response_decoding_failure => {
+            return reportFilesOutcomeFailure(void, gpa, &outcome);
+        },
     }
 
     writeStdoutLine(init.io, "OK") catch |err| {
@@ -1554,6 +1491,98 @@ fn runFilesDelete(
     };
 
     return exit_success;
+}
+
+const FileMetadataCommand = enum {
+    upload,
+    get,
+};
+
+fn runFileMetadataOutcome(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    outcome: *client.OperationOutcome(client.File),
+    command: FileMetadataCommand,
+) u8 {
+    var file = switch (outcome.*) {
+        .success => |file| file,
+        .api_failure, .response_decoding_failure => {
+            return reportFilesOutcomeFailure(client.File, gpa, outcome);
+        },
+    };
+    defer file.deinit(gpa);
+
+    const output = fileMetadataJson(gpa, file) catch |err| {
+        switch (command) {
+            .upload => std.debug.print(
+                "error: failed to format uploaded file metadata: {s}\n",
+                .{@errorName(err)},
+            ),
+            .get => std.debug.print(
+                "error: failed to format file metadata: {s}\n",
+                .{@errorName(err)},
+            ),
+        }
+        return exit_failure;
+    };
+    defer gpa.free(output);
+
+    writeStdoutLine(io, output) catch |err| {
+        switch (command) {
+            .upload => std.debug.print(
+                "error: failed to print uploaded file metadata: {s}\n",
+                .{@errorName(err)},
+            ),
+            .get => std.debug.print(
+                "error: failed to print file metadata: {s}\n",
+                .{@errorName(err)},
+            ),
+        }
+        return exit_failure;
+    };
+
+    return exit_success;
+}
+
+fn reportFilesOutcomeFailure(
+    comptime T: type,
+    gpa: std.mem.Allocator,
+    outcome: *client.OperationOutcome(T),
+) u8 {
+    const exit_code = filesOutcomeExitCode(T, outcome);
+    switch (outcome.*) {
+        .success => unreachable,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: API request failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+        },
+        .response_decoding_failure => |err| {
+            std.debug.print("error: failed to parse API response: {s}\n", .{@errorName(err)});
+        },
+    }
+    return exit_code;
+}
+
+fn filesOutcomeExitCode(
+    comptime T: type,
+    outcome: *const client.OperationOutcome(T),
+) u8 {
+    return switch (outcome.*) {
+        .success => exit_success,
+        .api_failure => exit_failure,
+        .response_decoding_failure => exit_response_parse,
+    };
+}
+
+fn inputImageMimeFromApi(mime: api.ImageMime) client.InputImageMime {
+    return switch (mime) {
+        .jpeg => .jpeg,
+        .png => .png,
+        .webp => .webp,
+    };
 }
 
 fn runBatchSubmit(
@@ -3628,6 +3657,26 @@ test "generated content CLI outcome maps response stages to exit codes" {
     );
 }
 
+test "Files CLI outcomes map success API failure and malformed success to exit codes" {
+    const file = client.File{
+        .name = @constCast("files/abc123"),
+    };
+    try expectFilesOutcomeExitCodes(client.File, file);
+    try expectFilesOutcomeExitCodes(client.File, file);
+
+    const page = client.FileListPage{
+        .files = &.{},
+    };
+    try expectFilesOutcomeExitCodes(client.FileListPage, page);
+    try expectFilesOutcomeExitCodes(void, {});
+}
+
+test "Files CLI maps every path-derived upload MIME to typed input MIME" {
+    try std.testing.expectEqual(client.InputImageMime.jpeg, inputImageMimeFromApi(.jpeg));
+    try std.testing.expectEqual(client.InputImageMime.png, inputImageMimeFromApi(.png));
+    try std.testing.expectEqual(client.InputImageMime.webp, inputImageMimeFromApi(.webp));
+}
+
 test "API request timeout diagnostic includes configured whole seconds" {
     const context = api.RequestContext{
         .gpa = std.testing.allocator,
@@ -3763,8 +3812,8 @@ fn writeStdoutLine(io: std.Io, line: []const u8) !void {
 
 fn takePageFiles(
     gpa: std.mem.Allocator,
-    files: *std.ArrayList(api_files.File),
-    page: *api_files.FileListPage,
+    files: *std.ArrayList(client.File),
+    page: *client.FileListPage,
 ) !void {
     try files.ensureUnusedCapacity(gpa, page.files.len);
 
@@ -3791,7 +3840,7 @@ const FileJson = struct {
     name: []const u8,
     displayName: ?[]const u8 = null,
     mimeType: ?[]const u8 = null,
-    sizeBytes: ?[]const u8 = null,
+    sizeBytes: ?DecimalJsonString = null,
     createTime: ?[]const u8 = null,
     updateTime: ?[]const u8 = null,
     expirationTime: ?[]const u8 = null,
@@ -3801,15 +3850,25 @@ const FileJson = struct {
     source: ?[]const u8 = null,
 };
 
+const DecimalJsonString = struct {
+    value: u64,
+
+    pub fn jsonStringify(decimal: DecimalJsonString, writer: anytype) !void {
+        var buffer: [20]u8 = undefined;
+        const value = std.fmt.bufPrint(&buffer, "{d}", .{decimal.value}) catch unreachable;
+        try writer.write(value);
+    }
+};
+
 const FileListJson = struct {
     files: []const FileJson,
 };
 
-fn fileMetadataJson(gpa: std.mem.Allocator, file: api_files.File) ![]u8 {
+fn fileMetadataJson(gpa: std.mem.Allocator, file: client.File) ![]u8 {
     return stringifyMetadataJson(gpa, fileJson(file));
 }
 
-fn filesListJson(gpa: std.mem.Allocator, files: []const api_files.File) ![]u8 {
+fn filesListJson(gpa: std.mem.Allocator, files: []const client.File) ![]u8 {
     const file_jsons = try gpa.alloc(FileJson, files.len);
     defer gpa.free(file_jsons);
 
@@ -3822,19 +3881,39 @@ fn filesListJson(gpa: std.mem.Allocator, files: []const api_files.File) ![]u8 {
     });
 }
 
-fn fileJson(file: api_files.File) FileJson {
+fn fileJson(file: client.File) FileJson {
     return .{
         .name = file.name,
         .displayName = file.display_name,
         .mimeType = file.mime_type,
-        .sizeBytes = file.size_bytes,
+        .sizeBytes = if (file.size_bytes) |size| .{ .value = size } else null,
         .createTime = file.create_time,
         .updateTime = file.update_time,
         .expirationTime = file.expiration_time,
         .sha256Hash = file.sha256_hash,
         .uri = file.uri,
-        .state = file.state,
-        .source = file.source,
+        .state = fileStateName(file.state),
+        .source = fileSourceName(file.source),
+    };
+}
+
+fn fileStateName(state: client.FileState) ?[]const u8 {
+    return switch (state) {
+        .unspecified => null,
+        .processing => "PROCESSING",
+        .active => "ACTIVE",
+        .failed => "FAILED",
+        .unknown => |name| name,
+    };
+}
+
+fn fileSourceName(source: client.FileSource) ?[]const u8 {
+    return switch (source) {
+        .unspecified => null,
+        .uploaded => "UPLOADED",
+        .generated => "GENERATED",
+        .registered => "REGISTERED",
+        .unknown => |name| name,
     };
 }
 
@@ -5715,7 +5794,7 @@ test "files upload json formats all metadata fields" {
         .name = "files/abc123",
         .display_name = "sample",
         .mime_type = "image/jpeg",
-        .size_bytes = "229046",
+        .size_bytes = 229046,
         .create_time = "2026-05-18T08:14:20.799526Z",
         .update_time = "2026-05-18T08:14:20.799526Z",
         .expiration_time = "2026-05-20T08:14:20.425492423Z",
@@ -5723,6 +5802,8 @@ test "files upload json formats all metadata fields" {
         .uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123",
         .state = "ACTIVE",
         .source = "UPLOADED",
+        .download_uri = "https://example.test/download/abc123",
+        .processing_error_message = "not emitted",
     });
     defer file.deinit(gpa);
 
@@ -5767,6 +5848,26 @@ test "files upload json omits absent metadata fields" {
     );
 }
 
+test "files metadata json formats maximum size as a decimal string" {
+    const gpa = std.testing.allocator;
+    var file = try testFile(gpa, .{
+        .name = "files/abc123",
+        .size_bytes = std.math.maxInt(u64),
+    });
+    defer file.deinit(gpa);
+
+    const json = try fileMetadataJson(gpa, file);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"files/abc123\",\n" ++
+            "  \"sizeBytes\": \"18446744073709551615\"\n" ++
+            "}",
+        json,
+    );
+}
+
 test "files upload json escapes string content" {
     const gpa = std.testing.allocator;
     var file = try testFile(gpa, .{
@@ -5795,7 +5896,7 @@ test "files get json formats all metadata fields" {
         .name = "files/abc123",
         .display_name = "sample",
         .mime_type = "image/jpeg",
-        .size_bytes = "229046",
+        .size_bytes = 229046,
         .create_time = "2026-05-18T08:14:20.799526Z",
         .update_time = "2026-05-18T08:14:20.799526Z",
         .expiration_time = "2026-05-20T08:14:20.425492423Z",
@@ -5803,6 +5904,8 @@ test "files get json formats all metadata fields" {
         .uri = "https://generativelanguage.googleapis.com/v1beta/files/abc123",
         .state = "ACTIVE",
         .source = "UPLOADED",
+        .download_uri = "https://example.test/download/abc123",
+        .processing_error_message = "not emitted",
     });
     defer file.deinit(gpa);
 
@@ -5847,6 +5950,74 @@ test "files get json omits absent metadata fields" {
     );
 }
 
+test "files metadata json renders known and unknown state and source values" {
+    const gpa = std.testing.allocator;
+    var files = [_]client.File{
+        try testFile(gpa, .{
+            .name = "files/processing",
+            .state = "PROCESSING",
+            .source = "GENERATED",
+        }),
+        try testFile(gpa, .{
+            .name = "files/failed",
+            .state = "FAILED",
+            .source = "REGISTERED",
+        }),
+        try testFile(gpa, .{
+            .name = "files/unknown",
+            .state = "PAUSED",
+            .source = "IMPORTED",
+        }),
+    };
+    defer for (&files) |*file| file.deinit(gpa);
+
+    const json = try filesListJson(gpa, &files);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"files\": [\n" ++
+            "    {\n" ++
+            "      \"name\": \"files/processing\",\n" ++
+            "      \"state\": \"PROCESSING\",\n" ++
+            "      \"source\": \"GENERATED\"\n" ++
+            "    },\n" ++
+            "    {\n" ++
+            "      \"name\": \"files/failed\",\n" ++
+            "      \"state\": \"FAILED\",\n" ++
+            "      \"source\": \"REGISTERED\"\n" ++
+            "    },\n" ++
+            "    {\n" ++
+            "      \"name\": \"files/unknown\",\n" ++
+            "      \"state\": \"PAUSED\",\n" ++
+            "      \"source\": \"IMPORTED\"\n" ++
+            "    }\n" ++
+            "  ]\n" ++
+            "}",
+        json,
+    );
+}
+
+test "files metadata json omits explicit unspecified state and source" {
+    const gpa = std.testing.allocator;
+    var file = try testFile(gpa, .{
+        .name = "files/abc123",
+        .state = "STATE_UNSPECIFIED",
+        .source = "SOURCE_UNSPECIFIED",
+    });
+    defer file.deinit(gpa);
+
+    const json = try fileMetadataJson(gpa, file);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"files/abc123\"\n" ++
+            "}",
+        json,
+    );
+}
+
 test "files get json escapes string content" {
     const gpa = std.testing.allocator;
     var file = try testFile(gpa, .{
@@ -5884,7 +6055,7 @@ test "files list json formats empty file list" {
 
 test "files list json formats multiple files" {
     const gpa = std.testing.allocator;
-    var files = [_]api_files.File{
+    var files = [_]client.File{
         try testFile(gpa, .{
             .name = "files/one",
             .display_name = "one",
@@ -5914,6 +6085,30 @@ test "files list json formats multiple files" {
             "}",
         json,
     );
+}
+
+test "files list pagination transfers and aggregates page ownership" {
+    const gpa = std.testing.allocator;
+    var files: std.ArrayList(client.File) = .empty;
+    defer {
+        for (files.items) |*file| file.deinit(gpa);
+        files.deinit(gpa);
+    }
+
+    var first_page = try testFilePage(gpa, "files/one", "next-token");
+    defer first_page.deinit(gpa);
+    try takePageFiles(gpa, &files, &first_page);
+    try std.testing.expectEqual(@as(usize, 0), first_page.files.len);
+    try std.testing.expectEqualStrings("next-token", first_page.next_page_token.?);
+
+    var second_page = try testFilePage(gpa, "files/two", null);
+    defer second_page.deinit(gpa);
+    try takePageFiles(gpa, &files, &second_page);
+    try std.testing.expectEqual(@as(usize, 0), second_page.files.len);
+
+    try std.testing.expectEqual(@as(usize, 2), files.items.len);
+    try std.testing.expectEqualStrings("files/one", files.items[0].name);
+    try std.testing.expectEqualStrings("files/two", files.items[1].name);
 }
 
 test "parseArgs rejects missing prompt" {
@@ -7050,50 +7245,59 @@ test "live API edit request shape is valid" {
 fn uploadLiveEditSampleImage(
     context: *const api.RequestContext,
     mime: api.ImageMime,
-) !api_files.File {
+) !client.File {
     const gpa = context.gpa;
     const bytes = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         live_edit_sample_image_path,
         gpa,
-        .limited(api_files.max_upload_bytes),
+        .limited(client.max_file_upload_bytes),
     );
     defer gpa.free(bytes);
     if (bytes.len == 0) return error.EmptyUploadFile;
 
-    var response = try api_files.uploadFile(context, .{
-        .mime = mime,
+    var outcome = try api_files.uploadFileWithContext(context, .{
+        .mime = inputImageMimeFromApi(mime),
         .bytes = bytes,
         .display_name = live_edit_upload_display_name,
     });
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: live edit fixture upload failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return error.LiveEditFixtureUploadFailed;
-    }
-
-    return api_files.decodeUploadedFile(gpa, response.body);
+    return switch (outcome) {
+        .success => |file| file,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live edit fixture upload failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+            return error.LiveEditFixtureUploadFailed;
+        },
+        .response_decoding_failure => |err| return err,
+    };
 }
 
 fn deleteLiveEditSampleImage(context: *const api.RequestContext, name: []const u8) void {
-    var response = api_files.deleteFile(context, name) catch |err| {
+    var outcome = api_files.deleteFileWithContext(context, name) catch |err| {
         std.debug.print(
             "warning: failed to delete live edit fixture {s}: {s}\n",
             .{ name, @errorName(err) },
         );
         return;
     };
-    defer response.deinit(context.gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "warning: live edit fixture delete for {s} returned HTTP {d}\n{s}\n",
-            .{ name, @intFromEnum(response.status), response.body },
-        );
+    switch (outcome) {
+        .success => {},
+        .api_failure => |*failure| {
+            defer failure.deinit(context.gpa);
+            std.debug.print(
+                "warning: live edit fixture delete for {s} returned HTTP {d}\n{s}\n",
+                .{ name, @intFromEnum(failure.status), failure.body },
+            );
+        },
+        .response_decoding_failure => |err| {
+            std.debug.print(
+                "warning: failed to parse live edit fixture delete response for {s}: {s}\n",
+                .{ name, @errorName(err) },
+            );
+        },
     }
 }
 
@@ -7231,7 +7435,7 @@ const TestFileInput = struct {
     name: []const u8,
     display_name: ?[]const u8 = null,
     mime_type: ?[]const u8 = null,
-    size_bytes: ?[]const u8 = null,
+    size_bytes: ?u64 = null,
     create_time: ?[]const u8 = null,
     update_time: ?[]const u8 = null,
     expiration_time: ?[]const u8 = null,
@@ -7239,26 +7443,96 @@ const TestFileInput = struct {
     uri: ?[]const u8 = null,
     state: ?[]const u8 = null,
     source: ?[]const u8 = null,
+    download_uri: ?[]const u8 = null,
+    processing_error_message: ?[]const u8 = null,
 };
 
-fn testFile(gpa: std.mem.Allocator, input: TestFileInput) !api_files.File {
-    var file = api_files.File{
+fn testFile(gpa: std.mem.Allocator, input: TestFileInput) !client.File {
+    var file = client.File{
         .name = try gpa.dupe(u8, input.name),
     };
     errdefer file.deinit(gpa);
 
     file.display_name = try testOptional(gpa, input.display_name);
     file.mime_type = try testOptional(gpa, input.mime_type);
-    file.size_bytes = try testOptional(gpa, input.size_bytes);
+    file.size_bytes = input.size_bytes;
     file.create_time = try testOptional(gpa, input.create_time);
     file.update_time = try testOptional(gpa, input.update_time);
     file.expiration_time = try testOptional(gpa, input.expiration_time);
     file.sha256_hash = try testOptional(gpa, input.sha256_hash);
     file.uri = try testOptional(gpa, input.uri);
-    file.state = try testOptional(gpa, input.state);
-    file.source = try testOptional(gpa, input.source);
+    file.state = try testFileState(gpa, input.state);
+    file.source = try testFileSource(gpa, input.source);
+    file.download_uri = try testOptional(gpa, input.download_uri);
+    if (input.processing_error_message) |message| {
+        file.processing_error = .{
+            .message = try gpa.dupe(u8, message),
+        };
+    }
 
     return file;
+}
+
+fn testFilePage(
+    gpa: std.mem.Allocator,
+    name: []const u8,
+    next_page_token: ?[]const u8,
+) !client.FileListPage {
+    const files = try gpa.alloc(client.File, 1);
+    errdefer gpa.free(files);
+    files[0] = try testFile(gpa, .{ .name = name });
+    errdefer files[0].deinit(gpa);
+
+    return .{
+        .files = files,
+        .next_page_token = try testOptional(gpa, next_page_token),
+    };
+}
+
+fn testFileState(
+    gpa: std.mem.Allocator,
+    value: ?[]const u8,
+) !client.FileState {
+    const name = value orelse return .unspecified;
+    if (std.mem.eql(u8, name, "STATE_UNSPECIFIED")) return .unspecified;
+    if (std.mem.eql(u8, name, "PROCESSING")) return .processing;
+    if (std.mem.eql(u8, name, "ACTIVE")) return .active;
+    if (std.mem.eql(u8, name, "FAILED")) return .failed;
+    return .{ .unknown = try gpa.dupe(u8, name) };
+}
+
+fn testFileSource(
+    gpa: std.mem.Allocator,
+    value: ?[]const u8,
+) !client.FileSource {
+    const name = value orelse return .unspecified;
+    if (std.mem.eql(u8, name, "SOURCE_UNSPECIFIED")) return .unspecified;
+    if (std.mem.eql(u8, name, "UPLOADED")) return .uploaded;
+    if (std.mem.eql(u8, name, "GENERATED")) return .generated;
+    if (std.mem.eql(u8, name, "REGISTERED")) return .registered;
+    return .{ .unknown = try gpa.dupe(u8, name) };
+}
+
+fn expectFilesOutcomeExitCodes(comptime T: type, success_value: T) !void {
+    const success = client.OperationOutcome(T){
+        .success = success_value,
+    };
+    const api_failure = client.OperationOutcome(T){
+        .api_failure = .{
+            .status = .service_unavailable,
+            .body = @constCast("{\"error\":\"unavailable\"}"),
+        },
+    };
+    const decoding_failure = client.OperationOutcome(T){
+        .response_decoding_failure = error.UnexpectedEndOfInput,
+    };
+
+    try std.testing.expectEqual(exit_success, filesOutcomeExitCode(T, &success));
+    try std.testing.expectEqual(exit_failure, filesOutcomeExitCode(T, &api_failure));
+    try std.testing.expectEqual(
+        exit_response_parse,
+        filesOutcomeExitCode(T, &decoding_failure),
+    );
 }
 
 fn testOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
