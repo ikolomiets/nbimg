@@ -1255,10 +1255,13 @@ outcome used by later typed operations.
 
    **Depends on:** Item 16.
 
-   **Status:** Next.
+   **Status:** Completed.
 
-   **Result:** Confirm the incrementally hardened public API and minimize
-   remaining internal visibility.
+   **Result:** Audited the current root package façade and kept the supported
+   root declarations unchanged. Removed the unused internal
+   `api.decodeUploadedFileName` seam, made the Files-only wire remote-error
+   type and ownership helper private in `files_domain.zig`, and kept
+   `remoteErrorFromJsonValue` public for Batch decoding.
 
    **Proposed changes:**
 
@@ -1297,12 +1300,13 @@ outcome used by later typed operations.
    **Compatibility:** Supported client APIs remain stable. Only internal seams
    and accidental visibility change.
 
-   **Validation:** Run focused negative tests for public generation, edit,
-   Files, and Batch validation paths; exact package and internal allowlist
-   tests; the external-consumer test; `zig fmt --check build.zig src`;
+   **Validation:** `zig fmt --check build.zig src`;
+   `zig build test -Dtest-filter="package API matches exact allowlist"`;
+   `zig build test -Dtest-filter="internal module APIs match exact allowlists"`;
+   `zig build test -Dtest-filter="dependency consumer compiles against typed generation edit Files and Batch preparation APIs"`;
    `zig build test`; `zig build`; and `git diff --check`. No live API target
-   is required unless the audit changes Gemini request fields, response
-   decoding, transport behavior, or other externally observable API behavior.
+   was required because no Gemini request fields, response decoding behavior,
+   transport behavior, or CLI workflows changed.
 
    **Complete when:** Public callers reject invalid caller input with typed
    validation errors before lower-level assertions, root-visible containers
@@ -1313,7 +1317,7 @@ outcome used by later typed operations.
 
    **Depends on:** Items 1 through 17.
 
-   **Status:** Planned.
+   **Status:** Next.
 
    **Result:** Declare the already usable client API stable and ensure all
    documentation and examples match it.
@@ -1323,19 +1327,27 @@ outcome used by later typed operations.
    - Treat this as a documentation and contract-synchronization increment. Do
      not add, remove, or redesign supported operations after the invariant
      audit unless that audit finds a correctness defect.
+   - Carry forward the Item 17 audit result: there are no unsupported
+     root-level declarations queued for removal, so this item should not delete
+     or rename root exports. If documentation review finds a real contract
+     mismatch, update the docs/tests to the existing allowlisted API or split a
+     new implementation item out explicitly.
    - Reconfirm the package allowlist as the exact `Client`, configuration,
      outcome, request/result, input/output MIME, enum, ownership, and
      documented-limit declarations, plus deliberate pure validation functions
      such as `validateBatchInput`. Do not remove additional declarations here
      unless Item 17 explicitly identified them as unsupported.
-   - Consolidate the incremental README examples added with Items 4 through 15
-     into complete client initialization, ownership, API-failure handling,
-     generation, edit, Files, Batch preparation, and remote Batch workflows.
+   - Review the existing README `Zig Library API` section against the exact
+     package allowlist and external-consumer test, then consolidate or fill any
+     remaining gaps in complete client initialization, ownership, API-failure
+     handling, generation, token counting, edit, Files, Batch preparation,
+     remote Batch management, and output-download workflows.
    - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal
      module boundaries, the common response contract, and deliberate CLI JSON
      schemas.
    - Retain the historical pre-refactoring label on `public_api_analysis.md`
-     and continue recording completed refactorings in this document.
+     and do not rewrite it as the current contract. Continue recording
+     completed refactorings in this document.
    - Keep compile-only external-consumer examples synchronized with the
      supported named `nbimg` module.
 
@@ -1344,9 +1356,14 @@ outcome used by later typed operations.
    supported declarations except for any unsupported declarations explicitly
    carried forward from Item 17.
 
-   **Validation:** Run formatting, all offline tests, the ReleaseSafe build,
-   documentation path checks, package and internal allowlists, and
-   compile-only consumer tests.
+   **Validation:** `zig fmt --check build.zig src`;
+   `zig build test -Dtest-filter="package API matches exact allowlist"`;
+   `zig build test -Dtest-filter="internal module APIs match exact allowlists"`;
+   `zig build test -Dtest-filter="dependency consumer compiles against typed generation edit Files and Batch preparation APIs"`;
+   `zig build test`; `zig build`; and `git diff --check`. Also manually verify
+   every README/design-doc path and command touched by this item. No live API
+   target is required unless the item changes Gemini request fields, response
+   decoding behavior, transport behavior, or CLI workflows.
 
    **Complete when:** README examples, implementation documentation, exact
    allowlists, external-consumer tests, the build graph, and actual root

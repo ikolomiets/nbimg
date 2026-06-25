@@ -11,7 +11,7 @@ pub const InputImageMime = enum {
 };
 
 /// Mirrors the shared google.rpc.Status shape used by Gemini resources.
-pub const WireRemoteError = struct {
+const WireRemoteError = struct {
     code: ?i64 = null,
     message: ?[]const u8 = null,
     details: ?std.json.Value = null,
@@ -214,7 +214,7 @@ pub fn decodeFileListPage(
 }
 
 /// Copies one optional wire error into the public owned error shape.
-pub fn ownedRemoteError(
+fn ownedRemoteError(
     allocator: std.mem.Allocator,
     wire_error: ?WireRemoteError,
 ) !?RemoteError {

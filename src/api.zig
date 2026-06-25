@@ -2100,30 +2100,6 @@ test "resumable upload metadata escapes JSON string content" {
     defer parsed.deinit();
 }
 
-/// Decodes and copies a canonical file name from an upload response.
-///
-/// - Borrows `response_json`; the returned slice is owned by `gpa`.
-/// - Returns allocation, JSON parsing, or `MissingFileName` errors and mutates no input or global state.
-pub fn decodeUploadedFileName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
-    const Response = struct {
-        file: ?ResponseFile = null,
-
-        const ResponseFile = struct {
-            name: ?[]const u8 = null,
-        };
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const file = parsed.value.file orelse return error.MissingFileName;
-    const name = file.name orelse return error.MissingFileName;
-    if (!isCanonicalFileName(name)) return error.MissingFileName;
-    return gpa.dupe(u8, name);
-}
-
 fn fileUploadStartUrl() []const u8 {
     return "https://generativelanguage.googleapis.com/upload/v1beta/files";
 }

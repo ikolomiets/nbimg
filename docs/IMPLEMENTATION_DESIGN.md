@@ -256,9 +256,8 @@ The internal module interfaces are intentionally narrow:
   validation. Prompt-fragment and File URI builders remain internal.
 - `files` exports only the four typed context-taking upload/get/list/delete
   operations shared by the public client and CLI. Raw transport helpers remain
-  private. Shared typed File and remote-error decoding lives in
-  `files_domain.zig`; shared uploaded-name decoding is available only through
-  the internal `api` module.
+  private. Shared typed File decoding and the Batch-visible remote-error JSON
+  decoder live in `files_domain.zig`.
 - `batch` exports the deliberate Batch input types, validation function, stable
   limits, typed remote-management types and context-taking typed cores,
   newline-free JSONL entry serialization, canonical Batch-name validation, and

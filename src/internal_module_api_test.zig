@@ -161,12 +161,10 @@ comptime {
         "FileValidationError",
         "InputImageMime",
         "RemoteError",
-        "WireRemoteError",
         "decodeFile",
         "decodeFileListPage",
         "decodeUploadedFile",
         "max_file_upload_bytes",
-        "ownedRemoteError",
         "remoteErrorFromJsonValue",
     });
     assertExactPublicDecls("operation", operation, &.{
@@ -237,7 +235,6 @@ comptime {
         "canonical_file_name_prefix",
         "decodeCountTokensResponse",
         "decodeGeneratedFiles",
-        "decodeUploadedFileName",
         "deleteJson",
         "getBytesBounded",
         "getJson",
@@ -460,7 +457,6 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("file_domain.InputImageMime", file_domain.InputImageMime, &.{});
-    assertExactPublicDecls("file_domain.WireRemoteError", file_domain.WireRemoteError, &.{});
 
     assertExactPublicDecls("operation.ApiFailure", operation.ApiFailure, &.{
         "deinit",
