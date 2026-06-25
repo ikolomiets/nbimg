@@ -361,13 +361,14 @@ zig-out/bin/nbimg gen \
   --prompt "Create a cinematic product hero image"
 ```
 
-Batch mode builds the normal `GenerateContentRequest`, sends that exact request
-to Gemini's non-generation `countTokens` endpoint, and appends it only after an
-HTTP success and a valid token-count response. Each line has the Batch API
-shape `{"key":"...","request":{...}}`. The file is created when absent and
-locked while existing keys are checked and the new line is appended.
-Each batch file is limited to 100 entries. An attempted 101st append is rejected
-before the locked file is modified.
+Batch mode shares the typed generation/edit Batch preparation core. It builds
+the normal `GenerateContentRequest`, sends that exact retained request to
+Gemini's non-generation `countTokens` endpoint, and appends it only after a
+completed 2xx response and a valid token-count response. Each line has the
+Batch API shape `{"key":"...","request":{...}}`. File creation, locking,
+automatic-key derivation, duplicate-key inspection, separator insertion, and
+rollback remain CLI-owned. Each batch file is limited to 100 entries. An
+attempted 101st append is rejected before the locked file is modified.
 
 `--batch-key KEY` is optional and requires `--batch-file`. Explicit keys must
 be unique within that JSONL file. If omitted, `nbimg` derives a deterministic

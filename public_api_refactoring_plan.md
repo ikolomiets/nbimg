@@ -743,7 +743,7 @@ outcome used by later typed operations.
 
    **Depends on:** Item 11.
 
-   **Status:** Next.
+   **Status:** Completed.
 
    **Result:** `gen --batch-file` and `edit --batch-file` share the validated
    preparation core with public methods while preserving atomic automatic-key
@@ -794,6 +794,17 @@ outcome used by later typed operations.
    all offline validation and the ReleaseSafe build; run request-validity live
    targets only if request construction or countTokens envelopes change.
 
+   **Validation completed:** Routed `gen --batch-file` and `edit --batch-file`
+   through typed phase-one preparation, added CLI coverage for retained request
+   bytes, token-count receipts, complete API-failure diagnostics, malformed
+   countTokens exit code 3, parser traffic flags in Batch mode, and partial
+   write rollback. Existing append tests continue to cover automatic offset
+   keys, explicit and duplicate keys, separators, max limits, malformed input
+   preservation, and no-rebuild JSONL wrapping. Exact allowlist tests ran as
+   part of `zig build test`. Ran `zig fmt --check build.zig src`,
+   `zig build test`, `zig build`, and `git diff --check`. Live targets were not
+   run because request construction and countTokens envelopes were not changed.
+
    **Complete when:** Public and CLI Batch preparation share one typed
    validation core, and automatic keys are still derived atomically from the
    locked file offset.
@@ -802,11 +813,11 @@ outcome used by later typed operations.
 
    **Depends on:** Items 9 and 11.
 
-   **Status:** Planned.
+   **Status:** Next.
 
-   This item is independent of Item 12 and may be developed in parallel, but
-   Item 12 remains the recommended next increment because it is smaller and
-   closes the current CLI preparation duplication.
+   With Item 12 complete, this is the recommended next increment. Keep this
+   item scoped to remote Batch job management; typed output download and CLI
+   Batch command migration remain Items 14 and 15.
 
    **Result:** Consumers can upload file-backed Batch input and create, get,
    list, or cancel remote Batch jobs without raw HTTP responses or public
@@ -816,8 +827,9 @@ outcome used by later typed operations.
 
    - Limit the supported remote Batch API to the existing file-backed
      management workflows: upload input, create, get, list, and cancel. Inline
-     creation, Batch update/delete, and output download are out of scope for
-     this item. Item 14 adds file-backed output download separately.
+     creation, embeddings Batch creation, Batch update/delete, and output
+     download are out of scope for this item. Item 14 adds file-backed output
+     download separately.
    - Add `Client.uploadBatchInput`, `Client.createBatch`, `Client.getBatch`,
      `Client.cancelBatch`, and `Client.listBatchesPage`.
    - Keep the public Batch request/result/state/stats types in `src/batch.zig`
@@ -835,12 +847,15 @@ outcome used by later typed operations.
      before allocation or network IO.
    - Keep listing explicit and narrow: `listBatchesPage` accepts only an
      optional continuation token and uses the existing fixed page size.
-     Although the current REST reference documents standard `filter` and
-     `returnPartialSuccess` query fields, exposing them is outside this
-     refactoring's existing-workflow scope.
+     Although the current REST reference documents standard `pageSize`,
+     `filter`, and `returnPartialSuccess` query fields, exposing them is
+     outside this refactoring's existing-workflow scope.
    - `Client.uploadBatchInput` structurally validates the complete JSONL input
      with `validateBatchInput` before upload. It does not parse or semantically
-     revalidate nested request objects.
+     revalidate nested request objects. Retain the current
+     `max_batch_input_bytes` implementation limit even though the remote guide
+     advertises a larger Batch input-file maximum; raising that bound needs a
+     separate streaming and resource-budget design.
    - Generalize the internal typed Files upload core just enough to accept the
      Batch JSONL content type and return `OperationOutcome(File)`. Reuse the
      Item 9 upload response decoder and ownership; do not duplicate File wire
@@ -1208,7 +1223,7 @@ baseline. Recheck these sources when starting each item because File metadata,
 Batch operation wrappers, and state spellings are remote versioned behavior.
 Schema drift may require additive unknown variants or decoder compatibility,
 but must not silently expand the file-backed workflow scope selected above.
-The June 22, 2026 review confirmed that the REST reference documents the
+The June 25, 2026 review confirmed that the REST reference documents the
 long-running `Operation` wrapper, `BATCH_STATE_*`, all four `BatchStats`
 counters, signed priority, timestamps, and file-backed
 `inputConfig.fileName`/`output.responsesFile`. Current REST guide examples

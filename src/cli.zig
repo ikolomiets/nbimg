@@ -7,7 +7,6 @@ const api_batch = @import("batch.zig");
 const client = @import("client.zig");
 const api_edit = @import("edit.zig");
 const api_files = @import("files.zig");
-const api_gen = @import("gen.zig");
 const build_options = @import("build_options");
 
 const exit_success = 0;
@@ -389,28 +388,19 @@ fn runGen(
     command: *const GenCommand,
 ) u8 {
     if (command.batch_file) |batch_file| {
-        const generate_request_json = api_gen.buildGenerateRequest(
-            gpa,
-            command.prompt,
-            command.output_options,
-            command.grounding_options,
-            command.thinking_options,
-            command.safety_options,
-            command.generation_options,
-            command.request_options,
+        var outcome = client.prepareGenerationBatchRequestWithContext(
+            context,
+            generationRequestFromCommand(command),
         ) catch |err| {
-            std.debug.print("error: failed to build generation request: {s}\n", .{@errorName(err)});
+            printApiRequestError(context, err);
             return exit_failure;
         };
-        defer gpa.free(generate_request_json);
-
         return runBatchRequest(
             init,
             gpa,
-            context,
             batch_file,
             command.batch_key,
-            generate_request_json,
+            &outcome,
         );
     }
 
@@ -598,33 +588,20 @@ fn runEdit(
     command: *const EditCommand,
 ) u8 {
     if (command.batch_file) |batch_file| {
-        const edit_request = api_edit.EditRequest{
-            .prompt = command.prompt,
-            .output_options = command.output_options,
-            .grounding_options = command.grounding_options,
-            .thinking_options = command.thinking_options,
-            .safety_options = command.safety_options,
-            .generation_options = command.generation_options,
-            .request_options = command.request_options,
-            .base = command.base,
-            .base_role = command.base_role,
-            .references = command.referenceSlice(),
-            .preserves = command.preserveSlice(),
-            .do_nots = command.doNotSlice(),
-        };
-        const generate_request_json = api_edit.buildGenerateRequest(gpa, edit_request) catch |err| {
-            std.debug.print("error: failed to build edit request: {s}\n", .{@errorName(err)});
+        var references: [client.max_edit_references]client.Reference = undefined;
+        var outcome = client.prepareEditBatchRequestWithContext(
+            context,
+            editRequestFromCommand(command, &references),
+        ) catch |err| {
+            printApiRequestError(context, err);
             return exit_failure;
         };
-        defer gpa.free(generate_request_json);
-
         return runBatchRequest(
             init,
             gpa,
-            context,
             batch_file,
             command.batch_key,
-            generate_request_json,
+            &outcome,
         );
     }
 
@@ -718,92 +695,27 @@ const BatchAppendResult = struct {
 fn runBatchRequest(
     init: std.process.Init,
     gpa: std.mem.Allocator,
-    context: *const api.RequestContext,
     batch_file: []const u8,
     batch_key: ?[]const u8,
-    generate_request_json: []const u8,
+    outcome: *client.OperationOutcome(client.PreparedBatchRequest),
 ) u8 {
-    const count_tokens_json = api.buildCountTokensRequestFromGenerateContentJson(
-        gpa,
-        .nano2,
-        generate_request_json,
-    ) catch |err| {
-        std.debug.print("error: failed to build countTokens request: {s}\n", .{@errorName(err)});
-        return exit_failure;
-    };
-    defer gpa.free(count_tokens_json);
-
-    var response = api.postCountTokensJson(
-        context,
-        .nano2,
-        count_tokens_json,
-    ) catch |err| {
-        printApiRequestError(context, err);
-        return exit_failure;
-    };
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: countTokens validation failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
-    }
-
-    const token_result = api.decodeCountTokensResponse(gpa, response.body) catch |err| {
-        std.debug.print(
-            "error: failed to parse countTokens response: {s}\n{s}\n",
-            .{ @errorName(err), response.body },
-        );
-        return exit_response_parse;
-    };
-
-    var append_result = appendBatchRequest(
-        gpa,
-        init.io,
-        batch_file,
-        batch_key,
-        generate_request_json,
-    ) catch |err| {
-        switch (err) {
-            error.DuplicateBatchKey => std.debug.print(
-                "error: batch key already exists in {s}\n",
-                .{batch_file},
-            ),
-            error.InvalidBatchFile => std.debug.print(
-                "error: existing batch file is not valid Batch API JSONL: {s}\n",
-                .{batch_file},
-            ),
-            error.BatchEntryTooLong => std.debug.print(
-                "error: batch entry exceeds {d} bytes: {s}\n",
-                .{ api_batch.max_entry_bytes, batch_file },
-            ),
-            error.BatchTooManyEntries => std.debug.print(
-                "error: batch file already contains the maximum of {d} entries: {s}\n",
-                .{ api_batch.max_entries, batch_file },
-            ),
-            error.BatchInputTooLong => std.debug.print(
-                "error: batch file exceeds {d} bytes: {s}\n",
-                .{ api_batch.max_input_bytes, batch_file },
-            ),
-            else => std.debug.print(
-                "error: failed to append batch request to {s}: {s}\n",
-                .{ batch_file, @errorName(err) },
-            ),
-        }
-        return exit_failure;
-    };
-    defer append_result.deinit(gpa);
-
-    const receipt = batchReceiptJson(
-        gpa,
-        append_result.key,
-        token_result.total_tokens,
-        batch_file,
-    ) catch |err| {
-        std.debug.print("error: failed to format batch receipt: {s}\n", .{@errorName(err)});
-        return exit_failure;
+    const receipt = switch (outcome.*) {
+        .success => |*prepared| receipt: {
+            defer prepared.deinit(gpa);
+            break :receipt appendPreparedBatchRequestReceipt(
+                gpa,
+                init.io,
+                batch_file,
+                batch_key,
+                prepared.*,
+            ) catch |err| {
+                printBatchAppendError(batch_file, err);
+                return exit_failure;
+            };
+        },
+        .api_failure, .response_decoding_failure => {
+            return reportBatchRequestFailure(gpa, outcome);
+        },
     };
     defer gpa.free(receipt);
 
@@ -813,6 +725,106 @@ fn runBatchRequest(
     };
 
     return exit_success;
+}
+
+fn appendPreparedBatchRequestReceipt(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    batch_file: []const u8,
+    batch_key: ?[]const u8,
+    prepared: client.PreparedBatchRequest,
+) ![]u8 {
+    var append_result = try appendBatchRequest(
+        gpa,
+        io,
+        batch_file,
+        batch_key,
+        prepared.generate_request_json,
+    );
+    defer append_result.deinit(gpa);
+
+    return batchReceiptJson(
+        gpa,
+        append_result.key,
+        prepared.total_tokens,
+        batch_file,
+    );
+}
+
+fn reportBatchRequestFailure(
+    gpa: std.mem.Allocator,
+    outcome: *client.OperationOutcome(client.PreparedBatchRequest),
+) u8 {
+    const exit_code = batchRequestOutcomeExitCode(outcome);
+    const diagnostic = batchRequestFailureDiagnostic(gpa, outcome) catch |err| {
+        std.debug.print("error: failed to format countTokens diagnostic: {s}\n", .{@errorName(err)});
+        return exit_failure;
+    };
+    defer gpa.free(diagnostic);
+
+    std.debug.print("{s}", .{diagnostic});
+    return exit_code;
+}
+
+fn batchRequestFailureDiagnostic(
+    gpa: std.mem.Allocator,
+    outcome: *client.OperationOutcome(client.PreparedBatchRequest),
+) ![]u8 {
+    return switch (outcome.*) {
+        .success => unreachable,
+        .api_failure => |*failure| api_failure: {
+            defer failure.deinit(gpa);
+            break :api_failure std.fmt.allocPrint(
+                gpa,
+                "error: countTokens validation failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+        },
+        .response_decoding_failure => |err| std.fmt.allocPrint(
+            gpa,
+            "error: failed to parse countTokens response: {s}\n",
+            .{@errorName(err)},
+        ),
+    };
+}
+
+fn batchRequestOutcomeExitCode(
+    outcome: *const client.OperationOutcome(client.PreparedBatchRequest),
+) u8 {
+    return switch (outcome.*) {
+        .success => exit_success,
+        .api_failure => exit_failure,
+        .response_decoding_failure => exit_response_parse,
+    };
+}
+
+fn printBatchAppendError(batch_file: []const u8, err: anyerror) void {
+    switch (err) {
+        error.DuplicateBatchKey => std.debug.print(
+            "error: batch key already exists in {s}\n",
+            .{batch_file},
+        ),
+        error.InvalidBatchFile => std.debug.print(
+            "error: existing batch file is not valid Batch API JSONL: {s}\n",
+            .{batch_file},
+        ),
+        error.BatchEntryTooLong => std.debug.print(
+            "error: batch entry exceeds {d} bytes: {s}\n",
+            .{ api_batch.max_entry_bytes, batch_file },
+        ),
+        error.BatchTooManyEntries => std.debug.print(
+            "error: batch file already contains the maximum of {d} entries: {s}\n",
+            .{ api_batch.max_entries, batch_file },
+        ),
+        error.BatchInputTooLong => std.debug.print(
+            "error: batch file exceeds {d} bytes: {s}\n",
+            .{ api_batch.max_input_bytes, batch_file },
+        ),
+        else => std.debug.print(
+            "error: failed to append batch request to {s}: {s}\n",
+            .{ batch_file, @errorName(err) },
+        ),
+    }
 }
 
 fn appendBatchRequest(
@@ -882,10 +894,19 @@ fn appendBatchRequest(
     ) catch return error.FileTooBig;
     if (final_length > api_batch.max_input_bytes) return error.BatchInputTooLong;
 
-    errdefer file.setLength(io, original_length) catch {};
-    try file.writePositionalAll(io, append_output.written(), original_length);
+    try writeBatchAppendTransaction(io, file, original_length, append_output.written());
 
     return .{ .key = effective_key };
+}
+
+fn writeBatchAppendTransaction(
+    io: std.Io,
+    file: anytype,
+    original_length: u64,
+    bytes: []const u8,
+) !void {
+    errdefer file.setLength(io, original_length) catch {};
+    try file.writePositionalAll(io, bytes, original_length);
 }
 
 const BatchFileInspection = struct {
@@ -1007,6 +1028,84 @@ test "batchReceiptJson serializes scripting receipt" {
     try std.testing.expectEqualStrings(
         "{\"key\":\"hero-\\\"001\",\"totalTokens\":123,\"batchFile\":\"batch/requests.jsonl\"}",
         receipt,
+    );
+}
+
+test "prepared batch request success appends retained bytes and formats receipt" {
+    const gpa = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const batch_path = try std.fmt.allocPrint(
+        gpa,
+        ".zig-cache/tmp/{s}/requests.jsonl",
+        .{tmp_dir.sub_path},
+    );
+    defer gpa.free(batch_path);
+
+    const request_json = "{\"contents\":[{\"parts\":[{\"text\":\"typed core\"}]}],\"futureField\":true}";
+    var prepared = client.PreparedBatchRequest{
+        .generate_request_json = try gpa.dupe(u8, request_json),
+        .total_tokens = 987,
+    };
+    defer prepared.deinit(gpa);
+
+    const receipt = try appendPreparedBatchRequestReceipt(
+        gpa,
+        std.testing.io,
+        batch_path,
+        "typed-001",
+        prepared,
+    );
+    defer gpa.free(receipt);
+
+    const expected_receipt = try std.fmt.allocPrint(
+        gpa,
+        "{{\"key\":\"typed-001\",\"totalTokens\":987,\"batchFile\":\"{s}\"}}",
+        .{batch_path},
+    );
+    defer gpa.free(expected_receipt);
+    try std.testing.expectEqualStrings(expected_receipt, receipt);
+
+    const written = try tmp_dir.dir.readFileAlloc(
+        std.testing.io,
+        "requests.jsonl",
+        gpa,
+        .limited(1024),
+    );
+    defer gpa.free(written);
+    try std.testing.expectEqualStrings(
+        "{\"key\":\"typed-001\",\"request\":{\"contents\":[{\"parts\":[{\"text\":\"typed core\"}]}],\"futureField\":true}}\n",
+        written,
+    );
+}
+
+test "batch request outcome maps countTokens failures to diagnostics and exits" {
+    const gpa = std.testing.allocator;
+
+    var api_failure = client.OperationOutcome(client.PreparedBatchRequest){
+        .api_failure = .{
+            .status = .service_unavailable,
+            .body = try gpa.dupe(u8, "{\"error\":{\"message\":\"complete body\"}}"),
+        },
+    };
+    try std.testing.expectEqual(exit_failure, batchRequestOutcomeExitCode(&api_failure));
+    const api_diagnostic = try batchRequestFailureDiagnostic(gpa, &api_failure);
+    defer gpa.free(api_diagnostic);
+    try std.testing.expectEqualStrings(
+        "error: countTokens validation failed with HTTP 503\n{\"error\":{\"message\":\"complete body\"}}\n",
+        api_diagnostic,
+    );
+
+    var decoding_failure = client.OperationOutcome(client.PreparedBatchRequest){
+        .response_decoding_failure = error.MissingTotalTokens,
+    };
+    try std.testing.expectEqual(exit_response_parse, batchRequestOutcomeExitCode(&decoding_failure));
+    const decoding_diagnostic = try batchRequestFailureDiagnostic(gpa, &decoding_failure);
+    defer gpa.free(decoding_diagnostic);
+    try std.testing.expectEqualStrings(
+        "error: failed to parse countTokens response: MissingTotalTokens\n",
+        decoding_diagnostic,
     );
 }
 
@@ -1277,6 +1376,61 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
     );
     defer gpa.free(after_rejection);
     try std.testing.expectEqualSlices(u8, full_file, after_rejection);
+}
+
+test "writeBatchAppendTransaction truncates after partial write failure" {
+    const FailingWriteFile = struct {
+        buffer: [64]u8 = undefined,
+        length_value: u64 = 0,
+        fail_after: usize,
+        truncate_count: usize = 0,
+
+        fn init(existing: []const u8, fail_after: usize) @This() {
+            var file = @This(){ .fail_after = fail_after };
+            @memcpy(file.buffer[0..existing.len], existing);
+            file.length_value = existing.len;
+            return file;
+        }
+
+        fn setLength(file: *@This(), io: std.Io, new_length: u64) !void {
+            _ = io;
+            file.length_value = new_length;
+            file.truncate_count += 1;
+        }
+
+        fn writePositionalAll(
+            file: *@This(),
+            io: std.Io,
+            bytes: []const u8,
+            offset: u64,
+        ) !void {
+            _ = io;
+            const start: usize = @intCast(offset);
+            const write_count = @min(file.fail_after, bytes.len);
+            @memcpy(file.buffer[start..][0..write_count], bytes[0..write_count]);
+            const written_end = offset + @as(u64, @intCast(write_count));
+            file.length_value = @max(file.length_value, written_end);
+            return error.SimulatedWriteFailure;
+        }
+
+        fn contents(file: *const @This()) []const u8 {
+            return file.buffer[0..@intCast(file.length_value)];
+        }
+    };
+
+    var file = FailingWriteFile.init("existing", 3);
+    try std.testing.expectError(
+        error.SimulatedWriteFailure,
+        writeBatchAppendTransaction(
+            std.testing.io,
+            &file,
+            file.length_value,
+            "\nnew-entry\n",
+        ),
+    );
+
+    try std.testing.expectEqualStrings("existing", file.contents());
+    try std.testing.expectEqual(@as(usize, 1), file.truncate_count);
 }
 
 fn warnIfPriorityDowngraded(
@@ -4405,6 +4559,23 @@ test "parseArgs accepts gen batch file options" {
     try std.testing.expectEqualStrings("hero-001", explicit.batch_key.?);
 }
 
+test "parseArgs retains gen batch request traffic flags" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "gen",
+        "--print-request",
+        "--batch-file",
+        "requests.jsonl",
+        "--prompt",
+        "My fair lady",
+    });
+    const gen = expectGenCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("requests.jsonl", gen.batch_file.?);
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
+}
+
 test "parseArgs rejects invalid gen batch file options" {
     try std.testing.expectError(error.MissingBatchFile, parseArgs(&.{
         "nbimg",
@@ -5007,6 +5178,25 @@ test "parseArgs accepts edit batch file options" {
 
     try std.testing.expectEqualStrings("requests.jsonl", edit.batch_file.?);
     try std.testing.expectEqualStrings("edit-001", edit.batch_key.?);
+}
+
+test "parseArgs retains edit batch request traffic flags" {
+    const parsed_command = try parseArgs(&.{
+        "nbimg",
+        "edit",
+        "--print-request",
+        "--batch-file",
+        "requests.jsonl",
+        "--ref",
+        "scene=files/tjtj5me9i96c,image/jpeg",
+        "--prompt",
+        "change visual style to Broadway musical",
+    });
+    const edit = expectEditCommand(parsed_command);
+
+    try std.testing.expectEqualStrings("requests.jsonl", edit.batch_file.?);
+    try std.testing.expect(parsed_command.traffic_log_options.print_request);
+    try std.testing.expect(parsed_command.traffic_log_options.print_response);
 }
 
 test "parseArgs rejects edit batch file with output directory" {

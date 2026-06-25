@@ -162,7 +162,8 @@ operation builds one exact generate-content request, retains it through
 countTokens validation, and inserts those bytes unchanged into the Batch
 record. Internal `prepareGenerationBatchRequestWithContext` and
 `prepareEditBatchRequestWithContext` seams expose the retained phase-one
-request only to the future CLI migration. Public callers use quiet contexts.
+request to CLI Batch mode so filesystem locking, automatic-key derivation, and
+append rollback remain CLI-owned. Public callers use quiet contexts.
 
 `validateBatchInput` performs allocation-free structural validation and returns
 `BatchInputSummary`. It counts LF/CRLF-aware non-empty records and enforces
@@ -1219,12 +1220,13 @@ endpoint:
 https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:countTokens
 ```
 
-The typed client builds command-specific `generateContent` JSON through the
-internal generation or edit builder, then uses the shared `api` countTokens
-envelope helper to add the model field that Google requires inside nested
-`generateContentRequest` payloads. CLI Batch preparation builds the same raw
-request through its internal command builder and applies the same envelope
-helper:
+The typed generation/edit core builds command-specific `generateContent` JSON
+through the internal generation or edit builder, then uses the shared `api`
+countTokens envelope helper to add the model field that Google requires inside
+nested `generateContentRequest` payloads. CLI Batch preparation calls the
+context-taking phase-one core, so request logging, timeout behavior,
+countTokens envelopes, 2xx success classification, non-2xx body ownership, and
+malformed-response handling are shared with public typed preparation:
 
 ```json
 {
@@ -1251,17 +1253,16 @@ helper:
 
 Typed Batch preparation retains the exact generated request allocation through
 countTokens classification. A successful phase-one result owns those bytes and
-the total token count; phase two wraps the same bytes in the public JSONL
-record, enforces the complete serialized-record limit, and then releases the
-phase-one allocation. Non-2xx bodies transfer into `ApiFailure`, while malformed
-2xx responses become Zig errors at the public method boundary.
+the total token count. Public explicit-key preparation wraps the same bytes in
+the public JSONL record, enforces the complete serialized-record limit, and
+then releases the phase-one allocation. CLI `--batch-file` mode passes the same
+retained bytes into its locked append path, where automatic keys, duplicate-key
+inspection, JSONL wrapping, separator insertion, file-size and entry-count
+limits, append, and rollback stay in the CLI. Non-2xx bodies transfer into
+`ApiFailure`, while malformed 2xx responses become Zig errors at the public
+method boundary and exit code 3 in CLI Batch mode.
 
-The live request-validity tests call these helpers directly. User-facing
-`--batch-file` mode instead builds the command's `GenerateContentRequest` once,
-wraps those exact bytes with
-`api.buildCountTokensRequestFromGenerateContentJson`, posts the validation
-request, and appends the original bytes with `batch.buildEntryJson` only
-after a successful, decodable response.
+The live request-validity tests call these helpers directly.
 
 A successful `countTokens` response means Google accepted the request for
 tokenization; it does not prove that later Batch API execution will produce an
