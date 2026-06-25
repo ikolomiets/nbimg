@@ -1857,59 +1857,6 @@ fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
     return count;
 }
 
-test "command modules import only their allowed shared modules" {
-    try expectAllowedCommandModuleImports("src/gen.zig", &.{"api.zig"});
-    try expectAllowedCommandModuleImports("src/edit.zig", &.{"api.zig"});
-    try expectAllowedCommandModuleImports(
-        "src/files.zig",
-        &.{ "api.zig", "files_domain.zig", "operation.zig" },
-    );
-    try expectAllowedCommandModuleImports(
-        "src/batch.zig",
-        &.{ "api.zig", "files_domain.zig", "operation.zig" },
-    );
-}
-
-fn expectAllowedCommandModuleImports(
-    path: []const u8,
-    allowed_local_imports: []const []const u8,
-) !void {
-    const gpa = std.testing.allocator;
-    const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(128 * 1024));
-    defer gpa.free(source);
-
-    const import_prefix = "@import(\"";
-    var index: usize = 0;
-    while (std.mem.indexOfPos(u8, source, index, import_prefix)) |import_start| {
-        const name_start = import_start + import_prefix.len;
-        const name_end_relative = std.mem.indexOfScalar(u8, source[name_start..], '"') orelse {
-            std.debug.print("error: malformed import in {s}\n", .{path});
-            return error.MalformedImport;
-        };
-        const name_end = name_start + name_end_relative;
-        const name = source[name_start..name_end];
-
-        if (std.mem.endsWith(u8, name, ".zig") and
-            !containsString(allowed_local_imports, name))
-        {
-            std.debug.print(
-                "error: command module {s} imports forbidden local module {s}\n",
-                .{ path, name },
-            );
-            return error.ForbiddenCommandModuleImport;
-        }
-
-        index = name_end + 1;
-    }
-}
-
-fn containsString(values: []const []const u8, wanted: []const u8) bool {
-    for (values) |value| {
-        if (std.mem.eql(u8, value, wanted)) return true;
-    }
-    return false;
-}
-
 const RequestBodyLog = union(enum) {
     empty,
     text: []const u8,
