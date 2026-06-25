@@ -8,6 +8,9 @@ comptime {
     if (@hasDecl(nbimg, "HttpResponse")) {
         @compileError("public package exposes raw HttpResponse");
     }
+    if (@hasDecl(nbimg, "api")) {
+        @compileError("public package exposes the legacy shared API module");
+    }
     if (@hasDecl(nbimg, "client")) {
         @compileError("public package exposes the client implementation module");
     }

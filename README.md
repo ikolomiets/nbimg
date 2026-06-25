@@ -340,11 +340,10 @@ Immediate CLI generation, edit, Files, and Batch commands use typed operation
 cores for completed requests. CLI Batch stdout is serialized from typed
 `BatchJob` values rather than preserving unknown raw API response fields.
 
-The existing `api` package path remains available temporarily for
-compatibility. It is an implementation-oriented legacy API rather than the
-supported typed client contract. The undocumented `nbimg.batch`, `nbimg.gen`,
-`nbimg.edit`, and `nbimg.files` paths have been removed. CLI Batch-file
-preparation still uses internal generation and edit request builders.
+The package API is the root-level typed client contract. The undocumented
+`nbimg.api`, `nbimg.batch`, `nbimg.gen`, `nbimg.edit`, and `nbimg.files` paths
+are not supported package paths. CLI Batch-file preparation still uses
+internal generation and edit request builders.
 
 ## Usage
 

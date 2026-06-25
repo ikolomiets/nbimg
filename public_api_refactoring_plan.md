@@ -1209,7 +1209,7 @@ outcome used by later typed operations.
 
    **Depends on:** Items 8, 10, 12, and 15.
 
-   **Status:** Next.
+   **Status:** Completed.
 
    **Result:** `api.zig` remains an internal shared implementation module and
    is no longer part of the package contract.
@@ -1230,30 +1230,54 @@ outcome used by later typed operations.
    **Compatibility:** This is the final removal of the undocumented
    `nbimg.api` path.
 
+   **Completed changes:**
+
+   - Removed `api` from `src/root.zig` and the package allowlist.
+   - Added an external-consumer guard proving the named `nbimg` module no
+     longer exposes `nbimg.api`.
+   - Updated README and implementation-design text so `api.zig` is described
+     as an internal shared implementation module, not a package contract.
+
    **Validation:** Run package and internal allowlist tests, compile-only
    consumer tests, all offline validation commands, and the ReleaseSafe build.
 
    **Complete when:** No package-visible declaration exposes transport or
    Gemini wire implementation details.
 
+   **Validation completed:** Ran `zig fmt --check build.zig src`,
+   `zig build test -Dtest-filter="package API matches exact allowlist"`,
+   `zig build test -Dtest-filter="internal module APIs match exact allowlists"`,
+   `zig build test -Dtest-filter="dependency consumer compiles against typed generation edit Files and Batch preparation APIs"`,
+   `zig build test`, `zig build`, and `git diff --check`. No live API target
+   was required because no Gemini request or response behavior changed.
+
 17. **Audit public invariants and reduce internal seams**
 
    **Depends on:** Item 16.
 
-   **Status:** Planned.
+   **Status:** Next.
 
    **Result:** Confirm the incrementally hardened public API and minimize
    remaining internal visibility.
 
    **Proposed changes:**
 
+   - Inventory every root-level package declaration against the supported
+     categories now exposed by `src/root.zig`: `Client`, client options,
+     request/result values, response outcomes, validation error sets, MIME and
+     option enums, ownership methods, documented limits, and deliberate pure
+     validators. If a root declaration no longer has a current consumer use
+     case, either remove it with matching allowlist/consumer-test updates or
+     record why Item 18 should document it.
    - Audit that every public operation returns validation errors rather than
      asserting on caller input. Do not defer known public invariant work from
      Items 4 through 15 to this item.
    - Retain assertions only for internal programmer errors and paired
-     trust-boundary invariants.
+     trust-boundary invariants. Lower-level command builders may assert
+     preconditions only when every public and CLI caller validates them first.
    - Verify that public domain enums expose no wire serialization or CLI
-     parsing methods.
+     parsing methods. Keep necessary CLI parsing and wire serialization helpers
+     on internal modules only.
    - Verify that CLI name parsing, environment lookup, output naming, safe-key
      encoding, typed Batch JSON presentation, and filesystem effects are
      CLI-owned or internal-only.
@@ -1264,15 +1288,26 @@ outcome used by later typed operations.
      only when their typed result contracts genuinely differ.
    - Make cross-file declarations private where completed migrations removed
      their callers, and tighten internal module allowlists.
+     Same-file tests and possible future use are not sufficient reasons to
+     keep an internal declaration `pub`.
+   - Do not redesign the flat module graph or remove an internal seam that has
+     a current cross-file caller merely because the seam is implementation
+     detail; Item 18 will handle final contract documentation.
 
    **Compatibility:** Supported client APIs remain stable. Only internal seams
    and accidental visibility change.
 
-   **Validation:** Run negative tests for every public validation rule and
-   exact allowlist tests for every public container method and internal seam.
+   **Validation:** Run focused negative tests for public generation, edit,
+   Files, and Batch validation paths; exact package and internal allowlist
+   tests; the external-consumer test; `zig fmt --check build.zig src`;
+   `zig build test`; `zig build`; and `git diff --check`. No live API target
+   is required unless the audit changes Gemini request fields, response
+   decoding, transport behavior, or other externally observable API behavior.
 
-   **Complete when:** Every package declaration has a documented consumer use
-   case and every remaining internal `pub` has a current cross-file caller.
+   **Complete when:** Public callers reject invalid caller input with typed
+   validation errors before lower-level assertions, root-visible containers
+   expose no CLI or wire helpers, and every remaining internal `pub` has a
+   current cross-file caller or a written justification for Item 18.
 
 18. **Finalize and document the stable package contract**
 
@@ -1288,10 +1323,11 @@ outcome used by later typed operations.
    - Treat this as a documentation and contract-synchronization increment. Do
      not add, remove, or redesign supported operations after the invariant
      audit unless that audit finds a correctness defect.
-   - Reduce the package allowlist to the exact `Client`, configuration,
+   - Reconfirm the package allowlist as the exact `Client`, configuration,
      outcome, request/result, input/output MIME, enum, ownership, and
      documented-limit declarations, plus deliberate pure validation functions
-     such as `validateBatchInput`.
+     such as `validateBatchInput`. Do not remove additional declarations here
+     unless Item 17 explicitly identified them as unsupported.
    - Consolidate the incremental README examples added with Items 4 through 15
      into complete client initialization, ownership, API-failure handling,
      generation, edit, Files, Batch preparation, and remote Batch workflows.
@@ -1305,7 +1341,8 @@ outcome used by later typed operations.
 
    **Compatibility:** This item declares the replacement contract stable; it
    does not introduce the first usable documentation or remove additional
-   supported declarations.
+   supported declarations except for any unsupported declarations explicitly
+   carried forward from Item 17.
 
    **Validation:** Run formatting, all offline tests, the ReleaseSafe build,
    documentation path checks, package and internal allowlists, and

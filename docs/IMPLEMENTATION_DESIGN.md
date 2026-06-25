@@ -53,9 +53,8 @@ The code is split into eleven source files:
 
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
-- `src/root.zig` exposes the supported typed client declarations and retains
-  the legacy package module as `api`.
-  CLI implementation declarations are not package-accessible.
+- `src/root.zig` exposes only the supported typed client declarations.
+  CLI and shared implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
   returned validation errors, public Files methods, public Batch preparation
@@ -106,11 +105,11 @@ var outcome = try client.generate(.{
 
 `Client.init` borrows the API key and stores the allocator, `std.Io`, and a
 positive timeout without allocating. The default timeout is 180 seconds.
-Client operations create a quiet internal `api.RequestContext`; traffic
-logging remains CLI-only.
+Client operations create a quiet internal request context; traffic logging
+remains CLI-only.
 
 `GenerationRequest` borrows the prompt, optional request strings, and stop
-sequences. Public enums and option structs are separate from the legacy
+sequences. Public enums and option structs are separate from the internal
 `api.zig` wire types and expose no CLI spelling parsers, JSON serializers, or
 wire helper methods. Validation returns `GenerationValidationError` before
 allocation or network IO. It covers prompt/request bounds, generation numeric
@@ -236,8 +235,8 @@ the callback. The client retains at most the bounded raw JSONL body plus one
 decoded record and its generated images. `BatchOutputSummary` reports total,
 successful, and failed records after the visitor completes.
 
-Network operations use an internal `nbimg.api.RequestContext`; pure builders
-and decoders remain independent of transport configuration.
+Network operations use an internal `api.RequestContext`; pure builders and
+decoders remain independent of transport configuration.
 
 The internal module interfaces are intentionally narrow:
 
@@ -258,7 +257,8 @@ The internal module interfaces are intentionally narrow:
 - `files` exports only the four typed context-taking upload/get/list/delete
   operations shared by the public client and CLI. Raw transport helpers remain
   private. Shared typed File and remote-error decoding lives in
-  `files_domain.zig`; shared uploaded-name decoding is exposed only by `api`.
+  `files_domain.zig`; shared uploaded-name decoding is available only through
+  the internal `api` module.
 - `batch` exports the deliberate Batch input types, validation function, stable
   limits, typed remote-management types and context-taking typed cores,
   newline-free JSONL entry serialization, canonical Batch-name validation, and
@@ -267,7 +267,7 @@ The internal module interfaces are intentionally narrow:
   pretty-printers, safe output-key encoding, wire constants, submit
   serialization, byte-count validation, URL construction, and typed response
   parsers remain internal.
-- `api` exports only shared cross-module models, bounds, validators,
+- `api` exports only internal shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
   transport, resumable upload support, response decoders, request context and
   traffic logging options, and ownership methods.

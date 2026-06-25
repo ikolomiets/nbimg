@@ -96,7 +96,6 @@ comptime {
         "ThinkingLevel",
         "ThinkingOptions",
         "UploadedImage",
-        "api",
         "max_batch_entries",
         "max_batch_entry_bytes",
         "max_batch_input_bytes",
