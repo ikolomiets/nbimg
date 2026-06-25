@@ -985,10 +985,9 @@ outcome used by later typed operations.
 
    **Depends on:** Item 13.
 
-   **Status:** Next.
+   **Status:** Completed.
 
-   With Item 13 complete, this is the recommended next increment. Keep this
-   item scoped to the public typed output download workflow; CLI Batch download
+   Item 14 added the public typed output download workflow. CLI Batch download
    migration remains Item 15.
 
    **Result:** Consumers can download and process file-backed Batch output
@@ -1060,11 +1059,43 @@ outcome used by later typed operations.
    without raw response bodies, public wire decoders, internal line iterators,
    or eager decoded-result aggregates.
 
+   **Completed changes:**
+
+   - Added `Client.downloadBatchOutputRecords`, `BatchOutputRecordView`,
+     `BatchOutputVisitor`, and `BatchOutputSummary`, and re-exported them
+     through the package root.
+   - Added `downloadBatchOutputRecordsWithContext` as the exact-allowlisted
+     internal seam for future CLI reuse.
+   - Kept bounded download transport, CRLF-aware JSONL iteration, and
+     compact typed record decoding in `src/batch.zig`; kept public visitor
+     orchestration and generated-result conversion in `src/client.zig`.
+   - Added strict typed Batch output decoding that preserves duplicate keys,
+     supports remote-error records, treats malformed output as a
+     successful-response decoding failure, and releases each decoded record
+     after its visitor callback.
+   - Extended exact package/internal allowlists, external-consumer coverage,
+     README examples, and implementation-design notes for typed Batch output
+     download.
+
+   **Validation completed:** Covered canonical output-name validation before
+   allocation/network IO, all 2xx and non-2xx download classifications, output
+   bounds, callback error propagation, typed success and remote-error records,
+   malformed JSONL/records/errors/images, duplicate-key preservation,
+   ownership cleanup, exact allowlists, and external-consumer compilation. Ran
+   `zig fmt --check build.zig src`, `zig build test`, `zig build`, and
+   `git diff --check`. The completed Batch output fixture allowed live output
+   download validation without creating a new billable job.
+
 15. **Migrate CLI Batch commands to typed operations**
 
    **Depends on:** Items 12, 13, and 14.
 
-   **Status:** Planned.
+   **Status:** Next.
+
+   With Items 12, 13, and 14 complete, this is the recommended next
+   implementation increment. Keep it scoped to CLI Batch command migration and
+   removal of the legacy package-level `batch` export; removing `api` remains
+   Item 16.
 
    **Result:** CLI Batch commands and the public client share typed operation
    cores, allowing the legacy package-level `batch` export and raw-response
@@ -1255,11 +1286,11 @@ outcome used by later typed operations.
 
 ## Schema Baseline for Remaining Remote APIs
 
-Remaining remote Items 14 and 15 use the current official
+Remaining remote Item 15 uses the current official
 [Files API](https://ai.google.dev/api/files),
 [Batch API reference](https://ai.google.dev/api/batch-api), and
 [Batch guide](https://ai.google.dev/gemini-api/docs/batch-api) as their schema
-baseline. Recheck these sources when starting each item because File metadata,
+baseline. Recheck these sources when starting the item because File metadata,
 Batch operation wrappers, and state spellings are remote versioned behavior.
 Schema drift may require additive unknown variants or decoder compatibility,
 but must not silently expand the file-backed workflow scope selected above.
@@ -1270,7 +1301,7 @@ counters, signed priority, timestamps, and file-backed
 place state under `metadata` and file output directly under
 `response.responsesFile`, while SDK guide examples still expose `JOB_STATE_*`
 and `dest.fileName`. Item 13 deliberately accepts all listed representations;
-Items 14 and 15 should preserve that compatibility. The REST reference states
+Item 15 should preserve that compatibility. The REST reference states
 that file-backed output records are written in input order, which Item 14
 preserves through visitor order. The guide currently advertises a 2 GB Batch
 input-file maximum; this refactoring deliberately retains the repository's
