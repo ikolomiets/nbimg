@@ -184,44 +184,22 @@ comptime {
         "BatchStats",
         "BatchValidationError",
         "DecodedBatchOutputRecord",
-        "DownloadInfo",
-        "ListPage",
         "OutputLineIterator",
-        "OutputRecord",
         "PreparedBatchEntry",
-        "SubmitRequest",
         "buildEntryJson",
-        "cancel",
         "cancelBatchWithContext",
         "createBatchWithContext",
-        "decodeBatchName",
         "decodeBatchOutputRecord",
-        "decodeDownloadInfo",
-        "decodeListPage",
-        "decodeOutputRecord",
         "downloadOutput",
+        "getBatchWithContext",
         "isCanonicalBatchName",
-        "listJson",
-        "listPage",
         "listBatchesPageWithContext",
         "max_batch_entries",
         "max_batch_entry_bytes",
         "max_batch_input_bytes",
         "max_batch_output_bytes",
-        "max_entries",
-        "max_entry_bytes",
-        "max_input_bytes",
-        "max_output_bytes",
-        "prettyJson",
-        "safeOutputKey",
-        "status",
-        "submit",
-        "getBatchWithContext",
         "uploadBatchInputWithContext",
-        "uploadInput",
         "validateBatchInput",
-        "validateInputJsonl",
-        "validateOutputJsonl",
     });
     assertExactPublicDecls("api", api, &.{
         "ApiKeyError",
@@ -498,7 +476,6 @@ comptime {
         &.{},
     );
 
-    assertExactPublicDecls("batch.SubmitRequest", batch.SubmitRequest, &.{});
     assertExactPublicDecls("batch.BatchCreateRequest", batch.BatchCreateRequest, &.{});
     assertExactPublicDecls("batch.BatchInputSummary", batch.BatchInputSummary, &.{});
     assertExactPublicDecls("batch.BatchInputUpload", batch.BatchInputUpload, &.{});
@@ -515,20 +492,11 @@ comptime {
     assertExactPublicDecls("batch.PreparedBatchEntry", batch.PreparedBatchEntry, &.{
         "deinit",
     });
-    assertExactPublicDecls("batch.DownloadInfo", batch.DownloadInfo, &.{
-        "deinit",
-    });
     assertExactPublicDecls("batch.DecodedBatchOutputRecord", batch.DecodedBatchOutputRecord, &.{
-        "deinit",
-    });
-    assertExactPublicDecls("batch.OutputRecord", batch.OutputRecord, &.{
         "deinit",
     });
     assertExactPublicDecls("batch.OutputLineIterator", batch.OutputLineIterator, &.{
         "next",
-    });
-    assertExactPublicDecls("batch.ListPage", batch.ListPage, &.{
-        "deinit",
     });
 }
 

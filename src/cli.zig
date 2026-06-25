@@ -8,6 +8,7 @@ const client = @import("client.zig");
 const api_edit = @import("edit.zig");
 const api_files = @import("files.zig");
 const build_options = @import("build_options");
+const operation = @import("operation.zig");
 
 const exit_success = 0;
 const exit_failure = 1;
@@ -810,15 +811,15 @@ fn printBatchAppendError(batch_file: []const u8, err: anyerror) void {
         ),
         error.BatchEntryTooLong => std.debug.print(
             "error: batch entry exceeds {d} bytes: {s}\n",
-            .{ api_batch.max_entry_bytes, batch_file },
+            .{ client.max_batch_entry_bytes, batch_file },
         ),
         error.BatchTooManyEntries => std.debug.print(
             "error: batch file already contains the maximum of {d} entries: {s}\n",
-            .{ api_batch.max_entries, batch_file },
+            .{ client.max_batch_entries, batch_file },
         ),
         error.BatchInputTooLong => std.debug.print(
             "error: batch file exceeds {d} bytes: {s}\n",
-            .{ api_batch.max_input_bytes, batch_file },
+            .{ client.max_batch_input_bytes, batch_file },
         ),
         else => std.debug.print(
             "error: failed to append batch request to {s}: {s}\n",
@@ -853,7 +854,7 @@ fn appendBatchRequest(
     defer file.close(io);
 
     const original_length = try file.length(io);
-    if (original_length > api_batch.max_input_bytes) return error.BatchInputTooLong;
+    if (original_length > client.max_batch_input_bytes) return error.BatchInputTooLong;
     var needs_separator = false;
     if (original_length > 0) {
         var last_byte: [1]u8 = undefined;
@@ -875,12 +876,12 @@ fn appendBatchRequest(
     errdefer gpa.free(effective_key);
 
     const inspection = try inspectBatchFile(gpa, io, file, effective_key);
-    if (inspection.entry_count >= api_batch.max_entries) return error.BatchTooManyEntries;
+    if (inspection.entry_count >= client.max_batch_entries) return error.BatchTooManyEntries;
     if (inspection.key_exists) return error.DuplicateBatchKey;
 
     const entry_json = try api_batch.buildEntryJson(gpa, effective_key, generate_request_json);
     defer gpa.free(entry_json);
-    if (entry_json.len > api_batch.max_entry_bytes) return error.BatchEntryTooLong;
+    if (entry_json.len > client.max_batch_entry_bytes) return error.BatchEntryTooLong;
 
     var append_output: std.Io.Writer.Allocating = .init(gpa);
     defer append_output.deinit();
@@ -892,7 +893,7 @@ fn appendBatchRequest(
         original_length,
         append_output.written().len,
     ) catch return error.FileTooBig;
-    if (final_length > api_batch.max_input_bytes) return error.BatchInputTooLong;
+    if (final_length > client.max_batch_input_bytes) return error.BatchInputTooLong;
 
     try writeBatchAppendTransaction(io, file, original_length, append_output.written());
 
@@ -934,7 +935,7 @@ fn inspectBatchFile(
         _ = file_reader.interface.streamDelimiterLimit(
             &line_output.writer,
             '\n',
-            .limited(api_batch.max_entry_bytes + 1),
+            .limited(client.max_batch_entry_bytes + 1),
         ) catch |err| switch (err) {
             error.StreamTooLong => return error.BatchEntryTooLong,
             error.WriteFailed => return error.OutOfMemory,
@@ -946,7 +947,7 @@ fn inspectBatchFile(
         if (has_delimiter) assert(buffered[0] == '\n');
 
         const line = line_output.written();
-        if (line.len > api_batch.max_entry_bytes) return error.BatchEntryTooLong;
+        if (line.len > client.max_batch_entry_bytes) return error.BatchEntryTooLong;
         if (line.len == 0) {
             if (!has_delimiter) {
                 return .{
@@ -1321,7 +1322,7 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const existing = try testBatchInputJsonl(gpa, api_batch.max_entries - 1);
+    const existing = try testBatchInputJsonl(gpa, client.max_batch_entries - 1);
     defer gpa.free(existing);
     try tmp_dir.dir.writeFile(std.testing.io, .{
         .sub_path = "requests.jsonl",
@@ -1335,7 +1336,7 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
     );
     defer gpa.free(batch_path);
 
-    const accepted_key = try std.fmt.allocPrint(gpa, "key-{d}", .{api_batch.max_entries - 1});
+    const accepted_key = try std.fmt.allocPrint(gpa, "key-{d}", .{client.max_batch_entries - 1});
     defer gpa.free(accepted_key);
     var maximum = try appendBatchRequest(
         gpa,
@@ -1350,12 +1351,12 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
         std.testing.io,
         "requests.jsonl",
         gpa,
-        .limited(api_batch.max_input_bytes),
+        .limited(client.max_batch_input_bytes),
     );
     defer gpa.free(full_file);
-    try api_batch.validateInputJsonl(full_file);
+    _ = try client.validateBatchInput(full_file);
 
-    const rejected_key = try std.fmt.allocPrint(gpa, "key-{d}", .{api_batch.max_entries});
+    const rejected_key = try std.fmt.allocPrint(gpa, "key-{d}", .{client.max_batch_entries});
     defer gpa.free(rejected_key);
     try std.testing.expectError(
         error.BatchTooManyEntries,
@@ -1372,7 +1373,7 @@ test "appendBatchRequest accepts maximum entry and rejects one over maximum with
         std.testing.io,
         "requests.jsonl",
         gpa,
-        .limited(api_batch.max_input_bytes),
+        .limited(client.max_batch_input_bytes),
     );
     defer gpa.free(after_rejection);
     try std.testing.expectEqualSlices(u8, full_file, after_rejection);
@@ -1749,12 +1750,12 @@ fn runBatchSubmit(
         init.io,
         command.path,
         gpa,
-        .limited(api_batch.max_input_bytes + 1),
+        .limited(client.max_batch_input_bytes + 1),
     ) catch |err| {
         if (err == error.StreamTooLong) {
             std.debug.print(
                 "error: batch input file exceeds {d} bytes\n",
-                .{api_batch.max_input_bytes},
+                .{client.max_batch_input_bytes},
             );
             return exit_usage;
         }
@@ -1763,74 +1764,57 @@ fn runBatchSubmit(
     };
     defer gpa.free(bytes);
 
-    api_batch.validateInputJsonl(bytes) catch |err| {
-        switch (err) {
-            error.EmptyBatchInput => std.debug.print("error: batch input file must not be empty\n", .{}),
-            error.BatchInputTooLong => std.debug.print(
-                "error: batch input file exceeds {d} bytes\n",
-                .{api_batch.max_input_bytes},
-            ),
-            error.BatchEntryTooLong => std.debug.print(
-                "error: batch input entry exceeds {d} bytes\n",
-                .{api_batch.max_entry_bytes},
-            ),
-            error.BatchTooManyEntries => std.debug.print(
-                "error: batch input contains more than {d} entries\n",
-                .{api_batch.max_entries},
-            ),
-            error.InvalidBatchInput => std.debug.print("error: batch input contains an empty JSONL entry\n", .{}),
-        }
+    _ = client.validateBatchInput(bytes) catch |err| {
+        printBatchInputValidationError(err);
         return exit_usage;
     };
 
-    var upload_response = api_batch.uploadInput(
+    var upload_outcome = api_batch.uploadBatchInputWithContext(
         context,
-        bytes,
-        command.display_name,
+        .{
+            .bytes = bytes,
+            .display_name = command.display_name,
+        },
     ) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer upload_response.deinit(gpa);
-
-    if (upload_response.status != .ok) {
-        std.debug.print(
-            "error: batch input upload failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(upload_response.status), upload_response.body },
-        );
-        return exit_failure;
-    }
-
-    const uploaded_file_name = api.decodeUploadedFileName(gpa, upload_response.body) catch |err| {
-        std.debug.print("error: failed to parse batch input upload response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
+    var uploaded_file = switch (upload_outcome) {
+        .success => |file| file,
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                client.File,
+                gpa,
+                &upload_outcome,
+                .input_upload,
+                null,
+            );
+        },
     };
-    defer gpa.free(uploaded_file_name);
+    defer uploaded_file.deinit(gpa);
 
-    var submit_response = api_batch.submit(context, .{
-        .file_name = uploaded_file_name,
+    var create_outcome = api_batch.createBatchWithContext(context, .{
+        .file_name = uploaded_file.name,
         .display_name = command.display_name,
     }) catch |err| {
-        printAmbiguousBatchCreationFailure(uploaded_file_name, err);
+        printAmbiguousBatchCreationFailure(uploaded_file.name, err);
         return exit_failure;
     };
-    defer submit_response.deinit(gpa);
-
-    if (submit_response.status != .ok) {
-        std.debug.print(
-            "error: batch creation failed with HTTP {d}; uploaded input remains as {s}\n{s}\n",
-            .{ @intFromEnum(submit_response.status), uploaded_file_name, submit_response.body },
-        );
-        return exit_failure;
-    }
-
-    const batch_name = api_batch.decodeBatchName(gpa, submit_response.body) catch |err| {
-        std.debug.print("error: failed to parse batch creation response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
+    var created_job = switch (create_outcome) {
+        .success => |job| job,
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                client.BatchJob,
+                gpa,
+                &create_outcome,
+                .create,
+                uploaded_file.name,
+            );
+        },
     };
-    defer gpa.free(batch_name);
+    defer created_job.deinit(gpa);
 
-    return printPrettyBatchResponse(init.io, gpa, submit_response.body);
+    return printBatchJob(init.io, gpa, created_job);
 }
 
 fn runBatchStatus(
@@ -1839,21 +1823,25 @@ fn runBatchStatus(
     context: *const api.RequestContext,
     command: BatchStatusCommand,
 ) u8 {
-    var response = api_batch.status(context, command.name) catch |err| {
+    var outcome = api_batch.getBatchWithContext(context, command.name) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
+    var job = switch (outcome) {
+        .success => |value| value,
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                client.BatchJob,
+                gpa,
+                &outcome,
+                .status,
+                null,
+            );
+        },
+    };
+    defer job.deinit(gpa);
 
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: batch status failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
-    }
-
-    return printPrettyBatchResponse(init.io, gpa, response.body);
+    return printBatchJob(init.io, gpa, job);
 }
 
 fn runBatchCancel(
@@ -1862,18 +1850,21 @@ fn runBatchCancel(
     context: *const api.RequestContext,
     command: BatchCancelCommand,
 ) u8 {
-    var response = api_batch.cancel(context, command.name) catch |err| {
+    var outcome = api_batch.cancelBatchWithContext(context, command.name) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer response.deinit(gpa);
-
-    if (response.status != .ok) {
-        std.debug.print(
-            "error: batch cancel failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(response.status), response.body },
-        );
-        return exit_failure;
+    switch (outcome) {
+        .success => {},
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                void,
+                gpa,
+                &outcome,
+                .cancel,
+                null,
+            );
+        },
     }
 
     writeStdoutLine(init.io, "OK") catch |err| {
@@ -1889,73 +1880,30 @@ fn runBatchDownload(
     context: *const api.RequestContext,
     command: BatchDownloadCommand,
 ) u8 {
-    var status_response = api_batch.status(context, command.name) catch |err| {
+    var status_outcome = api_batch.getBatchWithContext(context, command.name) catch |err| {
         printApiRequestError(context, err);
         return exit_failure;
     };
-    defer status_response.deinit(gpa);
+    var job = switch (status_outcome) {
+        .success => |value| value,
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                client.BatchJob,
+                gpa,
+                &status_outcome,
+                .download_status,
+                null,
+            );
+        },
+    };
+    defer job.deinit(gpa);
 
-    if (status_response.status != .ok) {
-        std.debug.print(
-            "error: batch status failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(status_response.status), status_response.body },
-        );
-        return exit_failure;
-    }
-
-    var download_info = api_batch.decodeDownloadInfo(gpa, status_response.body) catch |err| {
-        switch (err) {
-            error.BatchNotSucceeded => std.debug.print(
-                "error: batch download requires a succeeded batch\n",
-                .{},
-            ),
-            error.BatchTooManyEntries => std.debug.print(
-                "error: batch reports more than the supported maximum of {d} requests\n",
-                .{api_batch.max_entries},
-            ),
-            error.MissingBatchOutputFile => std.debug.print(
-                "error: succeeded batch status does not contain a downloadable output file\n",
-                .{},
-            ),
-            else => std.debug.print(
-                "error: failed to parse batch download status: {s}\n",
-                .{@errorName(err)},
-            ),
-        }
+    const output_file_name = batchDownloadOutputFileName(job) catch |err| {
+        printBatchDownloadStatusError(err);
         return exit_response_parse;
     };
-    defer download_info.deinit(gpa);
 
-    var download_response = api_batch.downloadOutput(
-        context,
-        download_info.file_name,
-    ) catch |err| {
-        if (err == error.ResponseTooLong) {
-            std.debug.print(
-                "error: batch output exceeds {d} bytes\n",
-                .{api_batch.max_output_bytes},
-            );
-        } else {
-            printApiRequestError(context, err);
-        }
-        return exit_failure;
-    };
-    defer download_response.deinit(gpa);
-
-    if (download_response.status != .ok) {
-        std.debug.print(
-            "error: batch output download failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(download_response.status), download_response.body },
-        );
-        return exit_failure;
-    }
-
-    var summary = processBatchOutput(
-        gpa,
-        init.io,
-        command.out_dir,
-        download_response.body,
-    ) catch |err| {
+    const output_dir = openOutputDir(init.io, command.out_dir) catch |err| {
         const diagnostic = batchOutputProcessingDiagnostic(
             gpa,
             command.out_dir,
@@ -1969,6 +1917,50 @@ fn runBatchDownload(
         };
         defer gpa.free(diagnostic);
         std.debug.print("{s}", .{diagnostic});
+        return exit_failure;
+    };
+    defer output_dir.close(init.io);
+
+    var processor = BatchOutputProcessor.init(
+        gpa,
+        init.io,
+        output_dir.dir,
+    );
+    defer processor.deinit(gpa);
+
+    var download_outcome = client.downloadBatchOutputRecordsWithContext(
+        context,
+        output_file_name,
+        .{
+            .context = &processor,
+            .visit = visitBatchOutputRecord,
+        },
+    ) catch |err| {
+        if (err == error.ResponseTooLong) {
+            std.debug.print(
+                "error: batch output exceeds {d} bytes\n",
+                .{client.max_batch_output_bytes},
+            );
+        } else {
+            printApiRequestError(context, err);
+        }
+        return exit_failure;
+    };
+    switch (download_outcome) {
+        .success => {},
+        .api_failure, .response_decoding_failure => {
+            return reportBatchOutcomeFailure(
+                client.BatchOutputSummary,
+                gpa,
+                &download_outcome,
+                .output_download,
+                null,
+            );
+        },
+    }
+
+    var summary = processor.toSummary(gpa) catch |err| {
+        std.debug.print("error: failed to collect batch output summary: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
     defer summary.deinit(gpa);
@@ -2014,7 +2006,7 @@ fn batchOutputProcessingDiagnostic(
         error.BatchTooManyEntries => std.fmt.allocPrint(
             gpa,
             "error: downloaded batch output contains more than {d} records\n",
-            .{api_batch.max_entries},
+            .{client.max_batch_entries},
         ),
         error.FileNotFound => gpa.dupe(
             u8,
@@ -2066,40 +2058,39 @@ fn runBatchList(
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
-    var operations: std.ArrayList([]u8) = .empty;
+    var jobs: std.ArrayList(client.BatchJob) = .empty;
     defer {
-        for (operations.items) |operation| gpa.free(operation);
-        operations.deinit(gpa);
+        for (jobs.items) |*job| job.deinit(gpa);
+        jobs.deinit(gpa);
     }
 
     while (true) {
-        var response = api_batch.listPage(context, page_token) catch |err| {
+        var outcome = api_batch.listBatchesPageWithContext(context, page_token) catch |err| {
             printApiRequestError(context, err);
             return exit_failure;
         };
-        defer response.deinit(gpa);
 
         if (page_token) |token| {
             gpa.free(token);
             page_token = null;
         }
 
-        if (response.status != .ok) {
-            std.debug.print(
-                "error: batch list failed with HTTP {d}\n{s}\n",
-                .{ @intFromEnum(response.status), response.body },
-            );
-            return exit_failure;
-        }
-
-        var page = api_batch.decodeListPage(gpa, response.body) catch |err| {
-            std.debug.print("error: failed to parse Batch API list response: {s}\n", .{@errorName(err)});
-            return exit_response_parse;
+        var page = switch (outcome) {
+            .success => |value| value,
+            .api_failure, .response_decoding_failure => {
+                return reportBatchOutcomeFailure(
+                    client.BatchListPage,
+                    gpa,
+                    &outcome,
+                    .list,
+                    null,
+                );
+            },
         };
         defer page.deinit(gpa);
 
-        takeBatchPageOperations(gpa, &operations, &page) catch |err| {
-            std.debug.print("error: failed to collect Batch operations: {s}\n", .{@errorName(err)});
+        takeBatchPageJobs(gpa, &jobs, &page) catch |err| {
+            std.debug.print("error: failed to collect Batch jobs: {s}\n", .{@errorName(err)});
             return exit_failure;
         };
 
@@ -2107,28 +2098,220 @@ fn runBatchList(
         page.next_page_token = null;
     }
 
-    const output = api_batch.listJson(gpa, operations.items) catch |err| {
-        std.debug.print("error: failed to format Batch operation list: {s}\n", .{@errorName(err)});
+    const output = batchListJson(gpa, jobs.items) catch |err| {
+        std.debug.print("error: failed to format Batch job list: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
     defer gpa.free(output);
 
     writeStdoutLine(init.io, output) catch |err| {
-        std.debug.print("error: failed to print Batch operation list: {s}\n", .{@errorName(err)});
+        std.debug.print("error: failed to print Batch job list: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
     return exit_success;
 }
 
-fn printPrettyBatchResponse(io: std.Io, gpa: std.mem.Allocator, response_body: []const u8) u8 {
-    const output = api_batch.prettyJson(gpa, response_body) catch |err| {
-        std.debug.print("error: failed to parse Batch API response: {s}\n", .{@errorName(err)});
-        return exit_response_parse;
+const BatchOutcomeKind = enum {
+    input_upload,
+    create,
+    status,
+    download_status,
+    cancel,
+    list,
+    output_download,
+};
+
+fn printBatchInputValidationError(err: client.BatchValidationError) void {
+    switch (err) {
+        error.EmptyBatchInput => std.debug.print("error: batch input file must not be empty\n", .{}),
+        error.BatchInputTooLong => std.debug.print(
+            "error: batch input file exceeds {d} bytes\n",
+            .{client.max_batch_input_bytes},
+        ),
+        error.BatchEntryTooLong => std.debug.print(
+            "error: batch input entry exceeds {d} bytes\n",
+            .{client.max_batch_entry_bytes},
+        ),
+        error.BatchTooManyEntries => std.debug.print(
+            "error: batch input contains more than {d} entries\n",
+            .{client.max_batch_entries},
+        ),
+        error.InvalidBatchInput => std.debug.print("error: batch input contains an empty JSONL entry\n", .{}),
+        else => std.debug.print("error: invalid batch input: {s}\n", .{@errorName(err)}),
+    }
+}
+
+fn reportBatchOutcomeFailure(
+    comptime T: type,
+    gpa: std.mem.Allocator,
+    outcome: *operation.OperationOutcome(T),
+    kind: BatchOutcomeKind,
+    uploaded_file_name: ?[]const u8,
+) u8 {
+    const exit_code = batchOutcomeExitCode(T, outcome);
+    switch (outcome.*) {
+        .success => unreachable,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            printBatchApiFailure(kind, failure.*, uploaded_file_name);
+        },
+        .response_decoding_failure => |err| {
+            printBatchResponseDecodingFailure(gpa, kind, err, uploaded_file_name);
+        },
+    }
+    return exit_code;
+}
+
+fn batchOutcomeExitCode(
+    comptime T: type,
+    outcome: *const operation.OperationOutcome(T),
+) u8 {
+    return switch (outcome.*) {
+        .success => exit_success,
+        .api_failure => exit_failure,
+        .response_decoding_failure => exit_response_parse,
+    };
+}
+
+fn printBatchApiFailure(
+    kind: BatchOutcomeKind,
+    failure: operation.ApiFailure,
+    uploaded_file_name: ?[]const u8,
+) void {
+    switch (kind) {
+        .input_upload => std.debug.print(
+            "error: batch input upload failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(failure.status), failure.body },
+        ),
+        .create => std.debug.print(
+            "error: batch creation failed with HTTP {d}; uploaded input remains as {s}\n{s}\n",
+            .{ @intFromEnum(failure.status), uploaded_file_name.?, failure.body },
+        ),
+        .status, .download_status => std.debug.print(
+            "error: batch status failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(failure.status), failure.body },
+        ),
+        .cancel => std.debug.print(
+            "error: batch cancel failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(failure.status), failure.body },
+        ),
+        .list => std.debug.print(
+            "error: batch list failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(failure.status), failure.body },
+        ),
+        .output_download => std.debug.print(
+            "error: batch output download failed with HTTP {d}\n{s}\n",
+            .{ @intFromEnum(failure.status), failure.body },
+        ),
+    }
+}
+
+fn printBatchResponseDecodingFailure(
+    gpa: std.mem.Allocator,
+    kind: BatchOutcomeKind,
+    err: anyerror,
+    uploaded_file_name: ?[]const u8,
+) void {
+    switch (kind) {
+        .input_upload => std.debug.print(
+            "error: failed to parse batch input upload response: {s}\n",
+            .{@errorName(err)},
+        ),
+        .create => printAmbiguousBatchCreationDecodingFailure(uploaded_file_name.?, err),
+        .status => std.debug.print(
+            "error: failed to parse batch status response: {s}\n",
+            .{@errorName(err)},
+        ),
+        .download_status => std.debug.print(
+            "error: failed to parse batch download status: {s}\n",
+            .{@errorName(err)},
+        ),
+        .cancel => std.debug.print(
+            "error: failed to parse batch cancel response: {s}\n",
+            .{@errorName(err)},
+        ),
+        .list => std.debug.print(
+            "error: failed to parse Batch API list response: {s}\n",
+            .{@errorName(err)},
+        ),
+        .output_download => {
+            const diagnostic = batchOutputDecodingFailureDiagnostic(gpa, err) catch |format_err| {
+                std.debug.print(
+                    "error: failed to format batch output error: {s}\n",
+                    .{@errorName(format_err)},
+                );
+                return;
+            };
+            defer gpa.free(diagnostic);
+            std.debug.print("{s}", .{diagnostic});
+        },
+    }
+}
+
+fn batchDownloadOutputFileName(job: client.BatchJob) ![]const u8 {
+    if (!isBatchSucceeded(job.state)) return error.BatchNotSucceeded;
+    if (job.stats.request_count) |request_count| {
+        if (request_count > client.max_batch_entries) return error.BatchTooManyEntries;
+    }
+    return job.output_file_name orelse error.MissingBatchOutputFile;
+}
+
+fn isBatchSucceeded(state: client.BatchState) bool {
+    return switch (state) {
+        .succeeded => true,
+        else => false,
+    };
+}
+
+fn printBatchDownloadStatusError(err: anyerror) void {
+    switch (err) {
+        error.BatchNotSucceeded => std.debug.print(
+            "error: batch download requires a succeeded batch\n",
+            .{},
+        ),
+        error.BatchTooManyEntries => std.debug.print(
+            "error: batch reports more than the supported maximum of {d} requests\n",
+            .{client.max_batch_entries},
+        ),
+        error.MissingBatchOutputFile => std.debug.print(
+            "error: succeeded batch status does not contain a downloadable output file\n",
+            .{},
+        ),
+        else => std.debug.print(
+            "error: failed to parse batch download status: {s}\n",
+            .{@errorName(err)},
+        ),
+    }
+}
+
+fn batchOutputDecodingFailureDiagnostic(
+    gpa: std.mem.Allocator,
+    err: anyerror,
+) ![]u8 {
+    return switch (err) {
+        error.EmptyBatchOutput => gpa.dupe(u8, "error: downloaded batch output is empty\n"),
+        error.BatchTooManyEntries => std.fmt.allocPrint(
+            gpa,
+            "error: downloaded batch output contains more than {d} records\n",
+            .{client.max_batch_entries},
+        ),
+        else => std.fmt.allocPrint(
+            gpa,
+            "error: failed to parse downloaded batch output: {s}\n",
+            .{@errorName(err)},
+        ),
+    };
+}
+
+fn printBatchJob(io: std.Io, gpa: std.mem.Allocator, job: client.BatchJob) u8 {
+    const output = batchJobJson(gpa, job) catch |err| {
+        std.debug.print("error: failed to format Batch job: {s}\n", .{@errorName(err)});
+        return exit_failure;
     };
     defer gpa.free(output);
 
     writeStdoutLine(io, output) catch |err| {
-        std.debug.print("error: failed to print Batch API response: {s}\n", .{@errorName(err)});
+        std.debug.print("error: failed to print Batch job: {s}\n", .{@errorName(err)});
         return exit_failure;
     };
     return exit_success;
@@ -2139,6 +2322,19 @@ fn printAmbiguousBatchCreationFailure(uploaded_file_name: []const u8, err: anyer
 
     std.debug.print(
         "error: batch creation transport failed after uploading {s}: {s}\n",
+        .{ uploaded_file_name, @errorName(err) },
+    );
+    std.debug.print(
+        "warning: batch creation is non-idempotent; a job may have been created, so nbimg did not retry\n",
+        .{},
+    );
+}
+
+fn printAmbiguousBatchCreationDecodingFailure(uploaded_file_name: []const u8, err: anyerror) void {
+    assert(api.isCanonicalFileName(uploaded_file_name));
+
+    std.debug.print(
+        "error: failed to parse batch creation response after uploading {s}: {s}\n",
         .{ uploaded_file_name, @errorName(err) },
     );
     std.debug.print(
@@ -3369,145 +3565,194 @@ const BatchOutputSummary = struct {
     }
 };
 
-fn processBatchOutput(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    out_dir: ?[]const u8,
-    jsonl: []const u8,
-) !BatchOutputSummary {
-    _ = try api_batch.validateOutputJsonl(jsonl);
-
-    const output_dir = try openOutputDir(io, out_dir);
-    defer output_dir.close(io);
-
-    var seen_keys = std.BufSet.init(gpa);
-    defer seen_keys.deinit();
-
-    var written_files: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (written_files.items) |name| gpa.free(name);
-        written_files.deinit(gpa);
-    }
-    var existing_files: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (existing_files.items) |name| gpa.free(name);
-        existing_files.deinit(gpa);
-    }
-    var failed_keys: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (failed_keys.items) |key| gpa.free(key);
-        failed_keys.deinit(gpa);
-    }
-
-    var iterator = api_batch.OutputLineIterator{ .bytes = jsonl };
-    var line_number: usize = 0;
-    while (try iterator.next()) |line| {
-        line_number += 1;
-        try processBatchOutputLine(
-            gpa,
-            io,
-            output_dir.dir,
-            &seen_keys,
-            &written_files,
-            &existing_files,
-            &failed_keys,
-            line_number,
-            line,
-        );
-    }
-
-    const owned_written_files = try written_files.toOwnedSlice(gpa);
-    errdefer {
-        for (owned_written_files) |name| gpa.free(name);
-        gpa.free(owned_written_files);
-    }
-    const owned_existing_files = try existing_files.toOwnedSlice(gpa);
-    errdefer {
-        for (owned_existing_files) |name| gpa.free(name);
-        gpa.free(owned_existing_files);
-    }
-    const owned_failed_keys = try failed_keys.toOwnedSlice(gpa);
-    return .{
-        .written_files = owned_written_files,
-        .existing_files = owned_existing_files,
-        .failed_keys = owned_failed_keys,
-    };
-}
-
-fn processBatchOutputLine(
+const BatchOutputProcessor = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     output_dir: std.Io.Dir,
-    seen_keys: *std.BufSet,
-    written_files: *std.ArrayList([]u8),
-    existing_files: *std.ArrayList([]u8),
-    failed_keys: *std.ArrayList([]u8),
-    line_number: usize,
-    line: []const u8,
-) !void {
-    var record = api_batch.decodeOutputRecord(gpa, line) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            const line_key = try std.fmt.allocPrint(gpa, "line-{d}", .{line_number});
-            errdefer gpa.free(line_key);
-            try failed_keys.append(gpa, line_key);
-            return;
-        },
-    };
-    defer record.deinit(gpa);
+    seen_keys: std.BufSet,
+    written_files: std.ArrayList([]u8) = .empty,
+    existing_files: std.ArrayList([]u8) = .empty,
+    failed_keys: std.ArrayList([]u8) = .empty,
 
-    const safe_key = try api_batch.safeOutputKey(gpa, record.key);
-    defer gpa.free(safe_key);
-
-    if (seen_keys.contains(record.key)) {
-        try appendFailedKey(gpa, failed_keys, safe_key);
-        return;
-    }
-    try seen_keys.insert(record.key);
-
-    const response_json = record.response_json orelse {
-        try appendFailedKey(gpa, failed_keys, safe_key);
-        return;
-    };
-
-    var files = api.decodeGeneratedFiles(gpa, response_json) catch {
-        try appendFailedKey(gpa, failed_keys, safe_key);
-        return;
-    };
-    defer files.deinit(gpa);
-
-    try written_files.ensureUnusedCapacity(gpa, files.items.len);
-    try existing_files.ensureUnusedCapacity(gpa, files.items.len);
-    var record_failed = false;
-    for (files.items) |file| {
-        const name = try std.fmt.allocPrint(
-            gpa,
-            "{s}-{d}-{d}.{s}",
-            .{ safe_key, file.candidate_index, file.part_index, file.mime.extension() },
-        );
-        errdefer gpa.free(name);
-
-        output_dir.writeFile(io, .{
-            .sub_path = name,
-            .data = file.bytes,
-            .flags = .{ .exclusive = true },
-        }) catch |err| {
-            switch (err) {
-                error.PathAlreadyExists => {
-                    existing_files.appendAssumeCapacity(name);
-                    continue;
-                },
-                else => {
-                    gpa.free(name);
-                    record_failed = true;
-                    continue;
-                },
-            }
+    fn init(
+        gpa: std.mem.Allocator,
+        io: std.Io,
+        output_dir: std.Io.Dir,
+    ) BatchOutputProcessor {
+        return .{
+            .gpa = gpa,
+            .io = io,
+            .output_dir = output_dir,
+            .seen_keys = std.BufSet.init(gpa),
         };
-        written_files.appendAssumeCapacity(name);
     }
 
-    if (record_failed) try appendFailedKey(gpa, failed_keys, safe_key);
+    fn deinit(processor: *BatchOutputProcessor, gpa: std.mem.Allocator) void {
+        processor.seen_keys.deinit();
+        for (processor.written_files.items) |name| gpa.free(name);
+        for (processor.existing_files.items) |name| gpa.free(name);
+        for (processor.failed_keys.items) |key| gpa.free(key);
+        processor.written_files.deinit(gpa);
+        processor.existing_files.deinit(gpa);
+        processor.failed_keys.deinit(gpa);
+        processor.* = undefined;
+    }
+
+    fn process(
+        processor: *BatchOutputProcessor,
+        record: client.BatchOutputRecordView,
+    ) !void {
+        const safe_key = try safeBatchOutputKey(processor.gpa, record.key);
+        defer processor.gpa.free(safe_key);
+
+        if (processor.seen_keys.contains(record.key)) {
+            try appendFailedKey(processor.gpa, &processor.failed_keys, safe_key);
+            return;
+        }
+        try processor.seen_keys.insert(record.key);
+
+        switch (record.result) {
+            .success => |result| try processor.processGeneratedResult(safe_key, result.*),
+            .remote_error => {
+                try appendFailedKey(processor.gpa, &processor.failed_keys, safe_key);
+            },
+        }
+    }
+
+    fn processGeneratedResult(
+        processor: *BatchOutputProcessor,
+        safe_key: []const u8,
+        result: client.GenerationResult,
+    ) !void {
+        assert(result.images.len > 0);
+
+        try processor.written_files.ensureUnusedCapacity(processor.gpa, result.images.len);
+        try processor.existing_files.ensureUnusedCapacity(processor.gpa, result.images.len);
+        var record_failed = false;
+        for (result.images) |image| {
+            const name = try std.fmt.allocPrint(
+                processor.gpa,
+                "{s}-{d}-{d}.{s}",
+                .{
+                    safe_key,
+                    image.candidate_position,
+                    image.part_position,
+                    generationOutputExtension(image.mime),
+                },
+            );
+            errdefer processor.gpa.free(name);
+
+            processor.output_dir.writeFile(processor.io, .{
+                .sub_path = name,
+                .data = image.bytes,
+                .flags = .{ .exclusive = true },
+            }) catch |err| {
+                switch (err) {
+                    error.PathAlreadyExists => {
+                        processor.existing_files.appendAssumeCapacity(name);
+                        continue;
+                    },
+                    else => {
+                        processor.gpa.free(name);
+                        record_failed = true;
+                        continue;
+                    },
+                }
+            };
+            processor.written_files.appendAssumeCapacity(name);
+        }
+
+        if (record_failed) try appendFailedKey(processor.gpa, &processor.failed_keys, safe_key);
+    }
+
+    fn toSummary(
+        processor: *BatchOutputProcessor,
+        gpa: std.mem.Allocator,
+    ) !BatchOutputSummary {
+        const owned_written_files = try processor.written_files.toOwnedSlice(gpa);
+        errdefer {
+            for (owned_written_files) |name| gpa.free(name);
+            gpa.free(owned_written_files);
+        }
+        const owned_existing_files = try processor.existing_files.toOwnedSlice(gpa);
+        errdefer {
+            for (owned_existing_files) |name| gpa.free(name);
+            gpa.free(owned_existing_files);
+        }
+        const owned_failed_keys = try processor.failed_keys.toOwnedSlice(gpa);
+        return .{
+            .written_files = owned_written_files,
+            .existing_files = owned_existing_files,
+            .failed_keys = owned_failed_keys,
+        };
+    }
+};
+
+fn visitBatchOutputRecord(
+    raw_context: *anyopaque,
+    record: client.BatchOutputRecordView,
+) anyerror!void {
+    const processor: *BatchOutputProcessor = @ptrCast(@alignCast(raw_context));
+    try processor.process(record);
+}
+
+const max_safe_batch_key_bytes = 160;
+const truncated_safe_batch_key_prefix_bytes = 120;
+
+fn safeBatchOutputKey(gpa: std.mem.Allocator, key: []const u8) ![]u8 {
+    if (key.len == 0) return error.InvalidBatchOutput;
+
+    var encoded_length: usize = 0;
+    for (key) |byte| {
+        encoded_length = std.math.add(
+            usize,
+            encoded_length,
+            if (isSafeBatchOutputKeyByte(byte)) 1 else 3,
+        ) catch return error.BatchOutputKeyTooLong;
+    }
+
+    if (encoded_length <= max_safe_batch_key_bytes) {
+        var output = try std.Io.Writer.Allocating.initCapacity(gpa, encoded_length);
+        errdefer output.deinit();
+        for (key) |byte| try writeSafeBatchOutputKeyByte(&output.writer, byte);
+        return output.toOwnedSlice();
+    }
+
+    var output = try std.Io.Writer.Allocating.initCapacity(
+        gpa,
+        truncated_safe_batch_key_prefix_bytes + 1 + 32,
+    );
+    errdefer output.deinit();
+
+    for (key) |byte| {
+        const byte_length: usize = if (isSafeBatchOutputKeyByte(byte)) 1 else 3;
+        if (output.writer.end + byte_length > truncated_safe_batch_key_prefix_bytes) break;
+        try writeSafeBatchOutputKeyByte(&output.writer, byte);
+    }
+    assert(output.writer.end > 0);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(key, &digest, .{});
+    try output.writer.writeByte('-');
+    for (digest[0..16]) |byte| try output.writer.print("{x:0>2}", .{byte});
+
+    assert(output.writer.end <= max_safe_batch_key_bytes);
+    return output.toOwnedSlice();
+}
+
+fn isSafeBatchOutputKeyByte(byte: u8) bool {
+    return switch (byte) {
+        'a'...'z', 'A'...'Z', '0'...'9', '-', '_' => true,
+        else => false,
+    };
+}
+
+fn writeSafeBatchOutputKeyByte(writer: *std.Io.Writer, byte: u8) !void {
+    if (isSafeBatchOutputKeyByte(byte)) {
+        try writer.writeByte(byte);
+    } else {
+        try writer.print("~{x:0>2}", .{byte});
+    }
 }
 
 fn appendFailedKey(
@@ -3846,34 +4091,175 @@ test "API request timeout diagnostic includes configured whole seconds" {
     );
 }
 
-test "processBatchOutput writes valid images and reports malformed error and duplicate records" {
+test "batch job json formats typed fields and embedded remote error details" {
+    const gpa = std.testing.allocator;
+    const job = client.BatchJob{
+        .name = @constCast("batches/one"),
+        .model = @constCast("models/gemini-3.1-flash-image"),
+        .display_name = @constCast("requests.jsonl"),
+        .input_file_name = @constCast("files/input"),
+        .output_file_name = @constCast("files/output"),
+        .create_time = @constCast("2026-06-24T00:00:00Z"),
+        .end_time = @constCast("2026-06-24T00:01:00Z"),
+        .update_time = @constCast("2026-06-24T00:02:00Z"),
+        .state = .running,
+        .stats = .{
+            .request_count = 2,
+            .successful_request_count = 1,
+            .failed_request_count = 1,
+        },
+        .priority = -3,
+        .done = false,
+        .remote_error = .{
+            .code = 7,
+            .message = @constCast("quota exceeded"),
+            .details_json = @constCast("[{\"reason\":\"quota\"}]"),
+        },
+    };
+
+    const json = try batchJobJson(gpa, job);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"batches/one\",\n" ++
+            "  \"model\": \"models/gemini-3.1-flash-image\",\n" ++
+            "  \"displayName\": \"requests.jsonl\",\n" ++
+            "  \"inputConfig\": {\n" ++
+            "    \"fileName\": \"files/input\"\n" ++
+            "  },\n" ++
+            "  \"output\": {\n" ++
+            "    \"responsesFile\": \"files/output\"\n" ++
+            "  },\n" ++
+            "  \"createTime\": \"2026-06-24T00:00:00Z\",\n" ++
+            "  \"endTime\": \"2026-06-24T00:01:00Z\",\n" ++
+            "  \"updateTime\": \"2026-06-24T00:02:00Z\",\n" ++
+            "  \"state\": \"BATCH_STATE_RUNNING\",\n" ++
+            "  \"batchStats\": {\n" ++
+            "    \"requestCount\": \"2\",\n" ++
+            "    \"successfulRequestCount\": \"1\",\n" ++
+            "    \"failedRequestCount\": \"1\"\n" ++
+            "  },\n" ++
+            "  \"priority\": \"-3\",\n" ++
+            "  \"done\": false,\n" ++
+            "  \"error\": {\n" ++
+            "    \"code\": 7,\n" ++
+            "    \"message\": \"quota exceeded\",\n" ++
+            "    \"details\": [{\"reason\":\"quota\"}]\n" ++
+            "  }\n" ++
+            "}",
+        json,
+    );
+}
+
+test "batch job json omits absent and unspecified typed fields" {
+    const gpa = std.testing.allocator;
+    const job = client.BatchJob{
+        .name = @constCast("batches/minimal"),
+        .state = .unspecified,
+    };
+
+    const json = try batchJobJson(gpa, job);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"name\": \"batches/minimal\"\n" ++
+            "}",
+        json,
+    );
+}
+
+test "batch list json aggregates typed jobs under batches" {
+    const gpa = std.testing.allocator;
+    const jobs = [_]client.BatchJob{
+        .{
+            .name = @constCast("batches/one"),
+            .state = .succeeded,
+        },
+        .{
+            .name = @constCast("batches/two"),
+            .state = .{ .unknown = @constCast("BATCH_STATE_PAUSED") },
+        },
+    };
+
+    const json = try batchListJson(gpa, &jobs);
+    defer gpa.free(json);
+
+    try std.testing.expectEqualStrings(
+        "{\n" ++
+            "  \"batches\": [\n" ++
+            "    {\n" ++
+            "      \"name\": \"batches/one\",\n" ++
+            "      \"state\": \"BATCH_STATE_SUCCEEDED\"\n" ++
+            "    },\n" ++
+            "    {\n" ++
+            "      \"name\": \"batches/two\",\n" ++
+            "      \"state\": \"BATCH_STATE_PAUSED\"\n" ++
+            "    }\n" ++
+            "  ]\n" ++
+            "}",
+        json,
+    );
+}
+
+test "BatchOutputProcessor writes valid images and reports remote error and duplicate records" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
     defer gpa.free(out_dir);
+    const output_dir = try openOutputDir(std.testing.io, out_dir);
+    defer output_dir.close(std.testing.io);
 
-    const jsonl =
-        "not-json\n" ++
-        "{\"key\":\"../hero\",\"response\":{\"responseId\":\"ignored\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}}\n" ++
-        "{\"key\":\"failed\",\"error\":{\"code\":400,\"message\":\"bad request\"}}\n" ++
-        "{\"key\":\"../hero\",\"response\":{\"responseId\":\"ignored-two\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"BAUG\"}}]}}]}}\n";
+    var processor = BatchOutputProcessor.init(gpa, std.testing.io, output_dir.dir);
+    defer processor.deinit(gpa);
+    var image_bytes = [_]u8{ 1, 2, 3 };
+    var images = [_]client.GeneratedImage{
+        .{
+            .candidate_position = 0,
+            .part_position = 0,
+            .mime = .png,
+            .bytes = &image_bytes,
+        },
+    };
+    const result = client.GenerationResult{
+        .response_id = @constCast("ignored"),
+        .images = &images,
+        .reported_service_tier = null,
+    };
+    const remote_error = client.RemoteError{
+        .code = 400,
+        .message = @constCast("bad request"),
+    };
 
-    var summary = try processBatchOutput(gpa, std.testing.io, out_dir, jsonl);
+    try processor.process(.{
+        .key = "../hero",
+        .result = .{ .success = &result },
+    });
+    try processor.process(.{
+        .key = "failed",
+        .result = .{ .remote_error = &remote_error },
+    });
+    try processor.process(.{
+        .key = "../hero",
+        .result = .{ .success = &result },
+    });
+
+    var summary = try processor.toSummary(gpa);
     defer summary.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 1), summary.written_files.len);
-    try std.testing.expectEqualStrings("~2E~2E~2Fhero-0-0.png", summary.written_files[0]);
+    try std.testing.expectEqualStrings("~2e~2e~2fhero-0-0.png", summary.written_files[0]);
     try std.testing.expectEqual(@as(usize, 0), summary.existing_files.len);
-    try std.testing.expectEqual(@as(usize, 3), summary.failed_keys.len);
-    try std.testing.expectEqualStrings("line-1", summary.failed_keys[0]);
-    try std.testing.expectEqualStrings("failed", summary.failed_keys[1]);
-    try std.testing.expectEqualStrings("~2E~2E~2Fhero", summary.failed_keys[2]);
+    try std.testing.expectEqual(@as(usize, 2), summary.failed_keys.len);
+    try std.testing.expectEqualStrings("failed", summary.failed_keys[0]);
+    try std.testing.expectEqualStrings("~2e~2e~2fhero", summary.failed_keys[1]);
 
     const written = try tmp_dir.dir.readFileAlloc(
         std.testing.io,
-        "~2E~2E~2Fhero-0-0.png",
+        "~2e~2e~2fhero-0-0.png",
         gpa,
         .limited(1024),
     );
@@ -3881,7 +4267,7 @@ test "processBatchOutput writes valid images and reports malformed error and dup
     try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, written);
 }
 
-test "processBatchOutput reports and preserves existing output files" {
+test "BatchOutputProcessor reports and preserves existing output files" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -3892,10 +4278,32 @@ test "processBatchOutput reports and preserves existing output files" {
     });
     const out_dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path});
     defer gpa.free(out_dir);
+    const output_dir = try openOutputDir(std.testing.io, out_dir);
+    defer output_dir.close(std.testing.io);
 
-    const jsonl =
-        "{\"key\":\"hero\",\"response\":{\"responseId\":\"ignored\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}}\n";
-    var summary = try processBatchOutput(gpa, std.testing.io, out_dir, jsonl);
+    var processor = BatchOutputProcessor.init(gpa, std.testing.io, output_dir.dir);
+    defer processor.deinit(gpa);
+    var image_bytes = [_]u8{ 1, 2, 3 };
+    var images = [_]client.GeneratedImage{
+        .{
+            .candidate_position = 0,
+            .part_position = 0,
+            .mime = .png,
+            .bytes = &image_bytes,
+        },
+    };
+    const result = client.GenerationResult{
+        .response_id = @constCast("ignored"),
+        .images = &images,
+        .reported_service_tier = null,
+    };
+
+    try processor.process(.{
+        .key = "hero",
+        .result = .{ .success = &result },
+    });
+
+    var summary = try processor.toSummary(gpa);
     defer summary.deinit(gpa);
 
     try std.testing.expectEqual(@as(usize, 0), summary.written_files.len);
@@ -3913,7 +4321,7 @@ test "processBatchOutput reports and preserves existing output files" {
     try std.testing.expectEqualStrings("existing", written);
 }
 
-test "processBatchOutput rejects a missing output directory" {
+test "openOutputDir rejects a missing batch output directory" {
     const gpa = std.testing.allocator;
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
@@ -3925,11 +4333,9 @@ test "processBatchOutput rejects a missing output directory" {
     );
     defer gpa.free(out_dir);
 
-    const jsonl =
-        "{\"key\":\"hero\",\"response\":{\"responseId\":\"ignored\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}}\n";
     try std.testing.expectError(
         error.FileNotFound,
-        processBatchOutput(gpa, std.testing.io, out_dir, jsonl),
+        openOutputDir(std.testing.io, out_dir),
     );
 }
 
@@ -3977,17 +4383,147 @@ fn takePageFiles(
     gpa.free(page_files);
 }
 
-fn takeBatchPageOperations(
+fn takeBatchPageJobs(
     gpa: std.mem.Allocator,
-    operations: *std.ArrayList([]u8),
-    page: *api_batch.ListPage,
+    jobs: *std.ArrayList(client.BatchJob),
+    page: *client.BatchListPage,
 ) !void {
-    try operations.ensureUnusedCapacity(gpa, page.operations.len);
+    try jobs.ensureUnusedCapacity(gpa, page.jobs.len);
 
-    const page_operations = page.operations;
-    for (page_operations) |operation| operations.appendAssumeCapacity(operation);
-    page.operations = &.{};
-    gpa.free(page_operations);
+    const page_jobs = page.jobs;
+    for (page_jobs) |job| jobs.appendAssumeCapacity(job);
+    page.jobs = &.{};
+    gpa.free(page_jobs);
+}
+
+const BatchInputConfigJson = struct {
+    fileName: []const u8,
+};
+
+const BatchOutputConfigJson = struct {
+    responsesFile: []const u8,
+};
+
+const BatchStatsJson = struct {
+    requestCount: ?DecimalJsonString = null,
+    successfulRequestCount: ?DecimalJsonString = null,
+    failedRequestCount: ?DecimalJsonString = null,
+    pendingRequestCount: ?DecimalJsonString = null,
+};
+
+const RawJsonValue = struct {
+    bytes: []const u8,
+
+    pub fn jsonStringify(raw: RawJsonValue, writer: anytype) !void {
+        try writer.beginWriteRaw();
+        try writer.writer.writeAll(raw.bytes);
+        writer.endWriteRaw();
+    }
+};
+
+const RemoteErrorJson = struct {
+    code: ?i64 = null,
+    message: []const u8,
+    details: ?RawJsonValue = null,
+};
+
+const BatchJobJson = struct {
+    name: []const u8,
+    model: ?[]const u8 = null,
+    displayName: ?[]const u8 = null,
+    inputConfig: ?BatchInputConfigJson = null,
+    output: ?BatchOutputConfigJson = null,
+    createTime: ?[]const u8 = null,
+    endTime: ?[]const u8 = null,
+    updateTime: ?[]const u8 = null,
+    state: ?[]const u8 = null,
+    batchStats: ?BatchStatsJson = null,
+    priority: ?SignedDecimalJsonString = null,
+    done: ?bool = null,
+    @"error": ?RemoteErrorJson = null,
+};
+
+const BatchListJson = struct {
+    batches: []const BatchJobJson,
+};
+
+fn batchJobJson(gpa: std.mem.Allocator, job: client.BatchJob) ![]u8 {
+    return stringifyMetadataJson(gpa, batchJobJsonValue(job));
+}
+
+fn batchListJson(gpa: std.mem.Allocator, jobs: []const client.BatchJob) ![]u8 {
+    const job_jsons = try gpa.alloc(BatchJobJson, jobs.len);
+    defer gpa.free(job_jsons);
+
+    for (jobs, 0..) |job, index| {
+        job_jsons[index] = batchJobJsonValue(job);
+    }
+
+    return stringifyMetadataJson(gpa, BatchListJson{
+        .batches = job_jsons,
+    });
+}
+
+fn batchJobJsonValue(job: client.BatchJob) BatchJobJson {
+    return .{
+        .name = job.name,
+        .model = job.model,
+        .displayName = job.display_name,
+        .inputConfig = if (job.input_file_name) |file_name|
+            .{ .fileName = file_name }
+        else
+            null,
+        .output = if (job.output_file_name) |file_name|
+            .{ .responsesFile = file_name }
+        else
+            null,
+        .createTime = job.create_time,
+        .endTime = job.end_time,
+        .updateTime = job.update_time,
+        .state = batchStateName(job.state),
+        .batchStats = batchStatsJson(job.stats),
+        .priority = if (job.priority) |priority| .{ .value = priority } else null,
+        .done = job.done,
+        .@"error" = if (job.remote_error) |remote_error| remoteErrorJson(remote_error) else null,
+    };
+}
+
+fn batchStatsJson(stats: client.BatchStats) ?BatchStatsJson {
+    if (stats.request_count == null and
+        stats.successful_request_count == null and
+        stats.failed_request_count == null and
+        stats.pending_request_count == null)
+    {
+        return null;
+    }
+
+    return .{
+        .requestCount = if (stats.request_count) |count| .{ .value = count } else null,
+        .successfulRequestCount = if (stats.successful_request_count) |count| .{ .value = count } else null,
+        .failedRequestCount = if (stats.failed_request_count) |count| .{ .value = count } else null,
+        .pendingRequestCount = if (stats.pending_request_count) |count| .{ .value = count } else null,
+    };
+}
+
+fn batchStateName(state: client.BatchState) ?[]const u8 {
+    return switch (state) {
+        .unspecified => null,
+        .pending => "BATCH_STATE_PENDING",
+        .running => "BATCH_STATE_RUNNING",
+        .succeeded => "BATCH_STATE_SUCCEEDED",
+        .failed => "BATCH_STATE_FAILED",
+        .cancelled => "BATCH_STATE_CANCELLED",
+        .expired => "BATCH_STATE_EXPIRED",
+        .unknown => |name| name,
+    };
+}
+
+fn remoteErrorJson(remote_error: client.RemoteError) RemoteErrorJson {
+    return .{
+        .code = remote_error.code,
+        .message = remote_error.message,
+        .details = if (remote_error.details_json) |details| .{ .bytes = details } else null,
+    };
 }
 
 const FileJson = struct {
@@ -4008,6 +4544,16 @@ const DecimalJsonString = struct {
     value: u64,
 
     pub fn jsonStringify(decimal: DecimalJsonString, writer: anytype) !void {
+        var buffer: [20]u8 = undefined;
+        const value = std.fmt.bufPrint(&buffer, "{d}", .{decimal.value}) catch unreachable;
+        try writer.write(value);
+    }
+};
+
+const SignedDecimalJsonString = struct {
+    value: i64,
+
+    pub fn jsonStringify(decimal: SignedDecimalJsonString, writer: anytype) !void {
         var buffer: [20]u8 = undefined;
         const value = std.fmt.bufPrint(&buffer, "{d}", .{decimal.value}) catch unreachable;
         try writer.write(value);

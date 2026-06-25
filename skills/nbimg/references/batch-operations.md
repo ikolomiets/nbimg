@@ -44,7 +44,7 @@ The command uploads the input through the Gemini Files API as `application/jsonl
 
 Job creation is non-idempotent and is never retried. If its transport fails after upload, `nbimg` reports the uploaded `files/...` name and warns that a job may already have been created. The uploaded JSONL remains in Gemini Files storage after submission.
 
-Successful submission prints the complete Batch response as pretty JSON. Copy the returned canonical `batches/...` name for status, cancel, or download commands.
+Successful submission prints one pretty JSON Batch job object serialized from typed fields. Copy the returned canonical `batches/...` name for status, cancel, or download commands. The object always includes `name`; optional typed fields include `model`, `displayName`, `inputConfig.fileName`, `output.responsesFile`, timestamps, `state`, `batchStats`, `priority`, `done`, and `error`. Unknown raw API fields are not preserved.
 
 ## Status
 
@@ -52,28 +52,27 @@ Successful submission prints the complete Batch response as pretty JSON. Copy th
 nbimg batch status --name batches/123456789
 ```
 
-`batch status` performs one GET without polling or retries and prints every returned response field as pretty JSON. It does not normalize the response shape or interpret completion for you.
+`batch status` performs one GET without polling or retries and prints the same typed Batch job JSON shape as `batch submit`.
 
-To determine completion, inspect the returned `state` field. Current Gemini REST operation responses commonly expose it as `metadata.state`; `nbimg batch download` also accepts compatible status shapes where `state` appears at the top level or under `response.batch.state`.
+To determine completion, inspect the returned `state` field. Known states render as `BATCH_STATE_*`; unknown state strings are preserved.
 
 Treat these states as terminal:
 
 | State | Meaning | Next step |
 | --- | --- | --- |
-| `JOB_STATE_SUCCEEDED` | Completed successfully; results are available. | Run `nbimg batch download --name batches/ID [--out-dir DIR]`. |
-| `BATCH_STATE_SUCCEEDED` | Compatibility success state accepted by `nbimg batch download`. | Run `nbimg batch download --name batches/ID [--out-dir DIR]`. |
-| `JOB_STATE_FAILED` | The Batch job failed. | Inspect the status JSON `error` field. |
-| `JOB_STATE_CANCELLED` | The Batch job was cancelled by the user. | Do not expect output results. |
-| `JOB_STATE_EXPIRED` | The job expired after waiting or running too long. | Resubmit, usually with fewer or smaller requests. |
+| `BATCH_STATE_SUCCEEDED` | Completed successfully; results are available. | Run `nbimg batch download --name batches/ID [--out-dir DIR]`. |
+| `BATCH_STATE_FAILED` | The Batch job failed. | Inspect the status JSON `error` field. |
+| `BATCH_STATE_CANCELLED` | The Batch job was cancelled by the user. | Do not expect output results. |
+| `BATCH_STATE_EXPIRED` | The job expired after waiting or running too long. | Resubmit, usually with fewer or smaller requests. |
 
 Treat these states as unfinished:
 
 | State | Meaning |
 | --- | --- |
-| `JOB_STATE_PENDING` | The job has been created and is waiting for service processing. |
-| `JOB_STATE_RUNNING` | The job is currently processing. |
+| `BATCH_STATE_PENDING` | The job has been created and is waiting for service processing. |
+| `BATCH_STATE_RUNNING` | The job is currently processing. |
 
-If a response includes `done:false`, the job is not complete. Do not use `done:true` alone as a success signal; use the `state` value and require a succeeded state before downloading. `batch download` performs this status check once and refuses to proceed unless the status is succeeded.
+If a response includes `done:false`, the job is not complete. Do not use `done:true` alone as a success signal; use the `state` value and require `BATCH_STATE_SUCCEEDED` before downloading. `batch download` performs this status check once and refuses to proceed unless the typed status is succeeded.
 
 ## Cancel
 
@@ -81,7 +80,7 @@ If a response includes `done:false`, the job is not complete. Do not use `done:t
 nbimg batch cancel --name batches/123456789
 ```
 
-`batch cancel` performs one bodyless POST without polling or retries and prints `OK` when Gemini accepts the request. Acceptance does not guarantee the job has already reached `JOB_STATE_CANCELLED`; use `batch status` to inspect current state.
+`batch cancel` performs one bodyless POST without polling or retries and prints `OK` when Gemini accepts the request. Acceptance does not guarantee the job has already reached `BATCH_STATE_CANCELLED`; use `batch status` to inspect current state.
 
 Cancellation does not delete the Batch job or its uploaded JSONL input.
 
@@ -101,7 +100,7 @@ The complete JSONL stays in memory while records are decoded one at a time. Succ
 
 Output filenames use `{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never overwrite existing files. Every successfully written filename is printed to stdout.
 
-Error records, malformed records, duplicate keys, decode failures, and write failures are reported while later records continue processing. Existing target files are reported with their destination paths and left untouched. Any such failure makes the command exit nonzero.
+Remote-error records and duplicate keys are valid records; they are reported by key while later records continue processing. Existing target files are reported with their destination paths and left untouched. File write failures are recorded for their key and processing continues. Malformed output JSONL, malformed remote errors, or malformed generated images stop the command with exit code 3. Any remote-error record, duplicate key, existing file, or file write failure makes the completed command exit nonzero.
 
 ## List
 
@@ -109,6 +108,6 @@ Error records, malformed records, duplicate keys, decode failures, and write fai
 nbimg batch list
 ```
 
-`batch list` requests 100 operations per page, follows every returned `nextPageToken`, and prints one pretty JSON object containing the aggregated `operations` array.
+`batch list` requests 100 operations per page, follows every returned `nextPageToken`, and prints one pretty JSON object containing the aggregated `batches` array.
 
-Each operation must have a canonical `batches/...` name, and all other returned operation fields are preserved. Gemini does not return deleted jobs from recent-job history. The API's undocumented `filter` parameter is intentionally not exposed.
+Each job must have a canonical `batches/...` name and uses the same typed field serialization as `batch status`; unknown raw API fields are not preserved. Gemini does not return deleted jobs from recent-job history. The API's undocumented `filter` parameter is intentionally not exposed.

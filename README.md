@@ -336,17 +336,15 @@ must be released with `ApiFailure.deinit`. Successful edits return
 `GenerationResult` and use the same `deinit` contract as generation. Generation
 and edit reject unknown reported service-tier spellings as successful-response
 decoding failures.
-Immediate CLI generation, edit, and Files commands use the same response
-contract. CLI Batch commands continue to use their existing raw JSON stdout
-contract pending the later CLI migration item.
+Immediate CLI generation, edit, Files, and Batch commands use typed operation
+cores for completed requests. CLI Batch stdout is serialized from typed
+`BatchJob` values rather than preserving unknown raw API response fields.
 
-The existing `api` and `batch` package paths remain available
-temporarily for compatibility. They are implementation-oriented legacy APIs
-rather than the supported typed client contract. The undocumented `nbimg.gen`,
-`nbimg.edit`, and `nbimg.files` paths have been removed. Immediate CLI
-generation, edit, and Files commands use the typed operation cores; CLI
-Batch-file preparation still uses internal generation and edit request
-builders.
+The existing `api` package path remains available temporarily for
+compatibility. It is an implementation-oriented legacy API rather than the
+supported typed client contract. The undocumented `nbimg.batch`, `nbimg.gen`,
+`nbimg.edit`, and `nbimg.files` paths have been removed. CLI Batch-file
+preparation still uses internal generation and edit request builders.
 
 ## Usage
 
@@ -491,15 +489,21 @@ after upload, `nbimg` reports the uploaded `files/...` name and warns that a
 job may already have been created. The uploaded JSONL remains in Gemini Files
 storage after submission.
 
-Successful submission prints the complete Batch response as pretty JSON. Use
-the returned canonical name for a single status request:
+Successful submission prints one pretty JSON Batch job object serialized from
+typed fields. The object always includes `name`; optional typed fields include
+`model`, `displayName`, `inputConfig.fileName`, `output.responsesFile`,
+timestamps, `state`, `batchStats`, `priority`, `done`, and `error`. Known
+states render as `BATCH_STATE_*`, `batchStats` counters and `priority` render
+as decimal JSON strings, and `error.details` is embedded as JSON when present.
+Use the returned canonical name for a single status request:
 
 ```sh
 zig-out/bin/nbimg batch status --name batches/123456789
 ```
 
-`batch status` performs one GET without polling or retries and prints every
-returned response field as pretty JSON.
+`batch status` performs one GET without polling or retries and prints the same
+typed Batch job JSON shape as `batch submit`. Unknown raw API fields are not
+preserved.
 
 Request best-effort cancellation of an existing Batch job:
 
@@ -509,7 +513,7 @@ zig-out/bin/nbimg batch cancel --name batches/123456789
 
 `batch cancel` performs one bodyless POST without polling or retries and
 prints `OK` when Gemini accepts the request. Acceptance does not guarantee the
-job has already reached `JOB_STATE_CANCELLED`; use `batch status` to inspect
+job has already reached `BATCH_STATE_CANCELLED`; use `batch status` to inspect
 the current state. Cancellation does not delete the Batch job or its uploaded
 JSONL input.
 
@@ -528,16 +532,20 @@ most 100 output records. A known oversized `Content-Length` is rejected before
 body allocation; unknown lengths grow incrementally and accept exactly
 `512 MiB`.
 
-The complete JSONL stays in memory, while records are decoded one at a time.
+The complete JSONL stays in memory, while records are decoded one at a time
+through the typed output visitor.
 Successful inline images are written to the current directory by default or
 to an existing `--out-dir`. A missing output directory is reported clearly.
 Names use
 `{safe_key}-{candidate}-{part}.{extension}`. Writes are exclusive and never
 overwrite existing files. Every successfully written filename is printed to
-stdout. Error records, malformed records, duplicate keys, decode failures, and
-write failures are reported while later records continue processing. Existing
-target files are reported with their destination paths and left untouched. Any
-such failure makes the command exit nonzero.
+stdout. Remote-error records and duplicate keys are valid records; they are
+reported by key while later records continue processing. Existing target files
+are reported with their destination paths and left untouched. File write
+failures are recorded for their key and processing continues. Malformed output
+JSONL, malformed remote errors, or malformed generated images stop the command
+with exit code `3`. Any remote-error record, duplicate key, existing file, or
+file write failure makes the completed command exit nonzero.
 
 List all recent Batch jobs currently exposed by Gemini:
 
@@ -546,11 +554,12 @@ zig-out/bin/nbimg batch list
 ```
 
 `batch list` requests 100 operations per page, follows every returned
-`nextPageToken`, and prints one pretty JSON object containing the aggregated
-`operations` array. Each operation must have a canonical `batches/...` name,
-and all other returned operation fields are preserved. Gemini does not return
-deleted jobs from this recent-job history. The API's undocumented `filter`
-parameter is intentionally not exposed.
+`nextPageToken`, aggregates typed `BatchJob` values, and prints one pretty JSON
+object containing a `batches` array. Each job always includes `name` and uses
+the same typed field serialization as `batch status`; unknown raw API fields
+are not preserved. Gemini does not return deleted jobs from this recent-job
+history. The API's undocumented `filter` parameter is intentionally not
+exposed.
 
 Use `--aspect-ratio RATIO` and `--image-size SIZE` with `gen` or `edit` to
 request a specific generated canvas shape or resolution tier. Valid aspect
@@ -855,8 +864,8 @@ the Files API, validates the edit request with the uploaded `files/...` name,
 and deletes the uploaded file after validation.
 
 `test-live-api-batch-list` is non-billable and read-only. It follows all
-available Batch list pages, validates canonical operation names, and formats
-the aggregate response without creating a job.
+available Batch list pages, validates typed Batch jobs, and formats the
+aggregate `batches` response without creating a job.
 
 `test-live-api-batch-output-download` is non-billable and read-only against
 the existing completed fixture `batches/xwdq6q34v3zya2cpjkrfr69di4t8kwbp7imx`.

@@ -10,11 +10,11 @@ const operation_api = @import("operation.zig");
 pub const max_batch_entry_bytes = api.max_generate_request_field_bytes;
 pub const max_batch_entries = 100;
 pub const max_batch_input_bytes = 512 * 1024 * 1024;
-pub const max_entry_bytes = max_batch_entry_bytes;
-pub const max_input_bytes = max_batch_input_bytes;
-pub const max_output_bytes = 512 * 1024 * 1024;
+const max_entry_bytes = max_batch_entry_bytes;
+const max_input_bytes = max_batch_input_bytes;
+const max_output_bytes = 512 * 1024 * 1024;
 pub const max_batch_output_bytes = max_output_bytes;
-pub const max_entries = max_batch_entries;
+const max_entries = max_batch_entries;
 const input_content_type = "application/jsonl";
 const canonical_batch_name_prefix = "batches/";
 const max_safe_key_bytes = 160;
@@ -79,7 +79,7 @@ pub const BatchCreateRequest = struct {
 ///
 /// - Both fields remain caller-owned through request construction and submission.
 /// - The value allocates nothing and mutates no state.
-pub const SubmitRequest = BatchCreateRequest;
+const SubmitRequest = BatchCreateRequest;
 
 /// Owns only unrecognized Gemini Batch state spellings.
 pub const BatchState = union(enum) {
@@ -160,7 +160,7 @@ pub const BatchListPage = struct {
 ///
 /// - `file_name` must be released with `deinit` using the allocator that created it.
 /// - The value otherwise owns no external state.
-pub const DownloadInfo = struct {
+const DownloadInfo = struct {
     file_name: []u8,
     request_count: ?usize,
 
@@ -178,7 +178,7 @@ pub const DownloadInfo = struct {
 ///
 /// - All populated slices must be released with `deinit` using the originating allocator.
 /// - The value otherwise owns no external state.
-pub const OutputRecord = struct {
+const OutputRecord = struct {
     key: []u8,
     response_json: ?[]u8,
 
@@ -251,7 +251,7 @@ pub const OutputLineIterator = struct {
 ///
 /// - All nested allocations must be released with `deinit` using their originating allocator.
 /// - The value otherwise owns no external state.
-pub const ListPage = struct {
+const ListPage = struct {
     operations: [][]u8,
     next_page_token: ?[]u8 = null,
 
@@ -331,7 +331,7 @@ fn validateBatchInputInternal(bytes: []const u8) BatchInputValidationError!Batch
 }
 
 /// Compatibility wrapper for the legacy Batch module API.
-pub fn validateInputJsonl(bytes: []const u8) BatchInputValidationError!void {
+fn validateInputJsonl(bytes: []const u8) BatchInputValidationError!void {
     _ = try validateBatchInputInternal(bytes);
 }
 
@@ -344,7 +344,7 @@ fn validateInputByteCount(byte_count: usize) BatchInputValidationError!void {
 ///
 /// - Borrows upload fields for the call; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, protocol, timeout, or logging errors and creates remote file state.
-pub fn uploadInput(
+fn uploadInput(
     context: *const api.RequestContext,
     bytes: []const u8,
     display_name: ?[]const u8,
@@ -387,7 +387,7 @@ fn buildSubmitRequestJson(gpa: std.mem.Allocator, request: SubmitRequest) ![]u8 
 ///
 /// - Borrows request fields; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns serialization, allocation, I/O, HTTP, timeout, or logging errors and creates non-idempotent remote state.
-pub fn submit(
+fn submit(
     context: *const api.RequestContext,
     request: SubmitRequest,
 ) !api.HttpResponse {
@@ -402,7 +402,7 @@ pub fn submit(
 ///
 /// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
-pub fn status(
+fn status(
     context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
@@ -417,7 +417,7 @@ pub fn status(
 ///
 /// - Borrows `response_json`; `file_name` is owned by `gpa` and requires `DownloadInfo.deinit`.
 /// - Returns allocation, invalid-status, not-succeeded, limit, or missing-output errors and mutates no state.
-pub fn decodeDownloadInfo(gpa: std.mem.Allocator, response_json: []const u8) !DownloadInfo {
+fn decodeDownloadInfo(gpa: std.mem.Allocator, response_json: []const u8) !DownloadInfo {
     var parsed = std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
         .parse_numbers = false,
     }) catch |err| switch (err) {
@@ -489,7 +489,7 @@ pub fn downloadOutput(
 ///
 /// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates remote batch state.
-pub fn cancel(
+fn cancel(
     context: *const api.RequestContext,
     name: []const u8,
 ) !api.HttpResponse {
@@ -504,7 +504,7 @@ pub fn cancel(
 ///
 /// - Borrows inputs; the returned response body is owned by `context.gpa` and requires `deinit`.
 /// - Returns allocation, I/O, HTTP, timeout, or logging errors and mutates no input or remote state.
-pub fn listPage(
+fn listPage(
     context: *const api.RequestContext,
     page_token: ?[]const u8,
 ) !api.HttpResponse {
@@ -603,7 +603,7 @@ pub fn isCanonicalBatchName(name: []const u8) bool {
 ///
 /// - Borrows `response_json`; the returned slice is owned by `gpa`.
 /// - Returns allocation, JSON parsing, or `MissingBatchName` errors and mutates no input or global state.
-pub fn decodeBatchName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
+fn decodeBatchName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
     const Response = struct {
         name: ?[]const u8 = null,
     };
@@ -622,7 +622,7 @@ pub fn decodeBatchName(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 
 ///
 /// - Borrows `bytes`, allocates nothing, and mutates no state.
 /// - Returns `EmptyBatchOutput` or `BatchTooManyEntries` for invalid bounds.
-pub fn validateOutputJsonl(bytes: []const u8) !usize {
+fn validateOutputJsonl(bytes: []const u8) !usize {
     if (bytes.len == 0) return error.EmptyBatchOutput;
 
     var iterator = OutputLineIterator{ .bytes = bytes };
@@ -636,7 +636,7 @@ pub fn validateOutputJsonl(bytes: []const u8) !usize {
 ///
 /// - Allocates returned strings with `gpa`; the caller must invoke `OutputRecord.deinit`.
 /// - Returns allocation or `InvalidBatchOutput` errors and mutates no input or global state.
-pub fn decodeOutputRecord(gpa: std.mem.Allocator, line: []const u8) !OutputRecord {
+fn decodeOutputRecord(gpa: std.mem.Allocator, line: []const u8) !OutputRecord {
     if (line.len == 0) return error.InvalidBatchOutput;
 
     const Record = struct {
@@ -736,7 +736,7 @@ pub fn decodeBatchOutputRecord(gpa: std.mem.Allocator, line: []const u8) !Decode
 ///
 /// - Borrows `key`; the returned slice is owned by `gpa`.
 /// - Returns allocation, writer, invalid-key, or overflow errors and mutates no input or global state.
-pub fn safeOutputKey(gpa: std.mem.Allocator, key: []const u8) ![]u8 {
+fn safeOutputKey(gpa: std.mem.Allocator, key: []const u8) ![]u8 {
     if (key.len == 0) return error.InvalidBatchOutput;
 
     var encoded_length: usize = 0;
@@ -781,7 +781,7 @@ pub fn safeOutputKey(gpa: std.mem.Allocator, key: []const u8) ![]u8 {
 ///
 /// - Borrows `response_json`; all returned slices are owned by `gpa` and require `ListPage.deinit`.
 /// - Returns allocation, JSON, invalid-response, or missing-name errors and mutates no input or global state.
-pub fn decodeListPage(gpa: std.mem.Allocator, response_json: []const u8) !ListPage {
+fn decodeListPage(gpa: std.mem.Allocator, response_json: []const u8) !ListPage {
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
         .parse_numbers = false,
     });
@@ -1215,7 +1215,7 @@ fn validatePageToken(page_token: ?[]const u8) BatchValidationError!void {
 ///
 /// - Borrows all operation slices for the call; the returned JSON is owned by `gpa`.
 /// - Returns allocation, parsing, or writer errors and mutates no input or global state.
-pub fn listJson(gpa: std.mem.Allocator, operations: []const []const u8) ![]u8 {
+fn listJson(gpa: std.mem.Allocator, operations: []const []const u8) ![]u8 {
     var compact: std.Io.Writer.Allocating = .init(gpa);
     defer compact.deinit();
 
@@ -1237,7 +1237,7 @@ pub fn listJson(gpa: std.mem.Allocator, operations: []const []const u8) ![]u8 {
 ///
 /// - Borrows `response_json`; the returned slice is owned by `gpa`.
 /// - Returns allocation, JSON parsing, or writer errors and mutates no input or global state.
-pub fn prettyJson(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
+fn prettyJson(gpa: std.mem.Allocator, response_json: []const u8) ![]u8 {
     var parsed = try std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
         .parse_numbers = false,
     });

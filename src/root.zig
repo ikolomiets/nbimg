@@ -60,4 +60,3 @@ pub const max_file_upload_bytes = client.max_file_upload_bytes;
 pub const validateBatchInput = client.validateBatchInput;
 
 pub const api = @import("api.zig");
-pub const batch = @import("batch.zig");

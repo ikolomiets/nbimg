@@ -68,8 +68,9 @@ The code is split into eleven source files:
   internal File and remote-error decoders shared by Files and typed Batch
   upload/status decoding.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
-  lookup, request dispatch, response handling, generated file writing, and
-  locked Batch JSONL appends.
+  lookup, request dispatch, typed CLI JSON serialization, generated file
+  writing, Batch output filename/filesystem policy, and locked Batch JSONL
+  appends.
 - `src/api.zig` owns shared Gemini API infrastructure: model constants, common
   HTTP response ownership, canonical `files/...` name validation, explicit
   request contexts, transport helpers, image MIME parsing and serialization,
@@ -81,9 +82,8 @@ The code is split into eleven source files:
   types, typed remote Batch request/result/state/stats types, stable admission
   limits, legacy JSONL entry serialization, Batch input upload configuration,
   create/status/cancel/list request construction, canonical `batches/...`
-  validation, response-name and list-page decoding, typed operation decoding,
-  bounded output download, output-record decoding, safe output keys,
-  pagination token handling, and full JSON pretty-printing.
+  validation, typed operation decoding, bounded output download, strict
+  output-record decoding, and pagination token handling.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
   for generateContent and countTokens requests.
 - `src/edit.zig` owns `edit`-specific API behavior: uploaded image reference
@@ -172,8 +172,7 @@ append rollback remain CLI-owned. Public callers use quiet contexts.
 `validateBatchInput` performs allocation-free structural validation and returns
 `BatchInputSummary`. It counts LF/CRLF-aware non-empty records and enforces
 `max_batch_entry_bytes`, `max_batch_entries`, and `max_batch_input_bytes`
-without parsing JSON. Legacy `batch.validateInputJsonl` and limit names remain
-compatibility wrappers.
+without parsing JSON.
 
 `Client.uploadBatchInput` accepts borrowed JSONL bytes and an optional display
 name, validates the complete input with `validateBatchInput`, uploads it as
@@ -237,12 +236,6 @@ the callback. The client retains at most the bounded raw JSONL body plus one
 decoded record and its generated images. `BatchOutputSummary` reports total,
 successful, and failed records after the visitor completes.
 
-The remaining command-domain namespace is temporarily available:
-
-```zig
-nbimg.batch.*
-```
-
 Network operations use an internal `nbimg.api.RequestContext`; pure builders
 and decoders remain independent of transport configuration.
 
@@ -267,11 +260,13 @@ The internal module interfaces are intentionally narrow:
   private. Shared typed File and remote-error decoding lives in
   `files_domain.zig`; shared uploaded-name decoding is exposed only by `api`.
 - `batch` exports the deliberate Batch input types, validation function, stable
-  limits, typed remote-management types and context-taking typed cores, and
-  the CLI-consumed compatibility models, limits, ownership/iteration methods,
-  upload/submit/status/download/cancel/list operations, response decoders, and
-  JSONL/output helpers. Wire constants, submit serialization, byte-count
-  validation, URL construction, and typed response parsers remain internal.
+  limits, typed remote-management types and context-taking typed cores,
+  newline-free JSONL entry serialization, canonical Batch-name validation, and
+  the strict output iterator/parser plus bounded output download used by the
+  typed client. Raw transport helpers, legacy raw response decoders,
+  pretty-printers, safe output-key encoding, wire constants, submit
+  serialization, byte-count validation, URL construction, and typed response
+  parsers remain internal.
 - `api` exports only shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
   transport, resumable upload support, response decoders, request context and
@@ -349,12 +344,11 @@ returns byte and entry counts without parsing JSON. Prepared entries own their
 explicit keys and complete newline-free JSONL records. Typed remote management
 validates JSONL upload bytes, canonical names, display names, and page tokens
 before allocation or network IO, then decodes operation wrappers into owned
-Batch domain values. Legacy submit validation leaves entry JSON and key
-semantics to Gemini, uploads bytes as `application/jsonl`, submits the
-uploaded `files/...` name to the fixed image model, builds status URLs from
-canonical `batches/...` names, builds paginated list URLs, validates listed
-operation names, preserves complete operation objects, and pretty-prints
-successful JSON responses.
+Batch domain values. Submit validation leaves entry JSON and key semantics to
+Gemini, uploads bytes as `application/jsonl`, submits the uploaded `files/...`
+name to the fixed image model exactly once, builds status URLs from canonical
+`batches/...` names, builds paginated list URLs, decodes listed operations into
+typed jobs, and exposes strict output JSONL iteration for the typed visitor.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
@@ -1141,7 +1135,7 @@ and stdout for metadata JSON or delete `OK`.
 ## Batch API
 
 `nbimg batch submit --path PATH` reads one complete local JSONL input into
-memory with a `512 MiB` limit. Before network IO, `batch.validateInputJsonl`
+memory with a `512 MiB` limit. Before network IO, `validateBatchInput`
 requires at least one non-empty line, accepts LF and CRLF separators, rejects
 empty lines, caps each serialized entry at `5 MiB`, and limits one batch to 100
 entries. It does not parse entry JSON, check keys, or validate object-valued
@@ -1184,9 +1178,18 @@ a job may have been created. A returned non-OK HTTP response is reported
 without the ambiguous-creation warning. The uploaded JSONL remains in Gemini
 Files storage in all cases.
 
-A successful create response must be valid JSON and contain a canonical
-`batches/...` name. The CLI then pretty-prints the complete response object
-without reducing it to a local metadata struct.
+A successful create response must decode into a typed `BatchJob` with a
+canonical `batches/...` name. The CLI then prints its local typed Batch job JSON
+shape. The object always includes `name`. Optional fields are emitted only when
+represented by typed values: `model`, `displayName`, `inputConfig.fileName`,
+`output.responsesFile`, timestamps, `state`, `batchStats`, `priority`, `done`,
+and `error`. Known states render as `BATCH_STATE_*`; `.unspecified` is omitted;
+unknown state strings are preserved. `priority` and BatchStats counters render
+as decimal JSON strings. `batchStats` is omitted when all counters are absent.
+`RemoteError` renders `code`, `message`, and embedded JSON `details`, omitting
+absent fields. Unknown raw response fields are not preserved. A malformed
+successful create response is reported as ambiguous with exit code 3 because
+Batch creation is non-idempotent.
 
 `nbimg batch status --name batches/ID` validates the canonical resource name,
 percent-encodes the ID path segment, and performs one request:
@@ -1195,8 +1198,9 @@ percent-encodes the ID path segment, and performs one request:
 GET https://generativelanguage.googleapis.com/v1beta/batches/{id}
 ```
 
-Status does not poll or retry. A successful response is validated as JSON and
-every returned field is printed as one pretty JSON document.
+Status does not poll or retry. A successful response decodes into a typed
+`BatchJob` and prints the same CLI-owned Batch job JSON shape as `batch
+submit`. Unknown raw response fields are not preserved.
 
 `nbimg batch cancel --name batches/ID` applies the same canonical-name
 validation and path-segment encoding, then performs one bodyless request:
@@ -1208,15 +1212,17 @@ POST https://generativelanguage.googleapis.com/v1beta/batches/{id}:cancel
 Cancellation does not poll or retry. HTTP 200 prints `OK`; non-OK responses
 include Gemini's response body in the diagnostic. Cancellation is best-effort,
 so callers can use `batch status` to inspect whether the operation reached
-`JOB_STATE_CANCELLED`. It does not delete the operation or its uploaded input.
+`BATCH_STATE_CANCELLED`. It does not delete the operation or its uploaded input.
 
 `nbimg batch download --name batches/ID [--out-dir DIR]` performs exactly one
-status GET. Status decoding accepts both the flattened API representation
-(`JOB_STATE_SUCCEEDED`, `dest.fileName`) and the discovery-schema
-representation (`BATCH_STATE_SUCCEEDED`, `output.responsesFile`), including
-operation wrappers that place Batch fields under `metadata` or `response`.
-Other states are rejected. If `batchStats.requestCount` is present and exceeds
-100, the download is rejected before requesting the output file.
+typed status GET and does not repeat the status request. Status decoding
+accepts both the flattened API representation (`JOB_STATE_SUCCEEDED`,
+`dest.fileName`) and the discovery-schema representation
+(`BATCH_STATE_SUCCEEDED`, `output.responsesFile`), including operation wrappers
+that place Batch fields under `metadata` or `response`. Other states are
+rejected. If typed `batchStats.requestCount` is present and exceeds 100, the
+download is rejected before requesting the output file. A succeeded job must
+have a canonical typed `output_file_name`.
 
 The output file is downloaded from:
 
@@ -1233,19 +1239,14 @@ bound. Exactly `512 MiB` is accepted and the first byte beyond it is rejected.
 Download traffic logging prints response metadata and an omitted-body byte
 count instead of parsing or copying the complete JSONL for stderr.
 
-The complete downloaded JSONL remains in memory. A preliminary line-count pass
-rejects more than 100 records before file output, then records are decoded one
-at a time. Each record requires a non-empty `key` and exactly one `response` or
-`error`. Successful response objects reuse `api.decodeGeneratedFiles`; error
-records, malformed records, duplicate keys, image decode failures, and write
-failures are accumulated without stopping later records.
-
-The public typed output download path uses the same output byte bound and
-CRLF-aware iteration but does not share the CLI's duplicate-key, filename, or
-filesystem policy. It treats remote-error records as valid visitor records and
-malformed records, remote errors, or generated images as successful-response
-decoding failures. CLI Batch download keeps its historical behavior until the
-Item 15 migration.
+The complete downloaded JSONL remains in memory. Records are decoded one at a
+time through `downloadBatchOutputRecordsWithContext`, which enforces the
+100-record bound, requires a non-empty `key`, requires exactly one `response` or
+`error`, treats remote-error records as valid visitor records, and treats
+malformed JSONL, malformed remote errors, or malformed generated images as
+successful-response decoding failures. Those decoding failures stop the CLI
+with exit code 3. Duplicate keys and remote-error records remain valid visitor
+records; the CLI callback records them as failed keys and continues.
 
 Output defaults to the current directory; `--out-dir` must already exist. A
 missing output directory is reported clearly; a path that is not a directory
@@ -1258,9 +1259,10 @@ SHA-256 suffix. Images use:
 ```
 
 Writes are exclusive. Successful filenames are printed to stdout. Existing
-targets are reported to stderr with their destination paths and left
-untouched; other failed records are reported by key. Any failed record or file
-write makes the command exit nonzero after all records have been processed.
+targets are reported to stderr with their destination paths and left untouched.
+Other file write failures are recorded by key while later records continue.
+Any remote-error record, duplicate key, existing target, or file write failure
+makes the command exit nonzero after all records have been processed.
 
 `nbimg batch list` repeatedly requests:
 
@@ -1274,16 +1276,16 @@ The first request omits `pageToken`. Later requests percent-encode the opaque
 Listing follows pages until the service omits `nextPageToken` or returns it as
 an empty string.
 
-Each successful page must be a JSON object. An absent `operations` field is
-treated as an empty array; when present it must be an array of objects. Every
-operation must contain a canonical `batches/...` string name. Unknown operation
-fields and number spellings are preserved by storing each complete operation
-as owned JSON. After all pages are decoded, the CLI prints one pretty JSON
+Each successful page must decode as a typed Batch list page. An absent
+`operations` field is treated as an empty array; when present it must be an
+array of objects. Every operation must contain a canonical `batches/...` string
+name. Unknown operation fields and number spellings are not preserved after
+typed decoding. After all pages are decoded, the CLI prints one pretty JSON
 document:
 
 ```json
 {
-  "operations": []
+  "batches": []
 }
 ```
 
@@ -1460,29 +1462,29 @@ Allocator ownership is explicit:
   File slice and continuation token.
 - `files.uploadFile` receives already-read file bytes; CLI filesystem IO
   stays in `src/cli.zig`.
-- `batch.uploadInput` receives already-read validated JSONL bytes; CLI
-  filesystem IO stays in `src/cli.zig`.
+- `batch.uploadBatchInputWithContext` receives already-read validated JSONL
+  bytes; CLI filesystem IO stays in `src/cli.zig`.
 - Typed Files operations return owned File metadata for upload, get, and list
   responses. A typed `FileListPage` also owns its optional next page token; the
   CLI transfers File ownership into its aggregate before deinitializing each
   page.
-- `batch.decodeListPage` returns owned JSON for every complete operation and
-  an optional owned next page token. The CLI transfers those operation buffers
-  into the aggregate list before deinitializing each page.
-- `batch.decodeDownloadInfo` returns an owned generated `files/...` output name.
-  `api.getBytesBounded` returns one owned output body while tracking the
-  configured limit during incremental reads.
-- `batch.decodeOutputRecord` owns one copied key and optional compact response
-  object at a time. `cli.processBatchOutput` releases each record and decoded
-  generated result before advancing to the next JSONL line.
+- Typed Batch list operations return owned `BatchListPage` values. The CLI
+  transfers `BatchJob` ownership into its aggregate before deinitializing each
+  page.
+- `client.downloadBatchOutputRecordsWithContext` uses `api.getBytesBounded` to
+  return one owned output body while tracking the configured limit during
+  incremental reads, then visits one decoded record at a time.
+- `cli.BatchOutputProcessor` owns duplicate-key tracking, safe output names,
+  exclusive writes, and the accumulated written/existing/failed summaries while
+  borrowing each typed `BatchOutputRecordView` only for its callback.
 - `api.decodeGeneratedFiles` receives `gpa` and returns owned decoded file
   buffers, one owned response ID, and an optional owned reported service-tier
   spelling. The typed client transfers the response ID and image buffers into
   `GenerationResult` without copying image bytes.
-- `HttpResponse.deinit`, typed `FileListPage.deinit`, `File.deinit`,
-  `FileState.deinit`, `FileSource.deinit`,
-  `RemoteError.deinit`, `batch.ListPage.deinit`, `GeneratedFile.deinit`,
-  `GeneratedFiles.deinit`, `GeneratedImage.deinit`, and
+- `HttpResponse.deinit`, typed `FileListPage.deinit`, `BatchListPage.deinit`,
+  `BatchJob.deinit`, `File.deinit`, `FileState.deinit`, `FileSource.deinit`,
+  `RemoteError.deinit`, `GeneratedFile.deinit`, `GeneratedFiles.deinit`,
+  `GeneratedImage.deinit`, and
   `GenerationResult.deinit` release owned allocations.
 - `PreparedBatchRequest.deinit` releases the internally retained exact
   generate-content JSON; `PreparedBatchEntry.deinit` releases the public key
@@ -1511,10 +1513,12 @@ Current tests cover:
   separator insertion, duplicate-key rejection, and malformed-file
   preservation.
 - Batch submit/status/list parsing, canonical names, request JSON, endpoint
-  URLs, list page-token encoding, arbitrary operation-field preservation,
-  empty list responses, multi-page aggregation, malformed and duplicate JSONL
-  rejection, local size limits, complete response pretty-printing, and
-  ambiguous non-idempotent failure diagnostics.
+  URLs, list page-token encoding, typed job/list JSON serialization, empty list
+  responses, multi-page aggregation, malformed and duplicate JSONL rejection,
+  local size limits, and ambiguous non-idempotent failure diagnostics.
+- Batch output visitor processing, safe output filenames, remote-error records,
+  duplicate-key failures, existing-file preservation, and missing output
+  directory diagnostics.
 - Shared image MIME name and upload path extension parsing.
 - Files API upload display-name validation and upload-start metadata JSON,
   including JSON escaping.
@@ -1580,8 +1584,8 @@ same common borrowed-key validation helper, so an already-exported variable is
 enough.
 
 `test-live-api-batch-list` is non-billable and read-only. It follows every
-returned page, validates canonical operation names, and formats the aggregated
-operation list without creating a Batch job.
+returned page, validates typed Batch jobs, and formats the aggregated
+`batches` list without creating a Batch job.
 
 `test-live-api-batch-output-download` is non-billable and read-only. It fetches
 the authorized completed fixture
