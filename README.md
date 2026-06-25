@@ -53,8 +53,14 @@ separate Debug artifact from the build cache.
 
 ## Zig Library API
 
-The package registers a supported module named `nbimg`. Its typed client can
-generate owned images:
+The package registers a supported module named `nbimg`. The stable package
+contract is the root-level typed client facade: `Client`, `ClientOptions`,
+`Outcome(T)`, `ApiFailure`, request/result values, MIME and option enums,
+validation error sets, ownership methods, documented limits, and deliberate
+pure validators such as `validateBatchInput`. Implementation modules and raw
+transport types are not part of the package API.
+
+The typed client can generate owned images:
 
 ```zig
 const std = @import("std");
@@ -340,10 +346,14 @@ Immediate CLI generation, edit, Files, and Batch commands use typed operation
 cores for completed requests. CLI Batch stdout is serialized from typed
 `BatchJob` values rather than preserving unknown raw API response fields.
 
-The package API is the root-level typed client contract. The undocumented
-`nbimg.api`, `nbimg.batch`, `nbimg.gen`, `nbimg.edit`, and `nbimg.files` paths
-are not supported package paths. CLI Batch-file preparation still uses
-internal generation and edit request builders.
+The package API is only the root-level typed client contract. It includes
+typed generation/edit requests and results, Files metadata, Batch preparation
+and management values, Batch output visitor values, documented admission
+limits, and allocator-based `deinit` methods for owning results. It does not
+include `RequestContext`, `HttpResponse`, wire serializers, CLI parsers, or
+submodules such as `nbimg.api`, `nbimg.batch`, `nbimg.gen`, `nbimg.edit`, and
+`nbimg.files`. CLI Batch-file preparation still uses internal generation and
+edit request builders.
 
 ## Usage
 

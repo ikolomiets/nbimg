@@ -92,7 +92,16 @@ The code is split into eleven source files:
   construction, typed response decoding and classification, and Files API
   endpoint handling.
 
-The supported package API is a typed client:
+The supported package API is the stable root-level typed client facade exported
+by `src/root.zig`. It consists of `Client`, `ClientOptions`, `Outcome(T)`,
+`ApiFailure`, borrowed request values, owned result values, MIME and option
+enums, validation error sets, allocator-based ownership methods, documented
+admission limits, and deliberate pure validators such as `validateBatchInput`.
+It does not expose implementation submodules, `api.RequestContext`,
+`api.HttpResponse`, wire serializers, CLI parsers, endpoint helpers, or raw
+response-body decoders.
+
+The typed client is initialized as:
 
 ```zig
 const client = try nbimg.Client.init(allocator, io, .{
@@ -107,6 +116,15 @@ var outcome = try client.generate(.{
 positive timeout without allocating. The default timeout is 180 seconds.
 Client operations create a quiet internal request context; traffic logging
 remains CLI-only.
+
+Every public operation returns `!Outcome(T)`. Invalid caller input,
+allocation failure, transport failure, timeout, oversized responses, callback
+failure, and malformed successful responses are Zig errors. Completed
+non-success HTTP responses become `.api_failure` with an owned bounded body.
+Typed successes own their documented nested allocations and provide
+allocator-based `deinit` methods where ownership exists. Public methods accept
+all completed 2xx statuses; they do not expose runtime HTTP-status policy or
+raw successful response bodies.
 
 `GenerationRequest` borrows the prompt, optional request strings, and stop
 sequences. Public enums and option structs are separate from the internal
@@ -594,6 +612,12 @@ Argument rules are intentionally narrow:
   API key.
 - `3` for successful HTTP responses whose JSON body cannot be parsed for
   generated files, File metadata, Batch operation JSON, or a Batch list page.
+
+CLI stdout JSON shapes are owned by `src/cli.zig`, not by the package facade.
+Files metadata JSON, typed Batch job JSON, typed Batch list JSON, compact
+Batch-file receipts, generated filenames, and downloaded Batch filenames are
+serialized from typed values or CLI-owned records. Unknown raw Gemini response
+fields are not preserved in those schemas.
 
 Diagnostics are written with `std.debug.print`. Usage errors print a short
 specific error followed by:

@@ -25,24 +25,52 @@ comptime {
     }
 }
 
-test "dependency consumer compiles against typed generation edit Files and Batch preparation APIs" {
-    const client = try nbimg.Client.init(std.testing.allocator, std.testing.io, .{
+test "dependency consumer compiles against typed generation edit Files and Batch APIs" {
+    const options = nbimg.ClientOptions{
         .api_key = "borrowed-key",
-    });
+        .timeout = std.Io.Duration.fromSeconds(30),
+    };
+    const client = try nbimg.Client.init(std.testing.allocator, std.testing.io, options);
+    const output_options = nbimg.ImageOutputOptions{
+        .aspect_ratio = .r16_9,
+        .image_size = .k2,
+    };
+    const grounding_options = nbimg.GroundingOptions{
+        .web = true,
+    };
+    const thinking_options = nbimg.ThinkingOptions{
+        .level = .minimal,
+        .include_thoughts = true,
+    };
+    const safety_options = nbimg.SafetyOptions{
+        .threshold = .block_none,
+    };
+    const generation_options = nbimg.GenerationOptions{
+        .temperature = 0.7,
+        .stop_sequences = &.{"END"},
+    };
+    const request_options = nbimg.RequestOptions{
+        .system_instruction = "Use a clean product-photography style",
+        .cached_content = "cachedContents/sample",
+        .service_tier = .flex,
+        .store = false,
+    };
     const request = nbimg.GenerationRequest{
         .prompt = "Create a cinematic product image",
-        .output_options = .{
-            .aspect_ratio = .r16_9,
-            .image_size = .k2,
-        },
-        .generation_options = .{
-            .temperature = 0.7,
-            .stop_sequences = &.{"END"},
-        },
+        .output_options = output_options,
+        .grounding_options = grounding_options,
+        .thinking_options = thinking_options,
+        .safety_options = safety_options,
+        .generation_options = generation_options,
+        .request_options = request_options,
     };
     const outcome: nbimg.Outcome(nbimg.CountTokensResult) = .{
         .success = .{ .total_tokens = 42 },
     };
+    const delete_outcome: nbimg.Outcome(void) = .{ .success = {} };
+    const generation_validation_error: nbimg.GenerationValidationError = error.EmptyPrompt;
+    const edit_validation_error: nbimg.EditValidationError = error.InvalidReferenceLabel;
+    const file_validation_error: nbimg.FileValidationError = error.InvalidFileName;
     var generation_result = nbimg.GenerationResult{
         .response_id = try std.testing.allocator.dupe(u8, "response"),
         .images = try std.testing.allocator.alloc(nbimg.GeneratedImage, 1),
@@ -55,6 +83,7 @@ test "dependency consumer compiles against typed generation edit Files and Batch
         .bytes = try std.testing.allocator.dupe(u8, "image"),
     };
     defer generation_result.deinit(std.testing.allocator);
+    const count_generate_tokens = nbimg.Client.countGenerateTokens;
     const generate = nbimg.Client.generate;
     const edit = nbimg.Client.edit;
     const count_edit_tokens = nbimg.Client.countEditTokens;
@@ -70,6 +99,7 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     const cancel_batch = nbimg.Client.cancelBatch;
     const list_batches_page = nbimg.Client.listBatchesPage;
     const download_batch_output_records = nbimg.Client.downloadBatchOutputRecords;
+    _ = count_generate_tokens;
     _ = generate;
     _ = edit;
     _ = count_edit_tokens;
@@ -88,6 +118,15 @@ test "dependency consumer compiles against typed generation edit Files and Batch
 
     const edit_request = nbimg.EditRequest{
         .prompt = "Apply the product style",
+        .output_options = output_options,
+        .grounding_options = grounding_options,
+        .thinking_options = thinking_options,
+        .safety_options = safety_options,
+        .generation_options = generation_options,
+        .request_options = .{
+            .system_instruction = "Preserve the recognizable product",
+            .service_tier = .priority,
+        },
         .base = .{
             .name = "files/base",
             .mime = .jpeg,
@@ -217,16 +256,36 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     };
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
+    try std.testing.expectEqual(options.timeout.nanoseconds, client.timeout.nanoseconds);
     try std.testing.expectEqualStrings(
         "Create a cinematic product image",
         request.prompt,
     );
+    try std.testing.expectEqual(nbimg.ImageAspectRatio.r16_9, request.output_options.aspect_ratio.?);
+    try std.testing.expectEqual(nbimg.ImageSize.k2, request.output_options.image_size.?);
+    try std.testing.expect(request.grounding_options.web);
+    try std.testing.expect(!request.grounding_options.image);
+    try std.testing.expectEqual(nbimg.ThinkingLevel.minimal, request.thinking_options.level.?);
+    try std.testing.expect(request.thinking_options.include_thoughts);
+    try std.testing.expectEqual(nbimg.HarmBlockThreshold.block_none, request.safety_options.?.threshold);
+    try std.testing.expectEqual(@as(?f64, 0.7), request.generation_options.temperature);
+    try std.testing.expectEqualStrings("END", request.generation_options.stop_sequences[0]);
+    try std.testing.expectEqual(nbimg.ServiceTier.flex, request.request_options.service_tier.?);
+    try std.testing.expectEqual(false, request.request_options.store.?);
     switch (outcome) {
         .success => |result| try std.testing.expectEqual(@as(u64, 42), result.total_tokens),
         .api_failure => |*failure| failure.deinit(std.testing.allocator),
     }
+    switch (delete_outcome) {
+        .success => {},
+        .api_failure => return error.ExpectedVoidSuccess,
+    }
+    try std.testing.expectEqual(error.EmptyPrompt, generation_validation_error);
+    try std.testing.expectEqual(error.InvalidReferenceLabel, edit_validation_error);
+    try std.testing.expectEqual(error.InvalidFileName, file_validation_error);
     try std.testing.expectEqual(nbimg.OutputMime.png, generation_result.images[0].mime);
     try std.testing.expectEqualStrings("files/base", edit_request.base.name);
+    try std.testing.expectEqual(nbimg.ReferenceRole.object, edit_request.base_role);
     try std.testing.expectEqual(nbimg.InputImageMime.png, upload.mime);
     try std.testing.expectEqualStrings("application/jsonl", file.mime_type.?);
     try std.testing.expect(file.state == .active);

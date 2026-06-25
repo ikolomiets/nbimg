@@ -1317,49 +1317,40 @@ outcome used by later typed operations.
 
    **Depends on:** Items 1 through 17.
 
-   **Status:** Next.
+   **Status:** Completed.
 
-   **Result:** Declare the already usable client API stable and ensure all
-   documentation and examples match it.
+   **Result:** The already usable client API is declared stable, and the
+   README, implementation design, exact allowlists, external-consumer test, and
+   root exports describe the same supported package contract.
 
-   **Proposed changes:**
+   **Completed changes:**
 
-   - Treat this as a documentation and contract-synchronization increment. Do
-     not add, remove, or redesign supported operations after the invariant
-     audit unless that audit finds a correctness defect.
-   - Carry forward the Item 17 audit result: there are no unsupported
-     root-level declarations queued for removal, so this item should not delete
-     or rename root exports. If documentation review finds a real contract
-     mismatch, update the docs/tests to the existing allowlisted API or split a
-     new implementation item out explicitly.
-   - Reconfirm the package allowlist as the exact `Client`, configuration,
-     outcome, request/result, input/output MIME, enum, ownership, and
-     documented-limit declarations, plus deliberate pure validation functions
-     such as `validateBatchInput`. Do not remove additional declarations here
-     unless Item 17 explicitly identified them as unsupported.
-   - Review the existing README `Zig Library API` section against the exact
-     package allowlist and external-consumer test, then consolidate or fill any
-     remaining gaps in complete client initialization, ownership, API-failure
-     handling, generation, token counting, edit, Files, Batch preparation,
-     remote Batch management, and output-download workflows.
-   - Update `docs/IMPLEMENTATION_DESIGN.md` with the final façade and internal
-     module boundaries, the common response contract, and deliberate CLI JSON
-     schemas.
-   - Retain the historical pre-refactoring label on `public_api_analysis.md`
-     and do not rewrite it as the current contract. Continue recording
-     completed refactorings in this document.
-   - Keep compile-only external-consumer examples synchronized with the
-     supported named `nbimg` module.
+   - Kept the Item 17 audit result: no root-level declarations were added,
+     removed, or renamed.
+   - Reconfirmed the package allowlist as the exact `Client`, configuration,
+     outcome, request/result, input/output MIME, enum, ownership, documented
+     limit, and deliberate pure-validator contract.
+   - Updated the README `Zig Library API` section to explicitly name the
+     stable root-level package contract and unsupported implementation-module,
+     raw transport, wire, and CLI parser surfaces.
+   - Updated `docs/IMPLEMENTATION_DESIGN.md` with the final package facade
+     boundary, common public response contract, internal module boundaries,
+     and CLI-owned JSON/output schemas.
+   - Retained the historical pre-refactoring label on
+     `public_api_analysis.md`.
+   - Renamed and expanded the compile-only external-consumer test so it
+     continues to import the supported named `nbimg` module and covers the full
+     typed generation, edit, Files, Batch management, and Batch output surface.
 
    **Compatibility:** This item declares the replacement contract stable; it
    does not introduce the first usable documentation or remove additional
    supported declarations except for any unsupported declarations explicitly
    carried forward from Item 17.
 
-   **Validation:** `zig fmt --check build.zig src`;
+   **Validation completed:** `zig fmt --check build.zig src`;
    `zig build test -Dtest-filter="package API matches exact allowlist"`;
    `zig build test -Dtest-filter="internal module APIs match exact allowlists"`;
-   `zig build test -Dtest-filter="dependency consumer compiles against typed generation edit Files and Batch preparation APIs"`;
+   `zig build test -Dtest-filter="dependency consumer compiles against typed generation edit Files and Batch APIs"`;
    `zig build test`; `zig build`; and `git diff --check`. Also manually verify
    every README/design-doc path and command touched by this item. No live API
    target is required unless the item changes Gemini request fields, response
