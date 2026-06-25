@@ -56,6 +56,9 @@ comptime {
         "BatchInputUpload",
         "BatchJob",
         "BatchListPage",
+        "BatchOutputRecordView",
+        "BatchOutputSummary",
+        "BatchOutputVisitor",
         "BatchState",
         "BatchStats",
         "BatchValidationError",
@@ -98,6 +101,7 @@ comptime {
         "max_batch_entries",
         "max_batch_entry_bytes",
         "max_batch_input_bytes",
+        "max_batch_output_bytes",
         "max_edit_character_images",
         "max_edit_do_not_constraints",
         "max_edit_object_images",
@@ -117,6 +121,7 @@ comptime {
         "countGenerateTokens",
         "createBatch",
         "deleteFile",
+        "downloadBatchOutputRecords",
         "edit",
         "generate",
         "getBatch",
@@ -138,6 +143,9 @@ comptime {
     assertExactPublicDecls("root.BatchListPage", root.BatchListPage, &.{
         "deinit",
     });
+    assertExactPublicDecls("root.BatchOutputRecordView", root.BatchOutputRecordView, &.{});
+    assertExactPublicDecls("root.BatchOutputSummary", root.BatchOutputSummary, &.{});
+    assertExactPublicDecls("root.BatchOutputVisitor", root.BatchOutputVisitor, &.{});
     assertExactPublicDecls("root.BatchState", root.BatchState, &.{
         "deinit",
     });
@@ -183,6 +191,11 @@ comptime {
     assertExactPublicDecls("root.Outcome(FileListPage)", root.Outcome(root.FileListPage), &.{});
     assertExactPublicDecls("root.Outcome(BatchJob)", root.Outcome(root.BatchJob), &.{});
     assertExactPublicDecls("root.Outcome(BatchListPage)", root.Outcome(root.BatchListPage), &.{});
+    assertExactPublicDecls(
+        "root.Outcome(BatchOutputSummary)",
+        root.Outcome(root.BatchOutputSummary),
+        &.{},
+    );
     assertExactPublicDecls("root.Outcome(void)", root.Outcome(void), &.{});
     assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
     assertExactPublicDecls("root.PreparedBatchEntry", root.PreparedBatchEntry, &.{

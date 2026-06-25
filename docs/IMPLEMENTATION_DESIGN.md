@@ -123,7 +123,8 @@ image byte buffer. `GeneratedImage.candidate_position` and `part_position` are
 zero-based positions in the Gemini response arrays, independent of optional
 candidate index metadata. The public MIME enum supports PNG, JPEG, and WebP.
 The optional reported service tier is mapped to the public `ServiceTier` enum;
-an unknown service-tier spelling returns `error.UnsupportedServiceTier`.
+both lower-case and `SERVICE_TIER_*` response spellings are accepted, while an
+unknown service-tier spelling returns `error.UnsupportedServiceTier`.
 `GenerationResult.deinit` releases all nested storage.
 
 `Client.countGenerateTokens` returns `Outcome(CountTokensResult)`. Both
@@ -206,6 +207,35 @@ appear at the operation root, under `metadata`, under `response`, or under
 not exposed; absent file input/output is represented as `null`. A top-level
 operation `error` is decoded with the shared `RemoteError` helper from
 `files_domain.zig`.
+
+`Client.downloadBatchOutputRecords(output_file_name, visitor)` covers typed
+file-backed output consumption. It accepts only a canonical `files/...` output
+name, validates that name before allocation or network IO, performs exactly one
+bounded output-file download, and returns `Outcome(BatchOutputSummary)`.
+Completed non-2xx responses transfer the complete bounded body into
+`ApiFailure`; every completed 2xx response is decoded. The context-taking
+`downloadBatchOutputRecordsWithContext` seam returns
+`OperationOutcome(BatchOutputSummary)` for future CLI reuse. Visitor callback
+errors propagate unchanged as outer Zig errors and are not reclassified as
+successful-response decoding failures.
+
+Batch output decoding is split to avoid a client/batch import cycle.
+`src/batch.zig` owns the `512 MiB` `max_batch_output_bytes` limit, bounded
+download transport, CRLF-aware `OutputLineIterator`, and strict
+`DecodedBatchOutputRecord` parser. The typed parser rejects malformed JSONL,
+empty records, missing or empty keys, and records with both or neither
+`response` and `error`. Response records retain compact response JSON for the
+client to decode through `api.decodeGeneratedFiles`; error records own
+`RemoteError` values decoded through `files_domain.remoteErrorFromJsonValue`.
+Duplicate keys are valid records and are preserved in callback order.
+
+`src/client.zig` decodes one output record at a time, converts response JSON to
+a borrowed `GenerationResult`, invokes the supplied `BatchOutputVisitor`, and
+then releases the record, generated images, and remote error before advancing.
+`BatchOutputRecordView` and all nested data are borrowed and valid only during
+the callback. The client retains at most the bounded raw JSONL body plus one
+decoded record and its generated images. `BatchOutputSummary` reports total,
+successful, and failed records after the visitor completes.
 
 The remaining command-domain namespace is temporarily available:
 
@@ -1210,6 +1240,13 @@ at a time. Each record requires a non-empty `key` and exactly one `response` or
 records, malformed records, duplicate keys, image decode failures, and write
 failures are accumulated without stopping later records.
 
+The public typed output download path uses the same output byte bound and
+CRLF-aware iteration but does not share the CLI's duplicate-key, filename, or
+filesystem policy. It treats remote-error records as valid visitor records and
+malformed records, remote errors, or generated images as successful-response
+decoding failures. CLI Batch download keeps its historical behavior until the
+Item 15 migration.
+
 Output defaults to the current directory; `--out-dir` must already exist. A
 missing output directory is reported clearly; a path that is not a directory
 is reported with the supplied path. Filename keys percent-encode bytes outside
@@ -1534,6 +1571,7 @@ zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
 zig build test-live-api-batch-list
+zig build test-live-api-batch-output-download
 zig build test-live-api-batch-submit-status
 ```
 
@@ -1544,6 +1582,12 @@ enough.
 `test-live-api-batch-list` is non-billable and read-only. It follows every
 returned page, validates canonical operation names, and formats the aggregated
 operation list without creating a Batch job.
+
+`test-live-api-batch-output-download` is non-billable and read-only. It fetches
+the authorized completed fixture
+`batches/xwdq6q34v3zya2cpjkrfr69di4t8kwbp7imx`, requires a succeeded state and
+canonical output file name, downloads that output once through the public typed
+visitor, and checks summary counts against visited success/error records.
 
 `test-live-api-batch-submit-status` is explicitly billable and non-idempotent.
 It builds two generation entries with `imageSize=512` and no `thinkingConfig`,

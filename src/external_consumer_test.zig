@@ -66,6 +66,7 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     const get_batch = nbimg.Client.getBatch;
     const cancel_batch = nbimg.Client.cancelBatch;
     const list_batches_page = nbimg.Client.listBatchesPage;
+    const download_batch_output_records = nbimg.Client.downloadBatchOutputRecords;
     _ = generate;
     _ = edit;
     _ = count_edit_tokens;
@@ -80,6 +81,7 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     _ = get_batch;
     _ = cancel_batch;
     _ = list_batches_page;
+    _ = download_batch_output_records;
 
     const edit_request = nbimg.EditRequest{
         .prompt = "Apply the product style",
@@ -179,6 +181,37 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     };
     defer unknown_batch_state.deinit(std.testing.allocator);
     const batch_validation_error: nbimg.BatchValidationError = error.EmptyBatchKey;
+    const batch_output_summary = nbimg.BatchOutputSummary{
+        .total_records = 2,
+        .successful_records = 1,
+        .failed_records = 1,
+    };
+    const success_view = nbimg.BatchOutputRecordView{
+        .key = "hero-001",
+        .result = .{ .success = &generation_result },
+    };
+    var output_remote_error = nbimg.RemoteError{
+        .code = 400,
+        .message = try std.testing.allocator.dupe(u8, "output failed"),
+        .details_json = try std.testing.allocator.dupe(u8, "[{\"reason\":\"invalid\"}]"),
+    };
+    defer output_remote_error.deinit(std.testing.allocator);
+    const error_view = nbimg.BatchOutputRecordView{
+        .key = "hero-002",
+        .result = .{ .remote_error = &output_remote_error },
+    };
+    var visitor_context: usize = 0;
+    const Visitor = struct {
+        fn visit(raw_context: *anyopaque, view: nbimg.BatchOutputRecordView) anyerror!void {
+            const context: *usize = @ptrCast(@alignCast(raw_context));
+            if (view.key.len == 0) return error.EmptyVisitedKey;
+            context.* += 1;
+        }
+    };
+    const batch_output_visitor = nbimg.BatchOutputVisitor{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    };
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
     try std.testing.expectEqualStrings(
@@ -222,6 +255,21 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     try std.testing.expectEqual(@as(?u64, 1), batch_job.stats.request_count);
     try std.testing.expectEqual(@as(?i64, -1), batch_job.priority);
     try std.testing.expectEqual(@as(usize, 0), batch_page.jobs.len);
+    try std.testing.expectEqual(@as(usize, 2), batch_output_summary.total_records);
+    try std.testing.expectEqual(@as(usize, 1), batch_output_summary.successful_records);
+    try std.testing.expectEqual(@as(usize, 1), batch_output_summary.failed_records);
+    try std.testing.expectEqualStrings("hero-001", success_view.key);
+    switch (success_view.result) {
+        .success => |result| try std.testing.expectEqualStrings("response", result.response_id),
+        .remote_error => return error.ExpectedSuccessView,
+    }
+    try std.testing.expectEqualStrings("hero-002", error_view.key);
+    switch (error_view.result) {
+        .success => return error.ExpectedRemoteErrorView,
+        .remote_error => |remote_error| try std.testing.expectEqualStrings("output failed", remote_error.message),
+    }
+    try batch_output_visitor.visit(batch_output_visitor.context, success_view);
+    try std.testing.expectEqual(@as(usize, 1), visitor_context);
     switch (unknown_batch_state) {
         .unknown => {},
         else => return error.ExpectedUnknownBatchState,
@@ -230,4 +278,5 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     try std.testing.expectEqual(@as(usize, 5 * 1024 * 1024), nbimg.max_batch_entry_bytes);
     try std.testing.expectEqual(@as(usize, 100), nbimg.max_batch_entries);
     try std.testing.expectEqual(@as(usize, 512 * 1024 * 1024), nbimg.max_batch_input_bytes);
+    try std.testing.expectEqual(@as(usize, 512 * 1024 * 1024), nbimg.max_batch_output_bytes);
 }

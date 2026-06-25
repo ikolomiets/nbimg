@@ -67,6 +67,9 @@ comptime {
         "BatchInputUpload",
         "BatchJob",
         "BatchListPage",
+        "BatchOutputRecordView",
+        "BatchOutputSummary",
+        "BatchOutputVisitor",
         "BatchState",
         "BatchStats",
         "BatchValidationError",
@@ -106,11 +109,13 @@ comptime {
         "ThinkingLevel",
         "ThinkingOptions",
         "UploadedImage",
+        "downloadBatchOutputRecordsWithContext",
         "editWithContext",
         "generateWithContext",
         "max_batch_entries",
         "max_batch_entry_bytes",
         "max_batch_input_bytes",
+        "max_batch_output_bytes",
         "max_edit_character_images",
         "max_edit_do_not_constraints",
         "max_edit_object_images",
@@ -178,6 +183,7 @@ comptime {
         "BatchState",
         "BatchStats",
         "BatchValidationError",
+        "DecodedBatchOutputRecord",
         "DownloadInfo",
         "ListPage",
         "OutputLineIterator",
@@ -189,6 +195,7 @@ comptime {
         "cancelBatchWithContext",
         "createBatchWithContext",
         "decodeBatchName",
+        "decodeBatchOutputRecord",
         "decodeDownloadInfo",
         "decodeListPage",
         "decodeOutputRecord",
@@ -200,6 +207,7 @@ comptime {
         "max_batch_entries",
         "max_batch_entry_bytes",
         "max_batch_input_bytes",
+        "max_batch_output_bytes",
         "max_entries",
         "max_entry_bytes",
         "max_input_bytes",
@@ -345,6 +353,7 @@ comptime {
         "countGenerateTokens",
         "createBatch",
         "deleteFile",
+        "downloadBatchOutputRecords",
         "edit",
         "generate",
         "getBatch",
@@ -366,6 +375,9 @@ comptime {
     assertExactPublicDecls("client.BatchListPage", client.BatchListPage, &.{
         "deinit",
     });
+    assertExactPublicDecls("client.BatchOutputRecordView", client.BatchOutputRecordView, &.{});
+    assertExactPublicDecls("client.BatchOutputSummary", client.BatchOutputSummary, &.{});
+    assertExactPublicDecls("client.BatchOutputVisitor", client.BatchOutputVisitor, &.{});
     assertExactPublicDecls("client.BatchState", client.BatchState, &.{
         "deinit",
     });
@@ -406,6 +418,11 @@ comptime {
     assertExactPublicDecls("client.Outcome(FileListPage)", client.Outcome(client.FileListPage), &.{});
     assertExactPublicDecls("client.Outcome(BatchJob)", client.Outcome(client.BatchJob), &.{});
     assertExactPublicDecls("client.Outcome(BatchListPage)", client.Outcome(client.BatchListPage), &.{});
+    assertExactPublicDecls(
+        "client.Outcome(BatchOutputSummary)",
+        client.Outcome(client.BatchOutputSummary),
+        &.{},
+    );
     assertExactPublicDecls("client.Outcome(void)", client.Outcome(void), &.{});
     assertExactPublicDecls(
         "client.OperationOutcome(GenerationResult)",
@@ -415,6 +432,11 @@ comptime {
     assertExactPublicDecls(
         "client.OperationOutcome(PreparedBatchRequest)",
         client.OperationOutcome(client.PreparedBatchRequest),
+        &.{},
+    );
+    assertExactPublicDecls(
+        "client.OperationOutcome(BatchOutputSummary)",
+        client.OperationOutcome(client.BatchOutputSummary),
         &.{},
     );
     assertExactPublicDecls("client.OutputMime", client.OutputMime, &.{});
@@ -494,6 +516,9 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("batch.DownloadInfo", batch.DownloadInfo, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("batch.DecodedBatchOutputRecord", batch.DecodedBatchOutputRecord, &.{
         "deinit",
     });
     assertExactPublicDecls("batch.OutputRecord", batch.OutputRecord, &.{

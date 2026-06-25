@@ -85,6 +85,7 @@ Available focused live API targets are:
 - `zig build test-live-api-files-get`
 - `zig build test-live-api-files-delete`
 - `zig build test-live-api-batch-list`
+- `zig build test-live-api-batch-output-download`
 - `zig build test-live-api-batch-submit-status`
 
 Prefer offline tests first. New or changed Gemini request fields must then be
@@ -95,6 +96,8 @@ their external effects:
 - Generation request validation uses non-generation `countTokens`.
 - Edit and Files targets may upload and delete remote files.
 - Batch list is read-only and non-billable.
+- Batch output download is read-only and non-billable against an existing
+  completed fixture.
 - Batch submit/status is billable, non-idempotent, and leaves remote
   resources; run it only when the user explicitly requests or authorizes it.
 

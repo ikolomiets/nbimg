@@ -13,6 +13,7 @@ pub const max_batch_input_bytes = 512 * 1024 * 1024;
 pub const max_entry_bytes = max_batch_entry_bytes;
 pub const max_input_bytes = max_batch_input_bytes;
 pub const max_output_bytes = 512 * 1024 * 1024;
+pub const max_batch_output_bytes = max_output_bytes;
 pub const max_entries = max_batch_entries;
 const input_content_type = "application/jsonl";
 const canonical_batch_name_prefix = "batches/";
@@ -188,6 +189,31 @@ pub const OutputRecord = struct {
     pub fn deinit(record: *OutputRecord, gpa: std.mem.Allocator) void {
         gpa.free(record.key);
         if (record.response_json) |response_json| gpa.free(response_json);
+        record.* = undefined;
+    }
+};
+
+/// Owns one typed batch output key and either compact response JSON or a remote error.
+///
+/// - All populated slices must be released with `deinit` using the originating allocator.
+/// - The value otherwise owns no external state.
+pub const DecodedBatchOutputRecord = struct {
+    key: []u8,
+    result: union(enum) {
+        response_json: []u8,
+        remote_error: file_domain.RemoteError,
+    },
+
+    /// Frees a decoded typed output record and invalidates the value.
+    ///
+    /// - `gpa` must match the allocator that created every owned slice; no errors are returned.
+    /// - Mutates only `record` and allocator state.
+    pub fn deinit(record: *DecodedBatchOutputRecord, gpa: std.mem.Allocator) void {
+        gpa.free(record.key);
+        switch (record.result) {
+            .response_json => |response_json| gpa.free(response_json),
+            .remote_error => |*remote_error| remote_error.deinit(gpa),
+        }
         record.* = undefined;
     }
 };
@@ -650,6 +676,59 @@ pub fn decodeOutputRecord(gpa: std.mem.Allocator, line: []const u8) !OutputRecor
     return .{
         .key = owned_key,
         .response_json = response_json,
+    };
+}
+
+/// Decodes one borrowed batch output line into an owned typed record.
+///
+/// - Allocates returned data with `gpa`; the caller must invoke `DecodedBatchOutputRecord.deinit`.
+/// - Returns allocation, JSON, remote-error, or `InvalidBatchOutput` errors and mutates no input.
+pub fn decodeBatchOutputRecord(gpa: std.mem.Allocator, line: []const u8) !DecodedBatchOutputRecord {
+    if (line.len == 0) return error.InvalidBatchOutput;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, line, .{
+        .parse_numbers = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidBatchOutput,
+    };
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidBatchOutput,
+    };
+
+    const key_value = root.get("key") orelse return error.InvalidBatchOutput;
+    const key = switch (key_value) {
+        .string => |string| string,
+        else => return error.InvalidBatchOutput,
+    };
+    if (key.len == 0) return error.InvalidBatchOutput;
+
+    const response_value = root.get("response");
+    const error_value = root.get("error");
+    if (response_value != null and error_value != null) return error.InvalidBatchOutput;
+    if (response_value == null and error_value == null) return error.InvalidBatchOutput;
+
+    const owned_key = try gpa.dupe(u8, key);
+    errdefer gpa.free(owned_key);
+
+    if (response_value) |response| {
+        if (response != .object) return error.InvalidBatchOutput;
+        const response_json = try stringifyJson(gpa, response, .{});
+        errdefer gpa.free(response_json);
+        return .{
+            .key = owned_key,
+            .result = .{ .response_json = response_json },
+        };
+    }
+
+    var remote_error = try file_domain.remoteErrorFromJsonValue(gpa, error_value.?);
+    errdefer remote_error.deinit(gpa);
+    return .{
+        .key = owned_key,
+        .result = .{ .remote_error = remote_error },
     };
 }
 
@@ -1736,6 +1815,144 @@ test "decodeOutputRecord distinguishes responses errors and malformed records" {
     );
 }
 
+test "decodeBatchOutputRecord decodes success and remote error records" {
+    const gpa = std.testing.allocator;
+
+    var success = try decodeBatchOutputRecord(
+        gpa,
+        "{\"key\":\"hero\",\"response\":{\"responseId\":\"id\",\"candidates\":[],\"large\":12345678901234567890}}",
+    );
+    defer success.deinit(gpa);
+    try std.testing.expectEqualStrings("hero", success.key);
+    switch (success.result) {
+        .response_json => |response_json| {
+            try std.testing.expectEqualStrings(
+                "{\"responseId\":\"id\",\"candidates\":[],\"large\":12345678901234567890}",
+                response_json,
+            );
+        },
+        .remote_error => return error.UnexpectedRemoteError,
+    }
+
+    var failed = try decodeBatchOutputRecord(
+        gpa,
+        "{\"key\":\"failed\",\"error\":{\"code\":\"400\",\"message\":\"bad request\",\"details\":[{\"reason\":\"invalid\"}]}}",
+    );
+    defer failed.deinit(gpa);
+    try std.testing.expectEqualStrings("failed", failed.key);
+    switch (failed.result) {
+        .response_json => return error.UnexpectedResponseJson,
+        .remote_error => |remote_error| {
+            try std.testing.expectEqual(@as(?i64, 400), remote_error.code);
+            try std.testing.expectEqualStrings("bad request", remote_error.message);
+            try std.testing.expectEqualStrings("[{\"reason\":\"invalid\"}]", remote_error.details_json.?);
+        },
+    }
+}
+
+test "decodeBatchOutputRecord rejects malformed typed records" {
+    const gpa = std.testing.allocator;
+
+    try std.testing.expectError(error.InvalidBatchOutput, decodeBatchOutputRecord(gpa, ""));
+    try std.testing.expectError(error.InvalidBatchOutput, decodeBatchOutputRecord(gpa, "not-json"));
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"key\":\"\",\"response\":{}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"response\":{}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"key\":7,\"response\":{}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"key\":\"both\",\"response\":{},\"error\":{\"message\":\"bad\"}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"key\":\"neither\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchOutput,
+        decodeBatchOutputRecord(gpa, "{\"key\":\"bad-response\",\"response\":[]}"),
+    );
+    try std.testing.expectError(
+        error.MissingRemoteErrorMessage,
+        decodeBatchOutputRecord(gpa, "{\"key\":\"bad-error\",\"error\":{\"code\":400}}"),
+    );
+}
+
+test "typed batch output iteration is CRLF aware and preserves duplicate keys" {
+    const gpa = std.testing.allocator;
+    const input =
+        "{\"key\":\"same\",\"response\":{\"responseId\":\"one\",\"candidates\":[]}}\r\n" ++
+        "{\"key\":\"same\",\"error\":{\"message\":\"failed\"}}\n";
+
+    var iterator = OutputLineIterator{ .bytes = input };
+
+    const first_line = (try iterator.next()).?;
+    var first = try decodeBatchOutputRecord(gpa, first_line);
+    defer first.deinit(gpa);
+    try std.testing.expectEqualStrings("same", first.key);
+    switch (first.result) {
+        .response_json => |response_json| {
+            try std.testing.expectEqualStrings(
+                "{\"responseId\":\"one\",\"candidates\":[]}",
+                response_json,
+            );
+        },
+        .remote_error => return error.UnexpectedRemoteError,
+    }
+
+    const second_line = (try iterator.next()).?;
+    var second = try decodeBatchOutputRecord(gpa, second_line);
+    defer second.deinit(gpa);
+    try std.testing.expectEqualStrings("same", second.key);
+    switch (second.result) {
+        .response_json => return error.UnexpectedResponseJson,
+        .remote_error => |remote_error| {
+            try std.testing.expectEqualStrings("failed", remote_error.message);
+        },
+    }
+
+    try std.testing.expectEqual(@as(?[]const u8, null), try iterator.next());
+    try std.testing.expectEqual(@as(usize, 2), iterator.line_count);
+}
+
+test "typed batch output iteration enforces record count limit" {
+    const gpa = std.testing.allocator;
+
+    const maximum = try testTypedOutputJsonl(gpa, max_entries);
+    defer gpa.free(maximum);
+    var maximum_iterator = OutputLineIterator{ .bytes = maximum };
+    var maximum_count: usize = 0;
+    while (try maximum_iterator.next()) |line| {
+        var record = try decodeBatchOutputRecord(gpa, line);
+        defer record.deinit(gpa);
+        maximum_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, max_entries), maximum_count);
+
+    const over_maximum = try testTypedOutputJsonl(gpa, max_entries + 1);
+    defer gpa.free(over_maximum);
+    var over_maximum_iterator = OutputLineIterator{ .bytes = over_maximum };
+    var accepted_count: usize = 0;
+    while (true) {
+        const line = over_maximum_iterator.next() catch |err| {
+            try std.testing.expectEqual(error.BatchTooManyEntries, err);
+            break;
+        };
+        if (line == null) return error.ExpectedBatchTooManyEntries;
+        var record = try decodeBatchOutputRecord(gpa, line.?);
+        defer record.deinit(gpa);
+        accepted_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, max_entries), accepted_count);
+}
+
 test "safeOutputKey prevents path traversal and bounds long keys" {
     const gpa = std.testing.allocator;
 
@@ -2104,6 +2321,20 @@ fn testOutputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
     errdefer output.deinit();
     for (0..entry_count) |index| {
         try output.writer.print("record-{d}\n", .{index});
+    }
+    return output.toOwnedSlice();
+}
+
+fn testTypedOutputJsonl(gpa: std.mem.Allocator, entry_count: usize) ![]u8 {
+    assert(entry_count > 0);
+
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    errdefer output.deinit();
+    for (0..entry_count) |index| {
+        try output.writer.print(
+            "{{\"key\":\"key-{d}\",\"response\":{{\"responseId\":\"response-{d}\",\"candidates\":[]}}}}\n",
+            .{ index, index },
+        );
     }
     return output.toOwnedSlice();
 }

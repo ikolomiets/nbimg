@@ -3,6 +3,7 @@
 const std = @import("std");
 const api = @import("api.zig");
 const batch_api = @import("batch.zig");
+const build_options = @import("build_options");
 const edit_api = @import("edit.zig");
 const file_domain = @import("files_domain.zig");
 const files_api = @import("files.zig");
@@ -10,6 +11,7 @@ const gen = @import("gen.zig");
 const operation = @import("operation.zig");
 
 const default_request_timeout = std.Io.Duration.fromSeconds(180);
+const live_batch_output_job_name = "batches/xwdq6q34v3zya2cpjkrfr69di4t8kwbp7imx";
 
 pub const max_edit_references = 13;
 pub const max_edit_character_images = 4;
@@ -205,7 +207,30 @@ pub const PreparedBatchEntry = batch_api.PreparedBatchEntry;
 pub const max_batch_entry_bytes = batch_api.max_batch_entry_bytes;
 pub const max_batch_entries = batch_api.max_batch_entries;
 pub const max_batch_input_bytes = batch_api.max_batch_input_bytes;
+pub const max_batch_output_bytes = batch_api.max_batch_output_bytes;
 pub const validateBatchInput = batch_api.validateBatchInput;
+
+/// Borrows one decoded Batch output record for the duration of a visitor callback.
+pub const BatchOutputRecordView = struct {
+    key: []const u8,
+    result: union(enum) {
+        success: *const GenerationResult,
+        remote_error: *const RemoteError,
+    },
+};
+
+/// Visits decoded Batch output records in downloaded JSONL order.
+pub const BatchOutputVisitor = struct {
+    context: *anyopaque,
+    visit: *const fn (*anyopaque, BatchOutputRecordView) anyerror!void,
+};
+
+/// Summarizes decoded Batch output records after a complete visitor pass.
+pub const BatchOutputSummary = struct {
+    total_records: usize,
+    successful_records: usize,
+    failed_records: usize,
+};
 
 pub const ReferenceRole = enum {
     scene,
@@ -560,6 +585,21 @@ pub const Client = struct {
         );
     }
 
+    /// Downloads one canonical Batch output file and visits decoded records in JSONL order.
+    ///
+    /// The record view and all nested data are borrowed and valid only during the callback.
+    pub fn downloadBatchOutputRecords(
+        client: *const Client,
+        output_file_name: []const u8,
+        visitor: BatchOutputVisitor,
+    ) !Outcome(BatchOutputSummary) {
+        const context = client.requestContext();
+        return publicOutcome(
+            BatchOutputSummary,
+            try downloadBatchOutputRecordsWithContext(&context, output_file_name, visitor),
+        );
+    }
+
     fn requestContext(client: *const Client) api.RequestContext {
         return .{
             .gpa = client.allocator,
@@ -625,6 +665,18 @@ pub fn prepareEditBatchRequestWithContext(
 
     const generate_request_json = try buildEditGenerateRequest(context.gpa, request);
     return prepareBatchRequestWithContext(context, generate_request_json);
+}
+
+/// Downloads and visits typed Batch output records using an explicit request context.
+pub fn downloadBatchOutputRecordsWithContext(
+    context: *const api.RequestContext,
+    output_file_name: []const u8,
+    visitor: BatchOutputVisitor,
+) !OperationOutcome(BatchOutputSummary) {
+    if (!api.isCanonicalFileName(output_file_name)) return error.InvalidFileName;
+
+    var response = try batch_api.downloadOutput(context, output_file_name);
+    return batchOutputRecordsOutcomeFromResponse(context.gpa, &response, visitor);
 }
 
 fn publicOutcome(
@@ -781,6 +833,73 @@ fn generatedContentOutcomeFromResponse(
     return .{ .success = result };
 }
 
+fn batchOutputRecordsOutcomeFromResponse(
+    allocator: std.mem.Allocator,
+    response: *api.HttpResponse,
+    visitor: BatchOutputVisitor,
+) !OperationOutcome(BatchOutputSummary) {
+    if (response.status.class() != .success) {
+        const failure = ApiFailure{
+            .status = response.status,
+            .body = response.body,
+        };
+        response.* = undefined;
+        return .{ .api_failure = failure };
+    }
+    defer response.deinit(allocator);
+
+    if (response.body.len == 0) {
+        return .{ .response_decoding_failure = error.EmptyBatchOutput };
+    }
+
+    var summary = BatchOutputSummary{
+        .total_records = 0,
+        .successful_records = 0,
+        .failed_records = 0,
+    };
+    var iterator = batch_api.OutputLineIterator{ .bytes = response.body };
+    while (true) {
+        const maybe_line = iterator.next() catch |err| {
+            return .{ .response_decoding_failure = err };
+        };
+        const line = maybe_line orelse break;
+
+        var record = batch_api.decodeBatchOutputRecord(allocator, line) catch |err| {
+            return .{ .response_decoding_failure = err };
+        };
+        defer record.deinit(allocator);
+
+        switch (record.result) {
+            .response_json => |response_json| {
+                var files = api.decodeGeneratedFiles(allocator, response_json) catch |err| {
+                    return .{ .response_decoding_failure = err };
+                };
+                var result = generationResultFromGeneratedFiles(allocator, &files) catch |err| {
+                    files.deinit(allocator);
+                    return .{ .response_decoding_failure = err };
+                };
+                defer result.deinit(allocator);
+
+                try visitor.visit(visitor.context, .{
+                    .key = record.key,
+                    .result = .{ .success = &result },
+                });
+                summary.successful_records += 1;
+            },
+            .remote_error => |*remote_error| {
+                try visitor.visit(visitor.context, .{
+                    .key = record.key,
+                    .result = .{ .remote_error = remote_error },
+                });
+                summary.failed_records += 1;
+            },
+        }
+        summary.total_records += 1;
+    }
+
+    return .{ .success = summary };
+}
+
 fn generationResultFromGeneratedFiles(
     allocator: std.mem.Allocator,
     files: *api.GeneratedFiles,
@@ -816,6 +935,9 @@ fn generationResultFromGeneratedFiles(
 }
 
 fn serviceTierFromWireName(name: []const u8) ?ServiceTier {
+    if (std.mem.eql(u8, name, "SERVICE_TIER_FLEX")) return .flex;
+    if (std.mem.eql(u8, name, "SERVICE_TIER_STANDARD")) return .standard;
+    if (std.mem.eql(u8, name, "SERVICE_TIER_PRIORITY")) return .priority;
     if (std.mem.eql(u8, name, "flex")) return .flex;
     if (std.mem.eql(u8, name, "standard")) return .standard;
     if (std.mem.eql(u8, name, "priority")) return .priority;
@@ -1285,6 +1407,19 @@ test "invalid public request returns before allocation or network IO" {
     try std.testing.expectError(error.InvalidFileName, client.getFile("abc123"));
     try std.testing.expectError(error.EmptyPageToken, client.listFilesPage(""));
     try std.testing.expectError(error.InvalidFileName, client.deleteFile("files/"));
+    var visitor_context: usize = 0;
+    const Visitor = struct {
+        fn visit(_: *anyopaque, _: BatchOutputRecordView) anyerror!void {
+            return error.UnexpectedVisitorCall;
+        }
+    };
+    try std.testing.expectError(
+        error.InvalidFileName,
+        client.downloadBatchOutputRecords("batch-output", .{
+            .context = &visitor_context,
+            .visit = Visitor.visit,
+        }),
+    );
 }
 
 test "public clients construct quiet request contexts" {
@@ -1848,6 +1983,239 @@ test "prepared Batch public outcome surfaces malformed successes as Zig errors" 
     );
 }
 
+test "batch output response visits success and failure records in order" {
+    const gpa = std.testing.allocator;
+    const jsonl =
+        "{\"key\":\"hero\",\"response\":{\"responseId\":\"response-one\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"standard\"}}}\n" ++
+        "{\"key\":\"failed\",\"error\":{\"code\":400,\"message\":\"bad request\",\"details\":[{\"reason\":\"invalid\"}]}}\r\n" ++
+        "{\"key\":\"hero\",\"response\":{\"responseId\":\"response-two\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/webp\",\"data\":\"BAUG\"}}]}}]}}\n";
+
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try gpa.dupe(u8, jsonl),
+    };
+
+    const VisitorContext = struct {
+        index: usize = 0,
+    };
+    const Visitor = struct {
+        fn visit(raw_context: *anyopaque, view: BatchOutputRecordView) anyerror!void {
+            const context: *VisitorContext = @ptrCast(@alignCast(raw_context));
+            switch (context.index) {
+                0 => {
+                    try std.testing.expectEqualStrings("hero", view.key);
+                    switch (view.result) {
+                        .success => |result| {
+                            try std.testing.expectEqualStrings("response-one", result.response_id);
+                            try std.testing.expectEqual(@as(?ServiceTier, .standard), result.reported_service_tier);
+                            try std.testing.expectEqual(@as(usize, 1), result.images.len);
+                            try std.testing.expectEqual(OutputMime.png, result.images[0].mime);
+                            try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, result.images[0].bytes);
+                        },
+                        .remote_error => return error.ExpectedSuccess,
+                    }
+                },
+                1 => {
+                    try std.testing.expectEqualStrings("failed", view.key);
+                    switch (view.result) {
+                        .success => return error.ExpectedRemoteError,
+                        .remote_error => |remote_error| {
+                            try std.testing.expectEqual(@as(?i64, 400), remote_error.code);
+                            try std.testing.expectEqualStrings("bad request", remote_error.message);
+                            try std.testing.expectEqualStrings("[{\"reason\":\"invalid\"}]", remote_error.details_json.?);
+                        },
+                    }
+                },
+                2 => {
+                    try std.testing.expectEqualStrings("hero", view.key);
+                    switch (view.result) {
+                        .success => |result| {
+                            try std.testing.expectEqualStrings("response-two", result.response_id);
+                            try std.testing.expectEqual(@as(?ServiceTier, null), result.reported_service_tier);
+                            try std.testing.expectEqual(@as(usize, 1), result.images.len);
+                            try std.testing.expectEqual(OutputMime.webp, result.images[0].mime);
+                            try std.testing.expectEqualSlices(u8, &.{ 4, 5, 6 }, result.images[0].bytes);
+                        },
+                        .remote_error => return error.ExpectedSuccess,
+                    }
+                },
+                else => return error.UnexpectedVisitorCall,
+            }
+            context.index += 1;
+        }
+    };
+
+    var visitor_context = VisitorContext{};
+    const outcome = try batchOutputRecordsOutcomeFromResponse(gpa, &response, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (outcome) {
+        .success => |summary| {
+            try std.testing.expectEqual(@as(usize, 3), summary.total_records);
+            try std.testing.expectEqual(@as(usize, 2), summary.successful_records);
+            try std.testing.expectEqual(@as(usize, 1), summary.failed_records);
+        },
+        .api_failure, .response_decoding_failure => return error.UnexpectedBatchOutputFailure,
+    }
+    try std.testing.expectEqual(@as(usize, 3), visitor_context.index);
+}
+
+test "batch output response accepts every successful HTTP status class" {
+    const jsonl = "{\"key\":\"failed\",\"error\":{\"message\":\"remote failure\"}}\n";
+    var visitor_context: usize = 0;
+    const Visitor = struct {
+        fn visit(raw_context: *anyopaque, view: BatchOutputRecordView) anyerror!void {
+            const context: *usize = @ptrCast(@alignCast(raw_context));
+            try std.testing.expectEqualStrings("failed", view.key);
+            switch (view.result) {
+                .success => return error.ExpectedRemoteError,
+                .remote_error => |remote_error| {
+                    try std.testing.expectEqualStrings("remote failure", remote_error.message);
+                },
+            }
+            context.* += 1;
+        }
+    };
+
+    var code: u16 = 200;
+    while (code <= 299) : (code += 1) {
+        var response = api.HttpResponse{
+            .status = @enumFromInt(code),
+            .body = try std.testing.allocator.dupe(u8, jsonl),
+        };
+        const outcome = try batchOutputRecordsOutcomeFromResponse(
+            std.testing.allocator,
+            &response,
+            .{ .context = &visitor_context, .visit = Visitor.visit },
+        );
+        switch (outcome) {
+            .success => |summary| {
+                try std.testing.expectEqual(@as(usize, 1), summary.total_records);
+                try std.testing.expectEqual(@as(usize, 0), summary.successful_records);
+                try std.testing.expectEqual(@as(usize, 1), summary.failed_records);
+            },
+            .api_failure, .response_decoding_failure => return error.UnexpectedBatchOutputFailure,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 100), visitor_context);
+}
+
+test "batch output response propagates visitor errors and cleans partial results" {
+    const gpa = std.testing.allocator;
+    var response = api.HttpResponse{
+        .status = .ok,
+        .body = try gpa.dupe(
+            u8,
+            "{\"key\":\"hero\",\"response\":{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}]}}\n",
+        ),
+    };
+    var visitor_context: usize = 0;
+    const Visitor = struct {
+        fn visit(raw_context: *anyopaque, view: BatchOutputRecordView) anyerror!void {
+            const context: *usize = @ptrCast(@alignCast(raw_context));
+            try std.testing.expectEqualStrings("hero", view.key);
+            switch (view.result) {
+                .success => |result| try std.testing.expectEqualStrings("response", result.response_id),
+                .remote_error => return error.ExpectedSuccess,
+            }
+            context.* += 1;
+            return error.VisitorStopped;
+        }
+    };
+
+    try std.testing.expectError(
+        error.VisitorStopped,
+        batchOutputRecordsOutcomeFromResponse(gpa, &response, .{
+            .context = &visitor_context,
+            .visit = Visitor.visit,
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 1), visitor_context);
+}
+
+test "batch output response classifies API and decoding failures" {
+    const gpa = std.testing.allocator;
+
+    var failure_response = api.HttpResponse{
+        .status = .not_found,
+        .body = try gpa.dupe(u8, "{\"error\":\"missing\"}"),
+    };
+    var visitor_context: usize = 0;
+    const Visitor = struct {
+        fn visit(_: *anyopaque, _: BatchOutputRecordView) anyerror!void {
+            return error.UnexpectedVisitorCall;
+        }
+    };
+    var failure = try batchOutputRecordsOutcomeFromResponse(gpa, &failure_response, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (failure) {
+        .api_failure => |*api_failure| {
+            try std.testing.expectEqual(std.http.Status.not_found, api_failure.status);
+            try std.testing.expectEqualStrings("{\"error\":\"missing\"}", api_failure.body);
+            api_failure.deinit(gpa);
+        },
+        .success => return error.UnexpectedSuccess,
+        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
+    }
+
+    var empty_response = api.HttpResponse{
+        .status = .ok,
+        .body = try gpa.dupe(u8, ""),
+    };
+    var empty = try batchOutputRecordsOutcomeFromResponse(gpa, &empty_response, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (empty) {
+        .response_decoding_failure => |err| try std.testing.expectEqual(error.EmptyBatchOutput, err),
+        .success => return error.UnexpectedSuccess,
+        .api_failure => |*api_failure| {
+            api_failure.deinit(gpa);
+            return error.UnexpectedApiFailure;
+        },
+    }
+
+    var malformed_record = api.HttpResponse{
+        .status = .ok,
+        .body = try gpa.dupe(u8, "{\"key\":\"bad\",\"response\":[]}\n"),
+    };
+    var malformed = try batchOutputRecordsOutcomeFromResponse(gpa, &malformed_record, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (malformed) {
+        .response_decoding_failure => |err| try std.testing.expectEqual(error.InvalidBatchOutput, err),
+        .success => return error.UnexpectedSuccess,
+        .api_failure => |*api_failure| {
+            api_failure.deinit(gpa);
+            return error.UnexpectedApiFailure;
+        },
+    }
+
+    var malformed_image = api.HttpResponse{
+        .status = .ok,
+        .body = try gpa.dupe(
+            u8,
+            "{\"key\":\"hero\",\"response\":{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{}]}}]}}\n",
+        ),
+    };
+    var image_failure = try batchOutputRecordsOutcomeFromResponse(gpa, &malformed_image, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (image_failure) {
+        .response_decoding_failure => |err| try std.testing.expectEqual(error.UnsupportedPart, err),
+        .success => return error.UnexpectedSuccess,
+        .api_failure => |*api_failure| {
+            api_failure.deinit(gpa);
+            return error.UnexpectedApiFailure;
+        },
+    }
+}
+
 test "generation response classification transfers images and metadata" {
     const json =
         \\{
@@ -2011,6 +2379,10 @@ test "generation response supports recognized and absent service tiers" {
     const bodies = .{
         .{
             "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"standard\"}}",
+            @as(?ServiceTier, .standard),
+        },
+        .{
+            "{\"responseId\":\"response\",\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"AQID\"}}]}}],\"usageMetadata\":{\"serviceTier\":\"SERVICE_TIER_STANDARD\"}}",
             @as(?ServiceTier, .standard),
         },
         .{
@@ -2210,6 +2582,88 @@ test "count token response classification frees malformed success body" {
         .api_failure => |*failure| {
             failure.deinit(std.testing.allocator);
             return error.UnexpectedApiFailure;
+        },
+    }
+}
+
+test "live API typed batch output download succeeds" {
+    if (!build_options.live_api_tests) return error.SkipZigTest;
+
+    const gpa = std.testing.allocator;
+    var environ_map = try std.process.Environ.createMap(std.testing.environ, gpa);
+    defer environ_map.deinit();
+    const api_key = try api.apiKeyFromMap(&environ_map);
+
+    const client = try Client.init(gpa, std.testing.io, .{
+        .api_key = api_key,
+    });
+
+    var status_outcome = try client.getBatch(live_batch_output_job_name);
+    var job = switch (status_outcome) {
+        .success => |batch_job| batch_job,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch status failed with HTTP {d} for {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), live_batch_output_job_name, failure.body },
+            );
+            return error.BatchStatusFailed;
+        },
+    };
+    defer job.deinit(gpa);
+    try std.testing.expectEqualStrings(live_batch_output_job_name, job.name);
+    try std.testing.expect(job.state == .succeeded);
+
+    const output_file_name = job.output_file_name orelse return error.MissingBatchOutputFile;
+
+    const VisitorContext = struct {
+        total_records: usize = 0,
+        successful_records: usize = 0,
+        failed_records: usize = 0,
+    };
+    const Visitor = struct {
+        fn visit(raw_context: *anyopaque, view: BatchOutputRecordView) anyerror!void {
+            const context: *VisitorContext = @ptrCast(@alignCast(raw_context));
+            try std.testing.expect(view.key.len > 0);
+            switch (view.result) {
+                .success => |result| {
+                    try std.testing.expect(result.response_id.len > 0);
+                    try std.testing.expect(result.images.len > 0);
+                    context.successful_records += 1;
+                },
+                .remote_error => |remote_error| {
+                    try std.testing.expect(remote_error.message.len > 0);
+                    context.failed_records += 1;
+                },
+            }
+            context.total_records += 1;
+        }
+    };
+
+    var visitor_context = VisitorContext{};
+    var download_outcome = try client.downloadBatchOutputRecords(output_file_name, .{
+        .context = &visitor_context,
+        .visit = Visitor.visit,
+    });
+    switch (download_outcome) {
+        .success => |summary| {
+            try std.testing.expect(summary.total_records > 0);
+            try std.testing.expect(summary.successful_records > 0 or summary.failed_records > 0);
+            try std.testing.expectEqual(summary.total_records, visitor_context.total_records);
+            try std.testing.expectEqual(summary.successful_records, visitor_context.successful_records);
+            try std.testing.expectEqual(summary.failed_records, visitor_context.failed_records);
+            try std.testing.expectEqual(
+                summary.total_records,
+                summary.successful_records + summary.failed_records,
+            );
+        },
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch output download failed with HTTP {d} for {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), output_file_name, failure.body },
+            );
+            return error.BatchOutputDownloadFailed;
         },
     }
 }

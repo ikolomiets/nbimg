@@ -102,7 +102,8 @@ fn generate(
 buffer. Release it with `GenerationResult.deinit` using the client allocator.
 Candidate and part positions are zero-based response-array positions. Output
 MIME values are `png`, `jpeg`, and `webp`; the optional reported service tier
-uses the public `ServiceTier` enum.
+uses the public `ServiceTier` enum and accepts both lower-case and
+`SERVICE_TIER_*` Gemini response spellings.
 
 The same request types support non-generating token counting:
 
@@ -280,6 +281,41 @@ state, stats, signed priority, and optional `remote_error`. `BatchState`
 normalizes `BATCH_STATE_*` and `JOB_STATE_*` spellings and owns only unknown
 state names.
 
+When a succeeded `BatchJob` has `output_file_name`, callers can download and
+process output records without retaining every decoded image:
+
+```zig
+const Visitor = struct {
+    fn visit(_: *anyopaque, record: nbimg.BatchOutputRecordView) !void {
+        switch (record.result) {
+            .success => |result| {
+                // `result` is valid only during this callback.
+                std.debug.print("{s}: {d} images\n", .{ record.key, result.images.len });
+            },
+            .remote_error => |remote_error| {
+                // Remote error details are preserved for this callback.
+                std.debug.print("{s}: {s}\n", .{ record.key, remote_error.message });
+            },
+        }
+    }
+};
+var context: usize = 0;
+var download = try client.downloadBatchOutputRecords(job.output_file_name.?, .{
+    .context = &context,
+    .visit = Visitor.visit,
+});
+```
+
+`downloadBatchOutputRecords` accepts a canonical `files/...` output name and
+does not repeat the Batch status request. It downloads the bounded JSONL file
+once, visits decoded records in JSONL order, preserves duplicate keys, and
+returns `Outcome(BatchOutputSummary)`. The summary counts total, successful,
+and failed records. The `BatchOutputRecordView` key, `GenerationResult`, and
+`RemoteError` data are borrowed and valid only for the callback. Callback
+errors propagate unchanged as Zig errors. Malformed output JSONL, malformed
+remote errors, and malformed generated images are successful-response decoding
+failures. The stable output download limit is `max_batch_output_bytes`.
+
 Batch creation is non-idempotent. If `Client.createBatch` returns a transport,
 timeout, allocation, or successful-response decoding error after dispatch, a
 remote job may already have been created and its name may be unavailable; the
@@ -290,9 +326,9 @@ Invalid `GenerationRequest` values return `GenerationValidationError` before
 network IO; invalid `EditRequest` values return `EditValidationError` before
 allocation or network IO. Invalid Files inputs return `FileValidationError`;
 the stable upload limit is `max_file_upload_bytes`. Invalid Batch inputs,
-Batch names, input File names, display names, and empty page tokens return
-`BatchValidationError`; an empty preparation key is rejected before request
-validation, allocation, or network IO. Transport, allocation, timeout,
+Batch names, input/output File names, display names, and empty page tokens
+return Batch validation errors; an empty preparation key is rejected before
+request validation, allocation, or network IO. Transport, allocation, timeout,
 oversized-response, and malformed successful-response failures are Zig errors.
 All typed operations accept every 2xx response. A completed non-success HTTP
 response is returned as `.api_failure`; its complete bounded body is owned and
@@ -801,6 +837,7 @@ zig build test-live-api-files-upload-list
 zig build test-live-api-files-get
 zig build test-live-api-files-delete
 zig build test-live-api-batch-list
+zig build test-live-api-batch-output-download
 zig build test-live-api-batch-submit-status
 ```
 
@@ -820,6 +857,12 @@ and deletes the uploaded file after validation.
 `test-live-api-batch-list` is non-billable and read-only. It follows all
 available Batch list pages, validates canonical operation names, and formats
 the aggregate response without creating a job.
+
+`test-live-api-batch-output-download` is non-billable and read-only against
+the existing completed fixture `batches/xwdq6q34v3zya2cpjkrfr69di4t8kwbp7imx`.
+It performs one status GET, requires a succeeded state and canonical
+`files/...` output name, downloads the output once through the typed visitor,
+and validates the summary counts.
 
 `test-live-api-batch-submit-status` is explicitly billable and
 non-idempotent. It builds two `512` image-generation JSONL entries without
