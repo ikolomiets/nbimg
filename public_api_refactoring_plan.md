@@ -813,7 +813,7 @@ outcome used by later typed operations.
 
    **Depends on:** Items 9 and 11.
 
-   **Status:** Next.
+   **Status:** Completed.
 
    With Item 12 complete, this is the recommended next increment. Keep this
    item scoped to remote Batch job management; typed output download and CLI
@@ -888,9 +888,10 @@ outcome used by later typed operations.
      request, successful, failed, and pending counts. Define owned `BatchJob`
      with canonical name; optional owned display name, model, create/update/end
      timestamps, canonical input file name, and canonical output file name;
-     optional signed priority; `BatchState`; `BatchStats`; and optional
-     `RemoteError`. Define `BatchListPage` as owned jobs plus an optional
-     continuation token. Every owning type provides `deinit(allocator)`.
+     optional signed priority; `BatchState`; `BatchStats`; optional operation
+     `done` flag; and optional `RemoteError` as `remote_error`.
+     Define `BatchListPage` as owned jobs plus an optional continuation token.
+     Every owning type provides `deinit(allocator)`.
      Absent state maps to `.unspecified`. Accept integral counters and priority
      from either decimal JSON strings or integral JSON numbers; reject
      negative counters, fractional values, overflow, malformed present
@@ -906,9 +907,9 @@ outcome used by later typed operations.
      created for other models; preserve available model and common metadata
      while representing absent file input/output as null. Do not expose inline
      requests or responses. Decode a top-level long-running-operation `error`
-     into `BatchJob.error`, preserving code, message, and details. Creation
-     decoding requires at least the canonical Batch name; all other fields may
-     be absent in the initial operation response.
+     into `BatchJob.remote_error`, preserving code, message, and details.
+     Creation decoding requires at least the canonical Batch name; all other
+     fields may be absent in the initial operation response.
    - Return typed outcomes consistently: uploads return `Outcome(File)`,
      create/get return `Outcome(BatchJob)`, cancel returns
      `Outcome(void)`, and listing returns `Outcome(BatchListPage)`.
@@ -929,6 +930,28 @@ outcome used by later typed operations.
    **Compatibility:** Additive. The undocumented `nbimg.batch` path and all CLI
    Batch command behavior remain unchanged.
 
+   **Completed changes:**
+
+   - Added public typed Batch upload/create/get/cancel/list methods on
+     `Client`, plus `BatchInputUpload`, `BatchCreateRequest`, `BatchState`,
+     `BatchStats`, `BatchJob`, and `BatchListPage` re-exported through the
+     package root.
+   - Added context-taking typed Batch cores in `src/batch.zig`; public methods
+     use quiet contexts, while CLI Batch commands continue to use the legacy raw
+     JSON path.
+   - Moved shared File and remote-error decoding into `src/files_domain.zig` so
+     Batch JSONL upload and operation errors reuse the typed Files ownership
+     rules without depending on `src/files.zig`.
+   - Extended `BatchValidationError` with remote-management validation errors
+     and validated Batch JSONL bytes, names, display names, and page tokens
+     before allocation or network IO.
+   - Decoded operation wrappers from root, `metadata`, `response`, and
+     `response.batch`; normalized `BATCH_STATE_*` and `JOB_STATE_*`; decoded
+     stats, signed priority, canonical model/file names, output-file placements,
+     operation `done`, pagination, and operation `remote_error`.
+   - Updated exact package and internal allowlists, external-consumer compile
+     coverage, README API examples, and implementation design notes.
+
    **Validation:** Cover all public validation errors before
    allocation/network IO, pagination, canonical names, both known wire
    prefixes for every applicable state, every BatchStats field, signed
@@ -946,11 +969,27 @@ outcome used by later typed operations.
    without raw response bodies or public wire decoders, while output download
    and all CLI Batch paths remain unchanged for the next items.
 
+   **Validation completed:** Added focused offline tests for validation,
+   request JSON priority serialization, JSONL upload decoding, wrapper
+   placements, state normalization and unknown ownership, stats/priority
+   parsing, malformed present fields, list pagination ownership, all 2xx and
+   non-2xx outcome classification, cancellation bodies, and public ownership
+   cleanup. Exact allowlist and external-consumer tests ran as part of
+   `zig build test`. Ran `zig fmt --check build.zig src`, `zig build test`,
+   `zig build`, and `git diff --check`. The task assumptions authorized the
+   billable live target; live validation ran through
+   `zig build test-live-api-batch-list` and
+   `zig build test-live-api-batch-submit-status`.
+
 14. **Add typed Batch output download**
 
    **Depends on:** Item 13.
 
-   **Status:** Planned.
+   **Status:** Next.
+
+   With Item 13 complete, this is the recommended next increment. Keep this
+   item scoped to the public typed output download workflow; CLI Batch download
+   migration remains Item 15.
 
    **Result:** Consumers can download and process file-backed Batch output
    through a bounded borrowed-record visitor without internal line iterators or
@@ -1052,6 +1091,7 @@ outcome used by later typed operations.
      and `list` with deliberate CLI-owned JSON serialization of
      `BatchJob` and `BatchListPage`. Use camelCase field names. A job object
      always includes `name`; it includes `displayName`, `model`, `state`,
+     `done`,
      `createTime`, `updateTime`, `endTime`, `priority`, `inputFileName`,
      `outputFileName`, `batchStats`, and `error` only when represented by the
      typed value. Render known states as documented uppercase
@@ -1215,7 +1255,7 @@ outcome used by later typed operations.
 
 ## Schema Baseline for Remaining Remote APIs
 
-Remaining remote Items 13 through 15 use the current official
+Remaining remote Items 14 and 15 use the current official
 [Files API](https://ai.google.dev/api/files),
 [Batch API reference](https://ai.google.dev/api/batch-api), and
 [Batch guide](https://ai.google.dev/gemini-api/docs/batch-api) as their schema
@@ -1229,11 +1269,12 @@ counters, signed priority, timestamps, and file-backed
 `inputConfig.fileName`/`output.responsesFile`. Current REST guide examples
 place state under `metadata` and file output directly under
 `response.responsesFile`, while SDK guide examples still expose `JOB_STATE_*`
-and `dest.fileName`. Item 13 therefore deliberately accepts all listed
-representations. The REST reference states that file-backed output records are
-written in input order, which Item 14 preserves through visitor order. The
-guide currently advertises a 2 GB Batch input-file maximum; this refactoring
-deliberately retains the repository's existing 512 MiB admission limit.
+and `dest.fileName`. Item 13 deliberately accepts all listed representations;
+Items 14 and 15 should preserve that compatibility. The REST reference states
+that file-backed output records are written in input order, which Item 14
+preserves through visitor order. The guide currently advertises a 2 GB Batch
+input-file maximum; this refactoring deliberately retains the repository's
+existing 512 MiB admission limit.
 Raising that resource bound is a separate design change, not an incidental
 API-refactoring side effect. The reference also documents Batch delete and
 update methods, but they remain outside this plan because the current CLI has

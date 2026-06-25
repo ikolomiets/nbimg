@@ -1864,7 +1864,10 @@ test "command modules import only their allowed shared modules" {
         "src/files.zig",
         &.{ "api.zig", "files_domain.zig", "operation.zig" },
     );
-    try expectAllowedCommandModuleImports("src/batch.zig", &.{"api.zig"});
+    try expectAllowedCommandModuleImports(
+        "src/batch.zig",
+        &.{ "api.zig", "files_domain.zig", "operation.zig" },
+    );
 }
 
 fn expectAllowedCommandModuleImports(
@@ -1872,7 +1875,7 @@ fn expectAllowedCommandModuleImports(
     allowed_local_imports: []const []const u8,
 ) !void {
     const gpa = std.testing.allocator;
-    const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(64 * 1024));
+    const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, .limited(128 * 1024));
     defer gpa.free(source);
 
     const import_prefix = "@import(\"";

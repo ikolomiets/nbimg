@@ -58,13 +58,15 @@ The code is split into eleven source files:
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,
-  returned validation errors, public Files and Batch-preparation methods,
-  retained phase-one Batch request ownership, and conversion to and from the
-  existing command wire paths.
+  returned validation errors, public Files methods, public Batch preparation
+  and management methods, retained phase-one Batch request ownership, and
+  conversion to and from the existing command wire paths.
 - `src/operation.zig` owns shared `ApiFailure`, `Outcome(T)`, and internal
   stage-aware `OperationOutcome(T)` response types.
 - `src/files_domain.zig` owns the public Files request, result, state, source,
-  remote-error, validation-error, and upload-limit declarations.
+  remote-error, validation-error, and upload-limit declarations, plus exact
+  internal File and remote-error decoders shared by Files and typed Batch
+  upload/status decoding.
 - `src/cli.zig` owns user-facing command parsing, diagnostics, environment
   lookup, request dispatch, response handling, generated file writing, and
   locked Batch JSONL appends.
@@ -76,9 +78,10 @@ The code is split into eleven source files:
   generic resumable byte uploads, generated response decoding, and response log
   sanitization.
 - `src/batch.zig` owns public Batch input validation and prepared-entry value
-  types, stable admission limits, legacy JSONL entry serialization, Batch input
-  upload configuration, create/status/cancel/list request construction,
-  canonical `batches/...` validation, response-name and list-page decoding,
+  types, typed remote Batch request/result/state/stats types, stable admission
+  limits, legacy JSONL entry serialization, Batch input upload configuration,
+  create/status/cancel/list request construction, canonical `batches/...`
+  validation, response-name and list-page decoding, typed operation decoding,
   bounded output download, output-record decoding, safe output keys,
   pagination token handling, and full JSON pretty-printing.
 - `src/gen.zig` owns `gen`-specific API behavior: prompt content construction
@@ -171,6 +174,39 @@ append rollback remain CLI-owned. Public callers use quiet contexts.
 without parsing JSON. Legacy `batch.validateInputJsonl` and limit names remain
 compatibility wrappers.
 
+`Client.uploadBatchInput` accepts borrowed JSONL bytes and an optional display
+name, validates the complete input with `validateBatchInput`, uploads it as
+`application/jsonl`, and returns owned `File` metadata. It uses the Batch
+512 MiB input limit rather than the image upload limit. `Client.createBatch`
+accepts a canonical uploaded input `files/...` name, required display name, and
+optional signed priority, then creates one non-idempotent job for the fixed
+image model. Upload and creation are separate so callers retain the uploaded
+File name if creation fails.
+
+`Client.getBatch`, `Client.cancelBatch`, and `Client.listBatchesPage` cover the
+remaining typed management surface. Create/get return `Outcome(BatchJob)`;
+cancel returns `Outcome(void)` and ignores arbitrary successful 2xx bodies;
+list returns `Outcome(BatchListPage)` and accepts only an optional continuation
+token with the fixed internal page size. `BatchJob` owns its canonical name,
+optional model/display/input/output/timestamps, normalized `BatchState`,
+`BatchStats`, optional signed priority, optional operation `remote_error`, and
+the optional operation `done` flag. `BatchState` maps both `BATCH_STATE_*` and
+`JOB_STATE_*` spellings to the same tags and owns only unknown spellings.
+Stats counters are optional `u64` values; priority is an optional `i64`.
+Decimal strings and integral JSON numbers are accepted, while malformed,
+fractional, overflowing, and negative counter values are rejected. Present
+File names must be canonical `files/...`, and present model names must be
+canonical non-empty `models/...`.
+
+Typed Batch decoding accepts the documented long-running operation wrapper and
+the placements already tolerated by legacy CLI helpers: Batch fields may
+appear at the operation root, under `metadata`, under `response`, or under
+`response.batch`. File-backed output is accepted from `output.responsesFile`,
+`response.responsesFile`, or `dest.fileName`. Inline input/output details are
+not exposed; absent file input/output is represented as `null`. A top-level
+operation `error` is decoded with the shared `RemoteError` helper from
+`files_domain.zig`.
+
 The remaining command-domain namespace is temporarily available:
 
 ```zig
@@ -188,7 +224,8 @@ The internal module interfaces are intentionally narrow:
   seams and the generic internal operation outcome.
 - `operation` exports only shared typed-operation outcome and API-failure
   ownership declarations.
-- `files_domain` exports only deliberate public Files domain declarations.
+- `files_domain` exports only deliberate public Files domain declarations and
+  exact internal File/remote-error decoder seams shared by Files and Batch.
 - `gen` exports only generation-request construction for the typed client and
   CLI Batch-file preparation. Token-count request helpers remain
   module-internal.
@@ -196,15 +233,15 @@ The internal module interfaces are intentionally narrow:
   edit-specific bounded validation, generation-request construction, and label
   validation. Prompt-fragment and File URI builders remain internal.
 - `files` exports only the four typed context-taking upload/get/list/delete
-  operations shared by the public client and CLI. Raw transport helpers and
-  typed response decoders remain private. Shared uploaded-name decoding is
-  exposed only by `api`.
+  operations shared by the public client and CLI. Raw transport helpers remain
+  private. Shared typed File and remote-error decoding lives in
+  `files_domain.zig`; shared uploaded-name decoding is exposed only by `api`.
 - `batch` exports the deliberate Batch input types, validation function, stable
-  limits, and the CLI-consumed compatibility models, limits,
-  ownership/iteration methods, upload/submit/status/download/cancel/list
-  operations, response decoders, and JSONL/output helpers. Wire constants,
-  submit serialization, byte-count validation, and URL construction remain
-  internal.
+  limits, typed remote-management types and context-taking typed cores, and
+  the CLI-consumed compatibility models, limits, ownership/iteration methods,
+  upload/submit/status/download/cancel/list operations, response decoders, and
+  JSONL/output helpers. Wire constants, submit serialization, byte-count
+  validation, URL construction, and typed response parsers remain internal.
 - `api` exports only shared cross-module models, bounds, validators,
   generation/countTokens request assembly and transport, generic JSON
   transport, resumable upload support, response decoders, request context and
@@ -232,14 +269,16 @@ receipts or uploaded file IDs, and translating parse or API errors into process
 exit codes. API modules own only request/response wire shapes and HTTP
 transport.
 
-Command-domain modules must not depend on each other. `src/gen.zig`,
-`src/edit.zig`, and `src/batch.zig` may import only `api.zig`, `std`, and
-`build_options` for project-local/shared functionality. `src/files.zig` may
-additionally import the flat shared `files_domain.zig` and `operation.zig`
-modules required by its typed operations. `src/client.zig` is the package
-façade and may import `gen.zig`, `edit.zig`, `files.zig`, `files_domain.zig`,
-`operation.zig`, and `api.zig` to convert validated public requests into the
-existing internal request paths.
+Command-domain modules must not depend on each other. `src/gen.zig` and
+`src/edit.zig` may import only `api.zig`, `std`, and `build_options` for
+project-local/shared functionality. `src/files.zig` may additionally import
+the flat shared `files_domain.zig` and `operation.zig` modules required by its
+typed operations. `src/batch.zig` may also import `files_domain.zig` and
+`operation.zig` for the typed Batch management surface, because it returns
+shared `File`/`RemoteError` data and uses the shared stage-aware outcome.
+`src/client.zig` is the package façade and may import `gen.zig`, `edit.zig`,
+`files.zig`, `files_domain.zig`, `operation.zig`, and `api.zig` to convert
+validated public requests into the existing internal request paths.
 Cross-command workflows
 such as uploading a file and then validating an edit request belong in
 `src/cli.zig`.
@@ -270,17 +309,22 @@ public `FileUpload` values from `src/files_domain.zig`; the CLI converts
 path-derived wire image MIME values before calling them. The module validates
 typed uploads, canonical names, and page tokens, invokes the shared resumable
 byte-upload transport, builds paginated list and file-resource URLs, and
-decodes uploaded/listed/fetched File metadata.
+classifies responses. Shared File metadata decoding lives in
+`src/files_domain.zig` so Batch JSONL upload can reuse the same ownership and
+remote-error parsing without depending on `src/files.zig`.
 
 `src/batch.zig` owns Gemini Batch API semantics. Its public structural validator
 enforces the 5 MiB serialized-entry, 100-entry, and 512 MiB input limits and
 returns byte and entry counts without parsing JSON. Prepared entries own their
-explicit keys and complete newline-free JSONL records. Legacy submit validation
-leaves entry JSON and key semantics to Gemini, uploads bytes as
-`application/jsonl`, submits the uploaded `files/...` name to the fixed image
-model, builds status URLs from canonical `batches/...` names, builds paginated
-list URLs, validates listed operation names, preserves complete operation
-objects, and pretty-prints successful JSON responses.
+explicit keys and complete newline-free JSONL records. Typed remote management
+validates JSONL upload bytes, canonical names, display names, and page tokens
+before allocation or network IO, then decodes operation wrappers into owned
+Batch domain values. Legacy submit validation leaves entry JSON and key
+semantics to Gemini, uploads bytes as `application/jsonl`, submits the
+uploaded `files/...` name to the fixed image model, builds status URLs from
+canonical `batches/...` names, builds paginated list URLs, validates listed
+operation names, preserves complete operation objects, and pretty-prints
+successful JSON responses.
 
 `src/api.zig` owns shared transport, canonical File API resource-name
 validation, canonical cached content name validation, shared
@@ -294,11 +338,11 @@ parsing/serialization for edit references and file uploads, generation config
 helpers, request-level control wire helpers, grounding tool wire structures,
 generated response decoding, generated file metadata, safety setting helpers,
 and logging. The CLI owns generated output naming.
-`gen`, `edit`, and `files` reuse its JSON GET/POST/DELETE helpers, lower-level
-request-with-body helper for resumable uploads, common `HttpResponse`
-ownership type, `Model` constants, and explicit `RequestContext`. Headers are
-not exposed through the logging path, so API keys stay out of diagnostic
-output.
+`gen`, `edit`, `files`, and `batch` reuse its JSON GET/POST/DELETE helpers,
+lower-level request-with-body helper for resumable uploads, common
+`HttpResponse` ownership type, `Model` constants, and explicit
+`RequestContext`. Headers are not exposed through the logging path, so API
+keys stay out of diagnostic output.
 
 `build.zig` defines separate executable root modules for installed and
 development artifacts. Each root is `src/main.zig`, receives `build_options`

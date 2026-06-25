@@ -1,7 +1,13 @@
 const client = @import("client.zig");
 
 pub const ApiFailure = client.ApiFailure;
+pub const BatchCreateRequest = client.BatchCreateRequest;
 pub const BatchInputSummary = client.BatchInputSummary;
+pub const BatchInputUpload = client.BatchInputUpload;
+pub const BatchJob = client.BatchJob;
+pub const BatchListPage = client.BatchListPage;
+pub const BatchState = client.BatchState;
+pub const BatchStats = client.BatchStats;
 pub const BatchValidationError = client.BatchValidationError;
 pub const Client = client.Client;
 pub const ClientOptions = client.ClientOptions;

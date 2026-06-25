@@ -10,28 +10,6 @@ const operation = @import("operation.zig");
 const sample_image_path = "sample_images/good_night.jpeg";
 const live_upload_display_name = "nbimg live api sample";
 
-const WireRemoteError = struct {
-    code: ?i64 = null,
-    message: ?[]const u8 = null,
-    details: ?std.json.Value = null,
-};
-
-const WireFile = struct {
-    name: ?[]const u8 = null,
-    displayName: ?[]const u8 = null,
-    mimeType: ?[]const u8 = null,
-    sizeBytes: ?[]const u8 = null,
-    createTime: ?[]const u8 = null,
-    updateTime: ?[]const u8 = null,
-    expirationTime: ?[]const u8 = null,
-    sha256Hash: ?[]const u8 = null,
-    uri: ?[]const u8 = null,
-    downloadUri: ?[]const u8 = null,
-    state: ?[]const u8 = null,
-    source: ?[]const u8 = null,
-    @"error": ?WireRemoteError = null,
-};
-
 fn uploadFile(
     context: *const api.RequestContext,
     file: file_domain.FileUpload,
@@ -165,153 +143,21 @@ fn decodeTypedUploadedFile(
     gpa: std.mem.Allocator,
     response_json: []const u8,
 ) !file_domain.File {
-    const Response = struct {
-        file: ?WireFile = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    const response_file = parsed.value.file orelse return error.MissingFileName;
-    return ownedTypedFileFromResponse(gpa, response_file);
+    return file_domain.decodeUploadedFile(gpa, response_json);
 }
 
 fn decodeTypedFile(
     gpa: std.mem.Allocator,
     response_json: []const u8,
 ) !file_domain.File {
-    var parsed = try std.json.parseFromSlice(WireFile, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    return ownedTypedFileFromResponse(gpa, parsed.value);
+    return file_domain.decodeFile(gpa, response_json);
 }
 
 fn decodeTypedFileListPage(
     gpa: std.mem.Allocator,
     response_json: []const u8,
 ) !file_domain.FileListPage {
-    const Response = struct {
-        files: []const WireFile = &.{},
-        nextPageToken: ?[]const u8 = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(Response, gpa, response_json, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    var files: std.ArrayList(file_domain.File) = .empty;
-    errdefer {
-        for (files.items) |*file| file.deinit(gpa);
-        files.deinit(gpa);
-    }
-
-    try files.ensureTotalCapacity(gpa, parsed.value.files.len);
-    for (parsed.value.files) |response_file| {
-        files.appendAssumeCapacity(try ownedTypedFileFromResponse(gpa, response_file));
-    }
-
-    const next_page_token = try dupeNonEmptyOptional(gpa, parsed.value.nextPageToken);
-    errdefer if (next_page_token) |token| gpa.free(token);
-
-    return .{
-        .files = try files.toOwnedSlice(gpa),
-        .next_page_token = next_page_token,
-    };
-}
-
-fn ownedTypedFileFromResponse(
-    gpa: std.mem.Allocator,
-    response_file: WireFile,
-) !file_domain.File {
-    const name = response_file.name orelse return error.MissingFileName;
-    if (!api.isCanonicalFileName(name)) return error.InvalidFileName;
-
-    var file = file_domain.File{
-        .name = try gpa.dupe(u8, name),
-    };
-    errdefer file.deinit(gpa);
-
-    file.display_name = try dupeOptional(gpa, response_file.displayName);
-    file.mime_type = try dupeOptional(gpa, response_file.mimeType);
-    file.size_bytes = try parseOptionalSizeBytes(response_file.sizeBytes);
-    file.create_time = try dupeOptional(gpa, response_file.createTime);
-    file.update_time = try dupeOptional(gpa, response_file.updateTime);
-    file.expiration_time = try dupeOptional(gpa, response_file.expirationTime);
-    file.sha256_hash = try dupeOptional(gpa, response_file.sha256Hash);
-    file.uri = try dupeOptional(gpa, response_file.uri);
-    file.download_uri = try dupeOptional(gpa, response_file.downloadUri);
-    file.state = try ownedFileState(gpa, response_file.state);
-    file.source = try ownedFileSource(gpa, response_file.source);
-    file.processing_error = try ownedRemoteError(gpa, response_file.@"error");
-
-    return file;
-}
-
-fn ownedFileState(
-    gpa: std.mem.Allocator,
-    wire_name: ?[]const u8,
-) !file_domain.FileState {
-    const name = wire_name orelse return .unspecified;
-    if (std.mem.eql(u8, name, "STATE_UNSPECIFIED")) return .unspecified;
-    if (std.mem.eql(u8, name, "PROCESSING")) return .processing;
-    if (std.mem.eql(u8, name, "ACTIVE")) return .active;
-    if (std.mem.eql(u8, name, "FAILED")) return .failed;
-    return .{ .unknown = try gpa.dupe(u8, name) };
-}
-
-fn ownedFileSource(
-    gpa: std.mem.Allocator,
-    wire_name: ?[]const u8,
-) !file_domain.FileSource {
-    const name = wire_name orelse return .unspecified;
-    if (std.mem.eql(u8, name, "SOURCE_UNSPECIFIED")) return .unspecified;
-    if (std.mem.eql(u8, name, "UPLOADED")) return .uploaded;
-    if (std.mem.eql(u8, name, "GENERATED")) return .generated;
-    if (std.mem.eql(u8, name, "REGISTERED")) return .registered;
-    return .{ .unknown = try gpa.dupe(u8, name) };
-}
-
-fn ownedRemoteError(
-    gpa: std.mem.Allocator,
-    wire_error: ?WireRemoteError,
-) !?file_domain.RemoteError {
-    const remote_error = wire_error orelse return null;
-    const message = remote_error.message orelse return error.MissingRemoteErrorMessage;
-
-    const owned_message = try gpa.dupe(u8, message);
-    errdefer gpa.free(owned_message);
-
-    const details_json = if (remote_error.details) |details| details_json: {
-        if (details == .null) break :details_json null;
-        break :details_json try stringifyJson(gpa, details);
-    } else null;
-    errdefer if (details_json) |details| gpa.free(details);
-
-    return .{
-        .code = remote_error.code,
-        .message = owned_message,
-        .details_json = details_json,
-    };
-}
-
-fn parseOptionalSizeBytes(value: ?[]const u8) !?u64 {
-    const bytes = value orelse return null;
-    return std.fmt.parseInt(u64, bytes, 10) catch return error.InvalidFileSize;
-}
-
-fn stringifyJson(gpa: std.mem.Allocator, value: std.json.Value) ![]u8 {
-    var output: std.Io.Writer.Allocating = .init(gpa);
-    errdefer output.deinit();
-    try std.json.Stringify.value(value, .{}, &output.writer);
-
-    var list = output.toArrayList();
-    errdefer list.deinit(gpa);
-    return list.toOwnedSlice(gpa);
+    return file_domain.decodeFileListPage(gpa, response_json);
 }
 
 fn typedFileOutcomeFromResponse(
@@ -360,15 +206,6 @@ fn wireImageMime(mime: file_domain.InputImageMime) api.ImageMime {
         .png => .png,
         .webp => .webp,
     };
-}
-
-fn dupeNonEmptyOptional(
-    gpa: std.mem.Allocator,
-    value: ?[]const u8,
-) !?[]u8 {
-    const bytes = value orelse return null;
-    if (bytes.len == 0) return null;
-    return try gpa.dupe(u8, bytes);
 }
 
 fn buildListFilesUrl(gpa: std.mem.Allocator, page_token: ?[]const u8) ![]u8 {
@@ -424,10 +261,6 @@ fn isFileIdPathSegmentChar(byte: u8) bool {
         'A'...'Z', 'a'...'z', '0'...'9', '-', '.', '_', '~' => true,
         else => false,
     };
-}
-
-fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
-    return if (value) |bytes| try gpa.dupe(u8, bytes) else null;
 }
 
 fn filesListBaseUrl() []const u8 {
@@ -521,9 +354,15 @@ test "typed File decoder maps every known state and source without unknown stora
         .{ "FAILED", file_domain.FileState.failed },
     };
     inline for (state_cases) |entry| {
-        var state = try ownedFileState(std.testing.allocator, entry[0]);
-        defer state.deinit(std.testing.allocator);
-        try std.testing.expectEqual(entry[1], state);
+        const json = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"name\":\"files/state\",\"state\":\"{s}\"}}",
+            .{entry[0]},
+        );
+        defer std.testing.allocator.free(json);
+        var file = try decodeTypedFile(std.testing.allocator, json);
+        defer file.deinit(std.testing.allocator);
+        try std.testing.expectEqual(entry[1], file.state);
     }
 
     const source_cases = .{
@@ -533,9 +372,15 @@ test "typed File decoder maps every known state and source without unknown stora
         .{ "REGISTERED", file_domain.FileSource.registered },
     };
     inline for (source_cases) |entry| {
-        var source = try ownedFileSource(std.testing.allocator, entry[0]);
-        defer source.deinit(std.testing.allocator);
-        try std.testing.expectEqual(entry[1], source);
+        const json = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"name\":\"files/source\",\"source\":\"{s}\"}}",
+            .{entry[0]},
+        );
+        defer std.testing.allocator.free(json);
+        var file = try decodeTypedFile(std.testing.allocator, json);
+        defer file.deinit(std.testing.allocator);
+        try std.testing.expectEqual(entry[1], file.source);
     }
 }
 

@@ -51,7 +51,13 @@ comptime {
 
     assertExactPublicDecls("root", root, &.{
         "ApiFailure",
+        "BatchCreateRequest",
         "BatchInputSummary",
+        "BatchInputUpload",
+        "BatchJob",
+        "BatchListPage",
+        "BatchState",
+        "BatchStats",
         "BatchValidationError",
         "Client",
         "ClientOptions",
@@ -106,19 +112,36 @@ comptime {
         "deinit",
     });
     assertExactPublicDecls("root.Client", root.Client, &.{
+        "cancelBatch",
         "countEditTokens",
         "countGenerateTokens",
+        "createBatch",
         "deleteFile",
         "edit",
         "generate",
+        "getBatch",
         "getFile",
         "init",
+        "listBatchesPage",
         "listFilesPage",
         "prepareEditBatchEntry",
         "prepareGenerationBatchEntry",
+        "uploadBatchInput",
         "uploadFile",
     });
+    assertExactPublicDecls("root.BatchCreateRequest", root.BatchCreateRequest, &.{});
     assertExactPublicDecls("root.BatchInputSummary", root.BatchInputSummary, &.{});
+    assertExactPublicDecls("root.BatchInputUpload", root.BatchInputUpload, &.{});
+    assertExactPublicDecls("root.BatchJob", root.BatchJob, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.BatchListPage", root.BatchListPage, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.BatchState", root.BatchState, &.{
+        "deinit",
+    });
+    assertExactPublicDecls("root.BatchStats", root.BatchStats, &.{});
     assertExactPublicDecls("root.ClientOptions", root.ClientOptions, &.{});
     assertExactPublicDecls("root.CountTokensResult", root.CountTokensResult, &.{});
     assertExactPublicDecls("root.EditRequest", root.EditRequest, &.{});
@@ -158,6 +181,8 @@ comptime {
     );
     assertExactPublicDecls("root.Outcome(File)", root.Outcome(root.File), &.{});
     assertExactPublicDecls("root.Outcome(FileListPage)", root.Outcome(root.FileListPage), &.{});
+    assertExactPublicDecls("root.Outcome(BatchJob)", root.Outcome(root.BatchJob), &.{});
+    assertExactPublicDecls("root.Outcome(BatchListPage)", root.Outcome(root.BatchListPage), &.{});
     assertExactPublicDecls("root.Outcome(void)", root.Outcome(void), &.{});
     assertExactPublicDecls("root.OutputMime", root.OutputMime, &.{});
     assertExactPublicDecls("root.PreparedBatchEntry", root.PreparedBatchEntry, &.{

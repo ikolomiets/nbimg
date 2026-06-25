@@ -194,6 +194,12 @@ pub const FileValidationError = file_domain.FileValidationError;
 pub const max_file_upload_bytes = file_domain.max_file_upload_bytes;
 
 pub const BatchValidationError = batch_api.BatchValidationError;
+pub const BatchInputUpload = batch_api.BatchInputUpload;
+pub const BatchCreateRequest = batch_api.BatchCreateRequest;
+pub const BatchState = batch_api.BatchState;
+pub const BatchStats = batch_api.BatchStats;
+pub const BatchJob = batch_api.BatchJob;
+pub const BatchListPage = batch_api.BatchListPage;
 pub const BatchInputSummary = batch_api.BatchInputSummary;
 pub const PreparedBatchEntry = batch_api.PreparedBatchEntry;
 pub const max_batch_entry_bytes = batch_api.max_batch_entry_bytes;
@@ -491,6 +497,66 @@ pub const Client = struct {
         return publicOutcome(
             void,
             try files_api.deleteFileWithContext(&context, name),
+        );
+    }
+
+    /// Uploads borrowed Batch JSONL bytes and returns owned File metadata.
+    pub fn uploadBatchInput(
+        client: *const Client,
+        upload: BatchInputUpload,
+    ) !Outcome(File) {
+        const context = client.requestContext();
+        return publicOutcome(
+            File,
+            try batch_api.uploadBatchInputWithContext(&context, upload),
+        );
+    }
+
+    /// Creates one file-backed Batch job and returns the decoded operation view.
+    pub fn createBatch(
+        client: *const Client,
+        request: BatchCreateRequest,
+    ) !Outcome(BatchJob) {
+        const context = client.requestContext();
+        return publicOutcome(
+            BatchJob,
+            try batch_api.createBatchWithContext(&context, request),
+        );
+    }
+
+    /// Fetches one canonical Batch job and returns the decoded operation view.
+    pub fn getBatch(
+        client: *const Client,
+        name: []const u8,
+    ) !Outcome(BatchJob) {
+        const context = client.requestContext();
+        return publicOutcome(
+            BatchJob,
+            try batch_api.getBatchWithContext(&context, name),
+        );
+    }
+
+    /// Requests best-effort cancellation of one canonical Batch job.
+    pub fn cancelBatch(
+        client: *const Client,
+        name: []const u8,
+    ) !Outcome(void) {
+        const context = client.requestContext();
+        return publicOutcome(
+            void,
+            try batch_api.cancelBatchWithContext(&context, name),
+        );
+    }
+
+    /// Fetches one fixed-size Batch page using an optional continuation token.
+    pub fn listBatchesPage(
+        client: *const Client,
+        page_token: ?[]const u8,
+    ) !Outcome(BatchListPage) {
+        const context = client.requestContext();
+        return publicOutcome(
+            BatchListPage,
+            try batch_api.listBatchesPageWithContext(&context, page_token),
         );
     }
 

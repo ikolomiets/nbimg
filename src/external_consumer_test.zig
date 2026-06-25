@@ -61,6 +61,11 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     const get_file = nbimg.Client.getFile;
     const list_files_page = nbimg.Client.listFilesPage;
     const delete_file = nbimg.Client.deleteFile;
+    const upload_batch_input = nbimg.Client.uploadBatchInput;
+    const create_batch = nbimg.Client.createBatch;
+    const get_batch = nbimg.Client.getBatch;
+    const cancel_batch = nbimg.Client.cancelBatch;
+    const list_batches_page = nbimg.Client.listBatchesPage;
     _ = generate;
     _ = edit;
     _ = count_edit_tokens;
@@ -70,6 +75,11 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     _ = get_file;
     _ = list_files_page;
     _ = delete_file;
+    _ = upload_batch_input;
+    _ = create_batch;
+    _ = get_batch;
+    _ = cancel_batch;
+    _ = list_batches_page;
 
     const edit_request = nbimg.EditRequest{
         .prompt = "Apply the product style",
@@ -131,6 +141,43 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     const batch_summary: nbimg.BatchInputSummary = try nbimg.validateBatchInput(
         prepared_entry.jsonl_record,
     );
+    const batch_upload = nbimg.BatchInputUpload{
+        .bytes = prepared_entry.jsonl_record,
+        .display_name = "requests.jsonl",
+    };
+    const batch_create = nbimg.BatchCreateRequest{
+        .file_name = "files/batch-input",
+        .display_name = "requests.jsonl",
+        .priority = -1,
+    };
+    var batch_job = nbimg.BatchJob{
+        .name = try std.testing.allocator.dupe(u8, "batches/sample"),
+        .model = try std.testing.allocator.dupe(u8, "models/gemini-3.1-flash-image"),
+        .display_name = try std.testing.allocator.dupe(u8, "requests.jsonl"),
+        .input_file_name = try std.testing.allocator.dupe(u8, "files/batch-input"),
+        .output_file_name = try std.testing.allocator.dupe(u8, "files/batch-output"),
+        .state = .succeeded,
+        .stats = .{
+            .request_count = 1,
+            .successful_request_count = 1,
+        },
+        .priority = -1,
+        .done = true,
+        .remote_error = .{
+            .code = 1,
+            .message = try std.testing.allocator.dupe(u8, "cancelled"),
+        },
+    };
+    defer batch_job.deinit(std.testing.allocator);
+    var batch_page = nbimg.BatchListPage{
+        .jobs = try std.testing.allocator.alloc(nbimg.BatchJob, 0),
+        .next_page_token = try std.testing.allocator.dupe(u8, "next"),
+    };
+    defer batch_page.deinit(std.testing.allocator);
+    var unknown_batch_state = nbimg.BatchState{
+        .unknown = try std.testing.allocator.dupe(u8, "BATCH_STATE_PAUSED"),
+    };
+    defer unknown_batch_state.deinit(std.testing.allocator);
     const batch_validation_error: nbimg.BatchValidationError = error.EmptyBatchKey;
 
     try std.testing.expectEqualStrings("borrowed-key", client.api_key);
@@ -167,6 +214,18 @@ test "dependency consumer compiles against typed generation edit Files and Batch
     try std.testing.expectEqual(@as(usize, 16), nbimg.max_edit_do_not_constraints);
     try std.testing.expectEqual(@as(usize, 1), batch_summary.entry_count);
     try std.testing.expectEqual(prepared_entry.jsonl_record.len, batch_summary.byte_count);
+    try std.testing.expectEqualStrings(prepared_entry.jsonl_record, batch_upload.bytes);
+    try std.testing.expectEqualStrings("files/batch-input", batch_create.file_name);
+    try std.testing.expectEqualStrings("batches/sample", batch_job.name);
+    try std.testing.expectEqualStrings("models/gemini-3.1-flash-image", batch_job.model.?);
+    try std.testing.expect(batch_job.state == .succeeded);
+    try std.testing.expectEqual(@as(?u64, 1), batch_job.stats.request_count);
+    try std.testing.expectEqual(@as(?i64, -1), batch_job.priority);
+    try std.testing.expectEqual(@as(usize, 0), batch_page.jobs.len);
+    switch (unknown_batch_state) {
+        .unknown => {},
+        else => return error.ExpectedUnknownBatchState,
+    }
     try std.testing.expectEqual(error.EmptyBatchKey, batch_validation_error);
     try std.testing.expectEqual(@as(usize, 5 * 1024 * 1024), nbimg.max_batch_entry_bytes);
     try std.testing.expectEqual(@as(usize, 100), nbimg.max_batch_entries);

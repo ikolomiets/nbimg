@@ -241,10 +241,56 @@ accepts LF or CRLF records and intentionally does not parse JSON. Stable limits
 are `max_batch_entry_bytes`, `max_batch_entries`, and
 `max_batch_input_bytes`.
 
+Typed Batch management is file-backed and keeps upload separate from creation:
+
+```zig
+var upload_outcome = try client.uploadBatchInput(.{
+    .bytes = jsonl_bytes,
+    .display_name = "requests.jsonl",
+});
+var input_file = switch (upload_outcome) {
+    .success => |file| file,
+    .api_failure => |*failure| {
+        defer failure.deinit(allocator);
+        return error.BatchInputUploadFailed;
+    },
+};
+defer input_file.deinit(allocator);
+
+var create_outcome = try client.createBatch(.{
+    .file_name = input_file.name,
+    .display_name = "requests.jsonl",
+});
+var job = switch (create_outcome) {
+    .success => |batch_job| batch_job,
+    .api_failure => |*failure| {
+        defer failure.deinit(allocator);
+        return error.BatchCreateRejected;
+    },
+};
+defer job.deinit(allocator);
+```
+
+`Client.getBatch("batches/...")` returns an owned `BatchJob`;
+`Client.cancelBatch("batches/...")` returns `Outcome(void)` and accepts any
+successful 2xx cancellation body. `Client.listBatchesPage(page_token)` returns
+`BatchListPage`; pass `page.next_page_token` to fetch the next fixed-size page.
+`BatchJob` owns its canonical name, optional model/display/input/output/times,
+state, stats, signed priority, and optional `remote_error`. `BatchState`
+normalizes `BATCH_STATE_*` and `JOB_STATE_*` spellings and owns only unknown
+state names.
+
+Batch creation is non-idempotent. If `Client.createBatch` returns a transport,
+timeout, allocation, or successful-response decoding error after dispatch, a
+remote job may already have been created and its name may be unavailable; the
+client does not retry automatically. A completed non-2xx `.api_failure` is a
+definitive service response with an owned body.
+
 Invalid `GenerationRequest` values return `GenerationValidationError` before
 network IO; invalid `EditRequest` values return `EditValidationError` before
 allocation or network IO. Invalid Files inputs return `FileValidationError`;
-the stable upload limit is `max_file_upload_bytes`. Invalid Batch inputs return
+the stable upload limit is `max_file_upload_bytes`. Invalid Batch inputs,
+Batch names, input File names, display names, and empty page tokens return
 `BatchValidationError`; an empty preparation key is rejected before request
 validation, allocation, or network IO. Transport, allocation, timeout,
 oversized-response, and malformed successful-response failures are Zig errors.
@@ -255,7 +301,8 @@ must be released with `ApiFailure.deinit`. Successful edits return
 and edit reject unknown reported service-tier spellings as successful-response
 decoding failures.
 Immediate CLI generation, edit, and Files commands use the same response
-contract.
+contract. CLI Batch commands continue to use their existing raw JSON stdout
+contract pending the later CLI migration item.
 
 The existing `api` and `batch` package paths remain available
 temporarily for compatibility. They are implementation-oriented legacy APIs

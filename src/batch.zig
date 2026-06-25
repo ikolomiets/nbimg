@@ -4,6 +4,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const api = @import("api.zig");
 const build_options = @import("build_options");
+const file_domain = @import("files_domain.zig");
+const operation_api = @import("operation.zig");
 
 pub const max_batch_entry_bytes = api.max_generate_request_field_bytes;
 pub const max_batch_entries = 100;
@@ -25,6 +27,10 @@ pub const BatchValidationError = error{
     BatchEntryTooLong,
     BatchTooManyEntries,
     BatchInputTooLong,
+    InvalidBatchName,
+    InvalidFileName,
+    InvalidDisplayName,
+    EmptyPageToken,
 };
 
 const BatchInputValidationError = error{
@@ -55,13 +61,98 @@ pub const PreparedBatchEntry = struct {
     }
 };
 
+/// Describes borrowed JSONL bytes and optional Files API display metadata for a Batch input upload.
+pub const BatchInputUpload = struct {
+    bytes: []const u8,
+    display_name: ?[]const u8 = null,
+};
+
+/// Describes a borrowed file-backed Batch creation request.
+pub const BatchCreateRequest = struct {
+    file_name: []const u8,
+    display_name: []const u8,
+    priority: ?i64 = null,
+};
+
 /// Describes borrowed input and display names for a batch submission.
 ///
 /// - Both fields remain caller-owned through request construction and submission.
 /// - The value allocates nothing and mutates no state.
-pub const SubmitRequest = struct {
-    file_name: []const u8,
-    display_name: []const u8,
+pub const SubmitRequest = BatchCreateRequest;
+
+/// Owns only unrecognized Gemini Batch state spellings.
+pub const BatchState = union(enum) {
+    unspecified,
+    pending,
+    running,
+    succeeded,
+    failed,
+    cancelled,
+    expired,
+    unknown: []u8,
+
+    /// Frees an unknown spelling, if present, and invalidates the value.
+    pub fn deinit(state: *BatchState, allocator: std.mem.Allocator) void {
+        switch (state.*) {
+            .unknown => |name| allocator.free(name),
+            else => {},
+        }
+        state.* = undefined;
+    }
+};
+
+/// Holds decoded non-negative Batch request counters.
+pub const BatchStats = struct {
+    request_count: ?u64 = null,
+    successful_request_count: ?u64 = null,
+    failed_request_count: ?u64 = null,
+    pending_request_count: ?u64 = null,
+};
+
+/// Owns a decoded Gemini Batch operation or resource view.
+pub const BatchJob = struct {
+    name: []u8,
+    model: ?[]u8 = null,
+    display_name: ?[]u8 = null,
+    input_file_name: ?[]u8 = null,
+    output_file_name: ?[]u8 = null,
+    create_time: ?[]u8 = null,
+    end_time: ?[]u8 = null,
+    update_time: ?[]u8 = null,
+    state: BatchState = .unspecified,
+    stats: BatchStats = .{},
+    priority: ?i64 = null,
+    done: ?bool = null,
+    remote_error: ?file_domain.RemoteError = null,
+
+    /// Frees all nested owned data and invalidates the value.
+    pub fn deinit(job: *BatchJob, allocator: std.mem.Allocator) void {
+        allocator.free(job.name);
+        freeOptional(allocator, job.model);
+        freeOptional(allocator, job.display_name);
+        freeOptional(allocator, job.input_file_name);
+        freeOptional(allocator, job.output_file_name);
+        freeOptional(allocator, job.create_time);
+        freeOptional(allocator, job.end_time);
+        freeOptional(allocator, job.update_time);
+        job.state.deinit(allocator);
+        if (job.remote_error) |*remote_error| remote_error.deinit(allocator);
+        job.* = undefined;
+    }
+};
+
+/// Owns one page of decoded Batch jobs and an optional continuation token.
+pub const BatchListPage = struct {
+    jobs: []BatchJob,
+    next_page_token: ?[]u8 = null,
+
+    /// Frees all nested jobs and pagination storage, then invalidates the page.
+    pub fn deinit(page: *BatchListPage, allocator: std.mem.Allocator) void {
+        for (page.jobs) |*job| job.deinit(allocator);
+        allocator.free(page.jobs);
+        if (page.next_page_token) |token| allocator.free(token);
+        page.* = undefined;
+    }
 };
 
 /// Owns decoded output-file information for a completed batch.
@@ -230,12 +321,12 @@ fn validateInputByteCount(byte_count: usize) BatchInputValidationError!void {
 pub fn uploadInput(
     context: *const api.RequestContext,
     bytes: []const u8,
-    display_name: []const u8,
+    display_name: ?[]const u8,
 ) !api.HttpResponse {
     assert(context.api_key.len > 0);
     assert(bytes.len > 0);
     assert(bytes.len <= max_input_bytes);
-    assert(api.isValidDisplayName(display_name));
+    if (display_name) |name| assert(api.isValidDisplayName(name));
 
     return api.uploadResumableBytes(context, .{
         .content_type = input_content_type,
@@ -248,27 +339,18 @@ fn buildSubmitRequestJson(gpa: std.mem.Allocator, request: SubmitRequest) ![]u8 
     assert(api.isCanonicalFileName(request.file_name));
     assert(api.isValidDisplayName(request.display_name));
 
-    const InputConfig = struct {
-        fileName: []const u8,
-    };
-    const Batch = struct {
-        displayName: []const u8,
-        inputConfig: InputConfig,
-    };
-    const Request = struct {
-        batch: Batch,
-    };
-
     var output: std.Io.Writer.Allocating = .init(gpa);
     errdefer output.deinit();
-    try std.json.Stringify.value(Request{
-        .batch = .{
-            .displayName = request.display_name,
-            .inputConfig = .{
-                .fileName = request.file_name,
-            },
-        },
-    }, .{}, &output.writer);
+    try output.writer.writeAll("{\"batch\":{\"displayName\":");
+    try std.json.Stringify.value(request.display_name, .{}, &output.writer);
+    try output.writer.writeAll(",\"inputConfig\":{\"fileName\":");
+    try std.json.Stringify.value(request.file_name, .{}, &output.writer);
+    try output.writer.writeByte('}');
+    if (request.priority) |priority| {
+        try output.writer.writeAll(",\"priority\":");
+        try writeJsonIntString(&output.writer, priority);
+    }
+    try output.writer.writeAll("}}");
 
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
@@ -406,6 +488,81 @@ pub fn listPage(
     const url = try buildListUrl(context.gpa, page_token);
     defer context.gpa.free(url);
     return api.getJson(context, url);
+}
+
+/// Uploads and decodes one Batch JSONL input File using an explicit request context.
+pub fn uploadBatchInputWithContext(
+    context: *const api.RequestContext,
+    upload: BatchInputUpload,
+) !operation_api.OperationOutcome(file_domain.File) {
+    try validateBatchInputUpload(upload);
+
+    var response = try uploadInput(context, upload.bytes, upload.display_name);
+    return typedBatchOutcomeFromResponse(
+        file_domain.File,
+        context.gpa,
+        &response,
+        decodeUploadedBatchInput,
+    );
+}
+
+/// Creates and decodes one file-backed Batch job using an explicit request context.
+pub fn createBatchWithContext(
+    context: *const api.RequestContext,
+    request: BatchCreateRequest,
+) !operation_api.OperationOutcome(BatchJob) {
+    try validateBatchCreateRequest(request);
+
+    var response = try submit(context, request);
+    return typedBatchOutcomeFromResponse(
+        BatchJob,
+        context.gpa,
+        &response,
+        decodeBatchJob,
+    );
+}
+
+/// Fetches and decodes one Batch job using an explicit request context.
+pub fn getBatchWithContext(
+    context: *const api.RequestContext,
+    name: []const u8,
+) !operation_api.OperationOutcome(BatchJob) {
+    try validateBatchName(name);
+
+    var response = try status(context, name);
+    return typedBatchOutcomeFromResponse(
+        BatchJob,
+        context.gpa,
+        &response,
+        decodeBatchJob,
+    );
+}
+
+/// Requests cancellation for one Batch job using an explicit request context.
+pub fn cancelBatchWithContext(
+    context: *const api.RequestContext,
+    name: []const u8,
+) !operation_api.OperationOutcome(void) {
+    try validateBatchName(name);
+
+    var response = try cancel(context, name);
+    return emptyBatchOutcomeFromResponse(context.gpa, &response);
+}
+
+/// Fetches and decodes one Batch list page using an explicit request context.
+pub fn listBatchesPageWithContext(
+    context: *const api.RequestContext,
+    page_token: ?[]const u8,
+) !operation_api.OperationOutcome(BatchListPage) {
+    try validatePageToken(page_token);
+
+    var response = try listPage(context, page_token);
+    return typedBatchOutcomeFromResponse(
+        BatchListPage,
+        context.gpa,
+        &response,
+        decodeBatchListPage,
+    );
 }
 
 /// Reports whether a string is a canonical non-empty batch resource name.
@@ -597,6 +754,384 @@ pub fn decodeListPage(gpa: std.mem.Allocator, response_json: []const u8) !ListPa
     };
 }
 
+fn decodeUploadedBatchInput(
+    gpa: std.mem.Allocator,
+    response_json: []const u8,
+) !file_domain.File {
+    return file_domain.decodeUploadedFile(gpa, response_json);
+}
+
+fn decodeBatchJob(gpa: std.mem.Allocator, response_json: []const u8) !BatchJob {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
+        .parse_numbers = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidBatchResponse,
+    };
+    defer parsed.deinit();
+
+    return ownedBatchJobFromValue(gpa, parsed.value);
+}
+
+fn decodeBatchListPage(gpa: std.mem.Allocator, response_json: []const u8) !BatchListPage {
+    var parsed = std.json.parseFromSlice(std.json.Value, gpa, response_json, .{
+        .parse_numbers = false,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidBatchListResponse,
+    };
+    defer parsed.deinit();
+
+    const root = switch (parsed.value) {
+        .object => |object| object,
+        else => return error.InvalidBatchListResponse,
+    };
+
+    const operation_values: []const std.json.Value = if (root.get("operations")) |value| switch (value) {
+        .array => |array| array.items,
+        else => return error.InvalidBatchListResponse,
+    } else &.{};
+
+    const jobs = try gpa.alloc(BatchJob, operation_values.len);
+    var job_count: usize = 0;
+    errdefer {
+        for (jobs[0..job_count]) |*job| job.deinit(gpa);
+        gpa.free(jobs);
+    }
+
+    for (operation_values) |operation_value| {
+        jobs[job_count] = try ownedBatchJobFromValue(gpa, operation_value);
+        job_count += 1;
+    }
+    assert(job_count == jobs.len);
+
+    const next_page_token: ?[]u8 = if (root.get("nextPageToken")) |value| switch (value) {
+        .string => |token| if (token.len == 0) null else try gpa.dupe(u8, token),
+        else => return error.InvalidBatchListResponse,
+    } else null;
+    errdefer if (next_page_token) |token| gpa.free(token);
+
+    return .{
+        .jobs = jobs,
+        .next_page_token = next_page_token,
+    };
+}
+
+fn ownedBatchJobFromValue(gpa: std.mem.Allocator, value: std.json.Value) !BatchJob {
+    const root = switch (value) {
+        .object => |object| object,
+        else => return error.InvalidBatchResponse,
+    };
+
+    var candidate_objects: [4]std.json.ObjectMap = undefined;
+    const candidates = try batchCandidateObjects(root, &candidate_objects);
+
+    const name = try findBatchName(candidates);
+    var job = BatchJob{
+        .name = try gpa.dupe(u8, name),
+    };
+    errdefer job.deinit(gpa);
+
+    job.model = try dupeCanonicalModelName(gpa, try findTypedStringField(candidates, "model"));
+    job.display_name = try dupeOptional(gpa, try findTypedStringField(candidates, "displayName"));
+    job.input_file_name = try dupeCanonicalFileName(gpa, try findInputFileName(candidates));
+    job.output_file_name = try dupeCanonicalFileName(gpa, try findBatchOutputFileName(candidates));
+    job.create_time = try dupeOptional(gpa, try findTypedStringField(candidates, "createTime"));
+    job.end_time = try dupeOptional(gpa, try findTypedStringField(candidates, "endTime"));
+    job.update_time = try dupeOptional(gpa, try findTypedStringField(candidates, "updateTime"));
+    job.state = try ownedBatchState(gpa, try findTypedStringField(candidates, "state"));
+    job.stats = try findBatchStats(candidates);
+    job.priority = try findBatchPriority(candidates);
+    job.done = try boolField(root, "done");
+    job.remote_error = try ownedOperationError(gpa, root);
+
+    return job;
+}
+
+fn batchCandidateObjects(
+    root: std.json.ObjectMap,
+    candidate_objects: *[4]std.json.ObjectMap,
+) ![]const std.json.ObjectMap {
+    var candidate_count: usize = 0;
+    candidate_objects[candidate_count] = root;
+    candidate_count += 1;
+
+    if (try typedObjectField(root, "metadata")) |metadata| {
+        candidate_objects[candidate_count] = metadata;
+        candidate_count += 1;
+    }
+    if (try typedObjectField(root, "response")) |response| {
+        candidate_objects[candidate_count] = response;
+        candidate_count += 1;
+        if (try typedObjectField(response, "batch")) |batch| {
+            candidate_objects[candidate_count] = batch;
+            candidate_count += 1;
+        }
+    }
+
+    assert(candidate_count <= candidate_objects.len);
+    return candidate_objects[0..candidate_count];
+}
+
+fn findBatchName(objects: []const std.json.ObjectMap) ![]const u8 {
+    for (objects) |object| {
+        const value = object.get("name") orelse continue;
+        const name = switch (value) {
+            .string => |string| string,
+            else => return error.InvalidBatchName,
+        };
+        if (!isCanonicalBatchName(name)) return error.InvalidBatchName;
+        return name;
+    }
+    return error.MissingBatchName;
+}
+
+fn findTypedStringField(
+    objects: []const std.json.ObjectMap,
+    name: []const u8,
+) !?[]const u8 {
+    for (objects) |object| {
+        const value = object.get(name) orelse continue;
+        return switch (value) {
+            .string => |string| string,
+            else => error.InvalidBatchResponse,
+        };
+    }
+    return null;
+}
+
+fn findInputFileName(objects: []const std.json.ObjectMap) !?[]const u8 {
+    for (objects) |object| {
+        const input_config = try typedObjectField(object, "inputConfig") orelse continue;
+        if (try typedStringField(input_config, "fileName")) |file_name| return file_name;
+    }
+    return null;
+}
+
+fn findBatchOutputFileName(objects: []const std.json.ObjectMap) !?[]const u8 {
+    for (objects) |object| {
+        if (try typedObjectField(object, "dest")) |dest| {
+            if (try typedStringField(dest, "fileName")) |file_name| return file_name;
+        }
+        if (try typedObjectField(object, "output")) |output| {
+            if (try typedStringField(output, "responsesFile")) |file_name| return file_name;
+        }
+        if (try typedStringField(object, "responsesFile")) |file_name| return file_name;
+    }
+    return null;
+}
+
+fn findBatchStats(objects: []const std.json.ObjectMap) !BatchStats {
+    for (objects) |object| {
+        const stats = try typedObjectField(object, "batchStats") orelse continue;
+        return .{
+            .request_count = try optionalUnsignedField(stats, "requestCount"),
+            .successful_request_count = try optionalUnsignedField(stats, "successfulRequestCount"),
+            .failed_request_count = try optionalUnsignedField(stats, "failedRequestCount"),
+            .pending_request_count = try optionalUnsignedField(stats, "pendingRequestCount"),
+        };
+    }
+    return .{};
+}
+
+fn findBatchPriority(objects: []const std.json.ObjectMap) !?i64 {
+    for (objects) |object| {
+        const value = object.get("priority") orelse continue;
+        return try parseSignedJsonInteger(value);
+    }
+    return null;
+}
+
+fn ownedBatchState(
+    gpa: std.mem.Allocator,
+    wire_name: ?[]const u8,
+) !BatchState {
+    const name = wire_name orelse return .unspecified;
+    if (std.mem.eql(u8, name, "BATCH_STATE_UNSPECIFIED") or
+        std.mem.eql(u8, name, "JOB_STATE_UNSPECIFIED"))
+    {
+        return .unspecified;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_PENDING") or
+        std.mem.eql(u8, name, "JOB_STATE_PENDING"))
+    {
+        return .pending;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_RUNNING") or
+        std.mem.eql(u8, name, "JOB_STATE_RUNNING"))
+    {
+        return .running;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_SUCCEEDED") or
+        std.mem.eql(u8, name, "JOB_STATE_SUCCEEDED"))
+    {
+        return .succeeded;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_FAILED") or
+        std.mem.eql(u8, name, "JOB_STATE_FAILED"))
+    {
+        return .failed;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_CANCELLED") or
+        std.mem.eql(u8, name, "JOB_STATE_CANCELLED"))
+    {
+        return .cancelled;
+    }
+    if (std.mem.eql(u8, name, "BATCH_STATE_EXPIRED") or
+        std.mem.eql(u8, name, "JOB_STATE_EXPIRED"))
+    {
+        return .expired;
+    }
+    return .{ .unknown = try gpa.dupe(u8, name) };
+}
+
+fn ownedOperationError(gpa: std.mem.Allocator, root: std.json.ObjectMap) !?file_domain.RemoteError {
+    const value = root.get("error") orelse return null;
+    return try file_domain.remoteErrorFromJsonValue(gpa, value);
+}
+
+fn typedObjectField(object: std.json.ObjectMap, name: []const u8) !?std.json.ObjectMap {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .object => |nested| nested,
+        else => error.InvalidBatchResponse,
+    };
+}
+
+fn typedStringField(object: std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |string| string,
+        else => error.InvalidBatchResponse,
+    };
+}
+
+fn boolField(object: std.json.ObjectMap, name: []const u8) !?bool {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .bool => |boolean| boolean,
+        else => error.InvalidBatchResponse,
+    };
+}
+
+fn optionalUnsignedField(object: std.json.ObjectMap, name: []const u8) !?u64 {
+    const value = object.get(name) orelse return null;
+    return try parseUnsignedJsonInteger(value);
+}
+
+fn parseUnsignedJsonInteger(value: std.json.Value) !u64 {
+    return switch (value) {
+        .string => |string| parseUnsignedJsonIntegerText(string),
+        .number_string => |number| parseUnsignedJsonIntegerText(number),
+        .integer => |integer| if (integer >= 0)
+            @intCast(integer)
+        else
+            error.InvalidBatchCounter,
+        else => error.InvalidBatchCounter,
+    };
+}
+
+fn parseUnsignedJsonIntegerText(bytes: []const u8) !u64 {
+    if (bytes.len == 0) return error.InvalidBatchCounter;
+    return std.fmt.parseInt(u64, bytes, 10) catch return error.InvalidBatchCounter;
+}
+
+fn parseSignedJsonInteger(value: std.json.Value) !i64 {
+    return switch (value) {
+        .string => |string| parseSignedJsonIntegerText(string),
+        .number_string => |number| parseSignedJsonIntegerText(number),
+        .integer => |integer| std.math.cast(i64, integer) orelse return error.InvalidBatchPriority,
+        else => error.InvalidBatchPriority,
+    };
+}
+
+fn parseSignedJsonIntegerText(bytes: []const u8) !i64 {
+    if (bytes.len == 0) return error.InvalidBatchPriority;
+    return std.fmt.parseInt(i64, bytes, 10) catch return error.InvalidBatchPriority;
+}
+
+fn dupeCanonicalFileName(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
+    const name = value orelse return null;
+    if (!api.isCanonicalFileName(name)) return error.InvalidFileName;
+    return try gpa.dupe(u8, name);
+}
+
+fn dupeCanonicalModelName(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
+    const name = value orelse return null;
+    if (!isCanonicalModelName(name)) return error.InvalidModelName;
+    return try gpa.dupe(u8, name);
+}
+
+fn dupeOptional(gpa: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
+    return if (value) |bytes| try gpa.dupe(u8, bytes) else null;
+}
+
+fn isCanonicalModelName(name: []const u8) bool {
+    const prefix = "models/";
+    if (!std.mem.startsWith(u8, name, prefix)) return false;
+    return name.len > prefix.len;
+}
+
+fn typedBatchOutcomeFromResponse(
+    comptime T: type,
+    gpa: std.mem.Allocator,
+    response: *api.HttpResponse,
+    comptime decode: fn (std.mem.Allocator, []const u8) anyerror!T,
+) operation_api.OperationOutcome(T) {
+    if (response.status.class() != .success) {
+        const failure = operation_api.ApiFailure{
+            .status = response.status,
+            .body = response.body,
+        };
+        response.* = undefined;
+        return .{ .api_failure = failure };
+    }
+    defer response.deinit(gpa);
+
+    const result = decode(gpa, response.body) catch |err| {
+        return .{ .response_decoding_failure = err };
+    };
+    return .{ .success = result };
+}
+
+fn emptyBatchOutcomeFromResponse(
+    gpa: std.mem.Allocator,
+    response: *api.HttpResponse,
+) operation_api.OperationOutcome(void) {
+    if (response.status.class() != .success) {
+        const failure = operation_api.ApiFailure{
+            .status = response.status,
+            .body = response.body,
+        };
+        response.* = undefined;
+        return .{ .api_failure = failure };
+    }
+    response.deinit(gpa);
+    return .{ .success = {} };
+}
+
+fn validateBatchInputUpload(upload: BatchInputUpload) BatchValidationError!void {
+    _ = try validateBatchInput(upload.bytes);
+    if (upload.display_name) |display_name| {
+        if (!api.isValidDisplayName(display_name)) return error.InvalidDisplayName;
+    }
+}
+
+fn validateBatchCreateRequest(request: BatchCreateRequest) BatchValidationError!void {
+    if (!api.isCanonicalFileName(request.file_name)) return error.InvalidFileName;
+    if (!api.isValidDisplayName(request.display_name)) return error.InvalidDisplayName;
+}
+
+fn validateBatchName(name: []const u8) BatchValidationError!void {
+    if (!isCanonicalBatchName(name)) return error.InvalidBatchName;
+}
+
+fn validatePageToken(page_token: ?[]const u8) BatchValidationError!void {
+    if (page_token) |token| {
+        if (token.len == 0) return error.EmptyPageToken;
+    }
+}
+
 /// Combines borrowed operation JSON objects into one owned pretty-printed list.
 ///
 /// - Borrows all operation slices for the call; the returned JSON is owned by `gpa`.
@@ -702,6 +1237,16 @@ fn stringifyJson(
     var list = output.toArrayList();
     errdefer list.deinit(gpa);
     return list.toOwnedSlice(gpa);
+}
+
+fn writeJsonIntString(writer: *std.Io.Writer, value: i64) !void {
+    try writer.writeByte('"');
+    try writer.print("{d}", .{value});
+    try writer.writeByte('"');
+}
+
+fn freeOptional(gpa: std.mem.Allocator, value: ?[]u8) void {
+    if (value) |bytes| gpa.free(bytes);
 }
 
 fn formatPathSegment(writer: *std.Io.Writer, value: []const u8) !void {
@@ -946,8 +1491,48 @@ test "BatchValidationError exposes deliberate validation errors" {
         error.BatchEntryTooLong,
         error.BatchTooManyEntries,
         error.BatchInputTooLong,
+        error.InvalidBatchName,
+        error.InvalidFileName,
+        error.InvalidDisplayName,
+        error.EmptyPageToken,
     };
-    try std.testing.expectEqual(@as(usize, 6), errors.len);
+    try std.testing.expectEqual(@as(usize, 10), errors.len);
+}
+
+test "typed Batch validation runs before transport fields are used" {
+    try std.testing.expectError(
+        error.EmptyBatchInput,
+        validateBatchInputUpload(.{ .bytes = "" }),
+    );
+    try std.testing.expectError(
+        error.InvalidDisplayName,
+        validateBatchInputUpload(.{ .bytes = "{\"key\":\"one\",\"request\":{}}", .display_name = "" }),
+    );
+    try validateBatchInputUpload(.{
+        .bytes = "{\"key\":\"one\",\"request\":{}}",
+        .display_name = "requests.jsonl",
+    });
+
+    try std.testing.expectError(
+        error.InvalidFileName,
+        validateBatchCreateRequest(.{ .file_name = "batch-input", .display_name = "requests.jsonl" }),
+    );
+    try std.testing.expectError(
+        error.InvalidDisplayName,
+        validateBatchCreateRequest(.{ .file_name = "files/input", .display_name = "" }),
+    );
+    try validateBatchCreateRequest(.{
+        .file_name = "files/input",
+        .display_name = "requests.jsonl",
+        .priority = -7,
+    });
+
+    try std.testing.expectError(error.InvalidBatchName, validateBatchName("batch/one"));
+    try std.testing.expectError(error.InvalidBatchName, validateBatchName("batches/"));
+    try validateBatchName("batches/one");
+    try std.testing.expectError(error.EmptyPageToken, validatePageToken(""));
+    try validatePageToken(null);
+    try validatePageToken("next");
 }
 
 test "buildSubmitRequestJson uses uploaded file and display name" {
@@ -962,6 +1547,36 @@ test "buildSubmitRequestJson uses uploaded file and display name" {
         "{\"batch\":{\"displayName\":\"requests.jsonl\",\"inputConfig\":{\"fileName\":\"files/abc123\"}}}",
         request_json,
     );
+}
+
+test "buildSubmitRequestJson serializes optional priority as int64 string" {
+    const gpa = std.testing.allocator;
+    const request_json = try buildSubmitRequestJson(gpa, .{
+        .file_name = "files/abc123",
+        .display_name = "requests.jsonl",
+        .priority = -9223372036854775808,
+    });
+    defer gpa.free(request_json);
+
+    try std.testing.expectEqualStrings(
+        "{\"batch\":{\"displayName\":\"requests.jsonl\",\"inputConfig\":{\"fileName\":\"files/abc123\"},\"priority\":\"-9223372036854775808\"}}",
+        request_json,
+    );
+}
+
+test "typed Batch input upload decoder accepts JSONL File metadata" {
+    var file = try decodeUploadedBatchInput(
+        std.testing.allocator,
+        "{\"file\":{\"name\":\"files/input\",\"displayName\":\"requests.jsonl\",\"mimeType\":\"application/jsonl\",\"sizeBytes\":\"27\",\"state\":\"ACTIVE\",\"source\":\"UPLOADED\"}}",
+    );
+    defer file.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("files/input", file.name);
+    try std.testing.expectEqualStrings("requests.jsonl", file.display_name.?);
+    try std.testing.expectEqualStrings("application/jsonl", file.mime_type.?);
+    try std.testing.expectEqual(@as(?u64, 27), file.size_bytes);
+    try std.testing.expect(file.state == .active);
+    try std.testing.expect(file.source == .uploaded);
 }
 
 test "batch URLs use fixed model and canonical resource names" {
@@ -1185,6 +1800,223 @@ test "decodeListPage rejects invalid batch operation names" {
     );
 }
 
+test "typed Batch decoder accepts operation wrappers and owns fields" {
+    const gpa = std.testing.allocator;
+    var job = try decodeBatchJob(
+        gpa,
+        "{\"name\":\"batches/one\",\"metadata\":{\"model\":\"models/gemini-3.1-flash-image\",\"displayName\":\"requests.jsonl\",\"inputConfig\":{\"fileName\":\"files/input\"},\"output\":{\"responsesFile\":\"files/output\"},\"createTime\":\"2026-06-24T00:00:00Z\",\"endTime\":\"2026-06-24T00:01:00Z\",\"updateTime\":\"2026-06-24T00:02:00Z\",\"batchStats\":{\"requestCount\":\"2\",\"successfulRequestCount\":1,\"failedRequestCount\":\"0\",\"pendingRequestCount\":0},\"state\":\"BATCH_STATE_SUCCEEDED\",\"priority\":\"-3\"},\"done\":true,\"error\":{\"code\":1,\"message\":\"cancelled\",\"details\":[{\"reason\":\"user\"}]}}",
+    );
+    defer job.deinit(gpa);
+
+    try std.testing.expectEqualStrings("batches/one", job.name);
+    try std.testing.expectEqualStrings("models/gemini-3.1-flash-image", job.model.?);
+    try std.testing.expectEqualStrings("requests.jsonl", job.display_name.?);
+    try std.testing.expectEqualStrings("files/input", job.input_file_name.?);
+    try std.testing.expectEqualStrings("files/output", job.output_file_name.?);
+    try std.testing.expectEqualStrings("2026-06-24T00:00:00Z", job.create_time.?);
+    try std.testing.expectEqualStrings("2026-06-24T00:01:00Z", job.end_time.?);
+    try std.testing.expectEqualStrings("2026-06-24T00:02:00Z", job.update_time.?);
+    try std.testing.expect(job.state == .succeeded);
+    try std.testing.expectEqual(@as(?u64, 2), job.stats.request_count);
+    try std.testing.expectEqual(@as(?u64, 1), job.stats.successful_request_count);
+    try std.testing.expectEqual(@as(?u64, 0), job.stats.failed_request_count);
+    try std.testing.expectEqual(@as(?u64, 0), job.stats.pending_request_count);
+    try std.testing.expectEqual(@as(?i64, -3), job.priority);
+    try std.testing.expectEqual(@as(?bool, true), job.done);
+    try std.testing.expectEqual(@as(?i64, 1), job.remote_error.?.code);
+    try std.testing.expectEqualStrings("cancelled", job.remote_error.?.message);
+    try std.testing.expectEqualStrings("[{\"reason\":\"user\"}]", job.remote_error.?.details_json.?);
+}
+
+test "typed Batch decoder accepts response and response batch placements" {
+    const gpa = std.testing.allocator;
+
+    var response = try decodeBatchJob(
+        gpa,
+        "{\"name\":\"batches/two\",\"response\":{\"state\":\"JOB_STATE_RUNNING\",\"responsesFile\":\"files/output-two\",\"priority\":4}}",
+    );
+    defer response.deinit(gpa);
+    try std.testing.expect(response.state == .running);
+    try std.testing.expectEqualStrings("files/output-two", response.output_file_name.?);
+    try std.testing.expectEqual(@as(?i64, 4), response.priority);
+
+    var response_batch = try decodeBatchJob(
+        gpa,
+        "{\"name\":\"batches/three\",\"response\":{\"batch\":{\"name\":\"batches/three\",\"state\":\"BATCH_STATE_CANCELLED\",\"dest\":{\"fileName\":\"files/output-three\"}}}}",
+    );
+    defer response_batch.deinit(gpa);
+    try std.testing.expect(response_batch.state == .cancelled);
+    try std.testing.expectEqualStrings("files/output-three", response_batch.output_file_name.?);
+}
+
+test "typed Batch decoder normalizes states and preserves unknown spellings" {
+    const cases = .{
+        .{ "BATCH_STATE_UNSPECIFIED", BatchState.unspecified },
+        .{ "JOB_STATE_UNSPECIFIED", BatchState.unspecified },
+        .{ "BATCH_STATE_PENDING", BatchState.pending },
+        .{ "JOB_STATE_PENDING", BatchState.pending },
+        .{ "BATCH_STATE_RUNNING", BatchState.running },
+        .{ "JOB_STATE_RUNNING", BatchState.running },
+        .{ "BATCH_STATE_SUCCEEDED", BatchState.succeeded },
+        .{ "JOB_STATE_SUCCEEDED", BatchState.succeeded },
+        .{ "BATCH_STATE_FAILED", BatchState.failed },
+        .{ "JOB_STATE_FAILED", BatchState.failed },
+        .{ "BATCH_STATE_CANCELLED", BatchState.cancelled },
+        .{ "JOB_STATE_CANCELLED", BatchState.cancelled },
+        .{ "BATCH_STATE_EXPIRED", BatchState.expired },
+        .{ "JOB_STATE_EXPIRED", BatchState.expired },
+    };
+    inline for (cases) |entry| {
+        var state = try ownedBatchState(std.testing.allocator, entry[0]);
+        defer state.deinit(std.testing.allocator);
+        try std.testing.expectEqual(entry[1], state);
+    }
+
+    var unknown = try ownedBatchState(std.testing.allocator, "BATCH_STATE_PAUSED");
+    defer unknown.deinit(std.testing.allocator);
+    switch (unknown) {
+        .unknown => |name| try std.testing.expectEqualStrings("BATCH_STATE_PAUSED", name),
+        else => return error.ExpectedUnknownBatchState,
+    }
+}
+
+test "typed Batch decoder rejects malformed names files model counters and priority" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(error.MissingBatchName, decodeBatchJob(gpa, "{}"));
+    try std.testing.expectError(
+        error.InvalidBatchName,
+        decodeBatchJob(gpa, "{\"name\":\"batch/one\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidFileName,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"inputConfig\":{\"fileName\":\"input\"}}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidFileName,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"output\":{\"responsesFile\":\"output\"}}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidModelName,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"model\":\"gemini-3.1-flash-image\"}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchCounter,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"batchStats\":{\"requestCount\":\"-1\"}}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchCounter,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"batchStats\":{\"requestCount\":\"1.5\"}}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchCounter,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"batchStats\":{\"requestCount\":\"18446744073709551616\"}}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchPriority,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"priority\":\"1.5\"}}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBatchResponse,
+        decodeBatchJob(gpa, "{\"name\":\"batches/one\",\"metadata\":{\"state\":3}}"),
+    );
+}
+
+test "typed Batch list decoder owns jobs and pagination" {
+    const gpa = std.testing.allocator;
+    var page = try decodeBatchListPage(
+        gpa,
+        "{\"operations\":[{\"name\":\"batches/one\",\"metadata\":{\"state\":\"BATCH_STATE_PENDING\"}},{\"name\":\"batches/two\",\"response\":{\"batch\":{\"name\":\"batches/two\",\"state\":\"BATCH_STATE_SUCCEEDED\"}}}],\"nextPageToken\":\"next-token\"}",
+    );
+    defer page.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 2), page.jobs.len);
+    try std.testing.expectEqualStrings("batches/one", page.jobs[0].name);
+    try std.testing.expect(page.jobs[0].state == .pending);
+    try std.testing.expectEqualStrings("batches/two", page.jobs[1].name);
+    try std.testing.expect(page.jobs[1].state == .succeeded);
+    try std.testing.expectEqualStrings("next-token", page.next_page_token.?);
+
+    var empty = try decodeBatchListPage(gpa, "{\"operations\":[],\"nextPageToken\":\"\"}");
+    defer empty.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), empty.jobs.len);
+    try std.testing.expectEqual(@as(?[]u8, null), empty.next_page_token);
+}
+
+test "typed Batch response classification handles 2xx failures and cancel bodies" {
+    var created_response = api.HttpResponse{
+        .status = .created,
+        .body = try std.testing.allocator.dupe(
+            u8,
+            "{\"name\":\"batches/created\",\"metadata\":{\"state\":\"BATCH_STATE_PENDING\"}}",
+        ),
+    };
+    var created = typedBatchOutcomeFromResponse(
+        BatchJob,
+        std.testing.allocator,
+        &created_response,
+        decodeBatchJob,
+    );
+    switch (created) {
+        .success => |*job| job.deinit(std.testing.allocator),
+        .api_failure, .response_decoding_failure => return error.UnexpectedBatchCreateFailure,
+    }
+
+    var malformed_response = api.HttpResponse{
+        .status = .accepted,
+        .body = try std.testing.allocator.dupe(u8, "{}"),
+    };
+    var malformed = typedBatchOutcomeFromResponse(
+        BatchJob,
+        std.testing.allocator,
+        &malformed_response,
+        decodeBatchJob,
+    );
+    switch (malformed) {
+        .response_decoding_failure => |err| try std.testing.expectEqual(error.MissingBatchName, err),
+        .success => |*job| {
+            job.deinit(std.testing.allocator);
+            return error.UnexpectedBatchSuccess;
+        },
+        .api_failure => |*failure| {
+            failure.deinit(std.testing.allocator);
+            return error.UnexpectedBatchApiFailure;
+        },
+    }
+
+    var failure_response = api.HttpResponse{
+        .status = .bad_request,
+        .body = try std.testing.allocator.dupe(u8, "{\"error\":\"bad\"}"),
+    };
+    var failure = typedBatchOutcomeFromResponse(
+        BatchJob,
+        std.testing.allocator,
+        &failure_response,
+        decodeBatchJob,
+    );
+    switch (failure) {
+        .api_failure => |*api_failure| {
+            try std.testing.expectEqual(std.http.Status.bad_request, api_failure.status);
+            try std.testing.expectEqualStrings("{\"error\":\"bad\"}", api_failure.body);
+            api_failure.deinit(std.testing.allocator);
+        },
+        .success => |*job| {
+            job.deinit(std.testing.allocator);
+            return error.UnexpectedBatchSuccess;
+        },
+        .response_decoding_failure => return error.UnexpectedBatchDecodingFailure,
+    }
+
+    var cancel_response = api.HttpResponse{
+        .status = .no_content,
+        .body = try std.testing.allocator.dupe(u8, "not json"),
+    };
+    const cancel_outcome = emptyBatchOutcomeFromResponse(std.testing.allocator, &cancel_response);
+    switch (cancel_outcome) {
+        .success => {},
+        .api_failure, .response_decoding_failure => return error.UnexpectedBatchCancelFailure,
+    }
+}
+
 test "listJson aggregates pages and pretty prints operations" {
     const gpa = std.testing.allocator;
     var first = try decodeListPage(
@@ -1312,74 +2144,89 @@ test "live API batch submit status and cancel succeeds" {
     try validateInputJsonl(input);
 
     const display_name = "nbimg-live-batch.jsonl";
-    var upload_response = try uploadInput(&context, input, display_name);
-    defer upload_response.deinit(gpa);
-    if (upload_response.status != .ok) {
-        std.debug.print(
-            "error: live batch input upload failed with HTTP {d}\n{s}\n",
-            .{ @intFromEnum(upload_response.status), upload_response.body },
-        );
-        return error.BatchInputUploadFailed;
-    }
-
-    const uploaded_file_name = try api.decodeUploadedFileName(gpa, upload_response.body);
-    defer gpa.free(uploaded_file_name);
-
-    // BILLABLE and non-idempotent: this creates exactly one Batch job.
-    var submit_response = try submit(&context, .{
-        .file_name = uploaded_file_name,
+    var upload_outcome = try uploadBatchInputWithContext(&context, .{
+        .bytes = input,
         .display_name = display_name,
     });
-    defer submit_response.deinit(gpa);
-    if (submit_response.status != .ok) {
-        std.debug.print(
-            "error: live batch creation failed with HTTP {d}; uploaded input remains as {s}\n{s}\n",
-            .{ @intFromEnum(submit_response.status), uploaded_file_name, submit_response.body },
-        );
-        return error.BatchCreationFailed;
+    var uploaded_file = switch (upload_outcome) {
+        .success => |file| file,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch input upload failed with HTTP {d}\n{s}\n",
+                .{ @intFromEnum(failure.status), failure.body },
+            );
+            return error.BatchInputUploadFailed;
+        },
+        .response_decoding_failure => |err| return err,
+    };
+    defer uploaded_file.deinit(gpa);
+
+    // BILLABLE and non-idempotent: this creates exactly one Batch job.
+    var create_outcome = try createBatchWithContext(&context, .{
+        .file_name = uploaded_file.name,
+        .display_name = display_name,
+    });
+    var created_job = switch (create_outcome) {
+        .success => |job| job,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch creation failed with HTTP {d}; uploaded input remains as {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), uploaded_file.name, failure.body },
+            );
+            return error.BatchCreationFailed;
+        },
+        .response_decoding_failure => |err| return err,
+    };
+    defer created_job.deinit(gpa);
+    try std.testing.expect(isCanonicalBatchName(created_job.name));
+
+    var status_outcome = try getBatchWithContext(&context, created_job.name);
+    var status_job = switch (status_outcome) {
+        .success => |job| job,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch status failed with HTTP {d} for {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), created_job.name, failure.body },
+            );
+            return error.BatchStatusFailed;
+        },
+        .response_decoding_failure => |err| return err,
+    };
+    defer status_job.deinit(gpa);
+    try std.testing.expectEqualStrings(created_job.name, status_job.name);
+
+    var cancel_outcome = try cancelBatchWithContext(&context, created_job.name);
+    switch (cancel_outcome) {
+        .success => {},
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live batch cancel failed with HTTP {d} for {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), created_job.name, failure.body },
+            );
+            return error.BatchCancelFailed;
+        },
+        .response_decoding_failure => return error.UnexpectedResponseDecodingFailure,
     }
 
-    const batch_name = try decodeBatchName(gpa, submit_response.body);
-    defer gpa.free(batch_name);
-    const pretty_submit = try prettyJson(gpa, submit_response.body);
-    defer gpa.free(pretty_submit);
-
-    var status_response = try status(&context, batch_name);
-    defer status_response.deinit(gpa);
-    if (status_response.status != .ok) {
-        std.debug.print(
-            "error: live batch status failed with HTTP {d} for {s}\n{s}\n",
-            .{ @intFromEnum(status_response.status), batch_name, status_response.body },
-        );
-        return error.BatchStatusFailed;
-    }
-
-    const pretty_status = try prettyJson(gpa, status_response.body);
-    defer gpa.free(pretty_status);
-
-    var cancel_response = try cancel(&context, batch_name);
-    defer cancel_response.deinit(gpa);
-    if (cancel_response.status != .ok) {
-        std.debug.print(
-            "error: live batch cancel failed with HTTP {d} for {s}\n{s}\n",
-            .{ @intFromEnum(cancel_response.status), batch_name, cancel_response.body },
-        );
-        return error.BatchCancelFailed;
-    }
-    try expectEmptyJsonObjectBody(gpa, cancel_response.body);
-
-    var cancelled_status_response = try status(&context, batch_name);
-    defer cancelled_status_response.deinit(gpa);
-    if (cancelled_status_response.status != .ok) {
-        std.debug.print(
-            "error: live cancelled batch status failed with HTTP {d} for {s}\n{s}\n",
-            .{ @intFromEnum(cancelled_status_response.status), batch_name, cancelled_status_response.body },
-        );
-        return error.BatchStatusFailed;
-    }
-
-    const pretty_cancelled_status = try prettyJson(gpa, cancelled_status_response.body);
-    defer gpa.free(pretty_cancelled_status);
+    var cancelled_status_outcome = try getBatchWithContext(&context, created_job.name);
+    var cancelled_status_job = switch (cancelled_status_outcome) {
+        .success => |job| job,
+        .api_failure => |*failure| {
+            defer failure.deinit(gpa);
+            std.debug.print(
+                "error: live cancelled batch status failed with HTTP {d} for {s}\n{s}\n",
+                .{ @intFromEnum(failure.status), created_job.name, failure.body },
+            );
+            return error.BatchStatusFailed;
+        },
+        .response_decoding_failure => |err| return err,
+    };
+    defer cancelled_status_job.deinit(gpa);
+    try std.testing.expectEqualStrings(created_job.name, cancelled_status_job.name);
 }
 
 test "live API batch list succeeds" {
@@ -1402,44 +2249,33 @@ test "live API batch list succeeds" {
     var page_token: ?[]u8 = null;
     defer if (page_token) |token| gpa.free(token);
 
-    var operations: std.ArrayList([]u8) = .empty;
-    defer {
-        for (operations.items) |operation| gpa.free(operation);
-        operations.deinit(gpa);
-    }
-
     while (true) {
-        var response = try listPage(&context, page_token);
-        defer response.deinit(gpa);
+        var outcome = try listBatchesPageWithContext(&context, page_token);
 
         if (page_token) |token| {
             gpa.free(token);
             page_token = null;
         }
 
-        if (response.status != .ok) {
-            std.debug.print(
-                "error: live batch list failed with HTTP {d}\n{s}\n",
-                .{ @intFromEnum(response.status), response.body },
-            );
-            return error.BatchListFailed;
-        }
-
-        var page = try decodeListPage(gpa, response.body);
+        var page = switch (outcome) {
+            .success => |page| page,
+            .api_failure => |*failure| {
+                defer failure.deinit(gpa);
+                std.debug.print(
+                    "error: live batch list failed with HTTP {d}\n{s}\n",
+                    .{ @intFromEnum(failure.status), failure.body },
+                );
+                return error.BatchListFailed;
+            },
+            .response_decoding_failure => |err| return err,
+        };
         defer page.deinit(gpa);
 
-        try operations.ensureUnusedCapacity(gpa, page.operations.len);
-        const page_operations = page.operations;
-        for (page_operations) |operation| operations.appendAssumeCapacity(operation);
-        page.operations = &.{};
-        gpa.free(page_operations);
+        for (page.jobs) |job| try std.testing.expect(isCanonicalBatchName(job.name));
 
         page_token = page.next_page_token orelse break;
         page.next_page_token = null;
     }
-
-    const output = try listJson(gpa, operations.items);
-    defer gpa.free(output);
 }
 
 fn buildLiveGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
@@ -1450,16 +2286,4 @@ fn buildLiveGenerateRequest(gpa: std.mem.Allocator, prompt: []const u8) ![]u8 {
             .image_size = .px512,
         },
     });
-}
-
-fn expectEmptyJsonObjectBody(gpa: std.mem.Allocator, body: []const u8) !void {
-    try std.testing.expectEqualStrings("{}", std.mem.trim(u8, body, " \t\r\n"));
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, gpa, body, .{});
-    defer parsed.deinit();
-
-    switch (parsed.value) {
-        .object => |object| try std.testing.expectEqual(@as(usize, 0), object.count()),
-        else => return error.ExpectedEmptyJsonObject,
-    }
 }
