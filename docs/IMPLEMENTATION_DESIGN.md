@@ -54,7 +54,7 @@ The code is split into eleven source files:
 - `src/main.zig` is the executable entrypoint. It imports `src/cli.zig`
   directly, calls `cli.run(init)`, and exits with the returned process status.
 - `src/root.zig` exposes the supported typed client declarations and retains
-  the legacy package modules as `api` and `batch`.
+  the legacy package module as `api`.
   CLI implementation declarations are not package-accessible.
 - `src/client.zig` owns the supported public client, generation and edit
   request domain types, shared option types, generated result ownership,

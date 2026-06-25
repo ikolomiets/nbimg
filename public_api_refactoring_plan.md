@@ -815,9 +815,9 @@ outcome used by later typed operations.
 
    **Status:** Completed.
 
-   With Item 12 complete, this is the recommended next increment. Keep this
-   item scoped to remote Batch job management; typed output download and CLI
-   Batch command migration remain Items 14 and 15.
+   Item 13 added remote Batch job management. Item 14 later added typed output
+   download, and Item 15 later migrated CLI Batch commands to these typed
+   cores.
 
    **Result:** Consumers can upload file-backed Batch input and create, get,
    list, or cancel remote Batch jobs without raw HTTP responses or public
@@ -988,7 +988,7 @@ outcome used by later typed operations.
    **Status:** Completed.
 
    Item 14 added the public typed output download workflow. CLI Batch download
-   migration remains Item 15.
+   migration was later completed by Item 15.
 
    **Result:** Consumers can download and process file-backed Batch output
    through a bounded borrowed-record visitor without internal line iterators or
@@ -1090,12 +1090,11 @@ outcome used by later typed operations.
 
    **Depends on:** Items 12, 13, and 14.
 
-   **Status:** Next.
+   **Status:** Completed.
 
-   With Items 12, 13, and 14 complete, this is the recommended next
-   implementation increment. Keep it scoped to CLI Batch command migration and
-   removal of the legacy package-level `batch` export; removing `api` remains
-   Item 16.
+   Item 15 completed the CLI Batch command migration and removed the legacy
+   package-level `batch` export. With this done, Item 16 is the recommended
+   next implementation increment.
 
    **Result:** CLI Batch commands and the public client share typed operation
    cores, allowing the legacy package-level `batch` export and raw-response
@@ -1158,6 +1157,28 @@ outcome used by later typed operations.
    documented typed CLI JSON, and malformed downloaded output becomes a
    command failure instead of a tolerated record.
 
+   **Completed changes:**
+
+   - Routed Batch submit, status, cancel, and list through the context-taking
+     typed cores introduced by Item 13, and routed download through the typed
+     visitor core introduced by Item 14 after one typed status request.
+   - Preserved diagnostics, traffic logging, timeout reporting, the
+     ambiguous-creation warning, exit-code categories, non-idempotent no-retry
+     behavior, and `OK` stdout for successful cancellation.
+   - Replaced raw successful-response presentation for `batch submit`,
+     `status`, and `list` with CLI-owned JSON serialization of `BatchJob` and
+     `BatchListPage`, including deliberate state, stats, priority, and
+     remote-error formatting.
+   - Kept safe output keys, duplicate-key handling, local filename generation,
+     exclusive writes, and per-record filesystem behavior in `src/cli.zig`.
+     The CLI now uses the strict typed Batch output decoder while preserving
+     callback-owned decisions for duplicate keys, remote-error records, and
+     local write failures.
+   - Removed `batch` from `src/root.zig` and the package allowlist. Tightened
+     the internal Batch and shared API allowlists.
+   - Updated README, implementation-design architecture text, and the nbimg
+     skill Batch operations reference for the typed CLI Batch contract.
+
    **Validation:** Add CLI tests for upload/create ambiguity, multiple
    successful 2xx statuses, the documented typed submit/status/list JSON
    schemas, cancellation, pagination, download bounds, strict malformed-record
@@ -1174,11 +1195,21 @@ outcome used by later typed operations.
    successful-response or tolerant-decoder seam remains, and `nbimg.batch` is
    no longer package-accessible.
 
+   **Validation completed:** Covered typed submit/status/list JSON
+   presentation, cancellation, pagination, typed output visitor processing,
+   safe output filenames, duplicate-key handling, existing targets, local
+   write failures, strict malformed-record handling, timeout diagnostics,
+   ambiguous create diagnostics, exact package/internal allowlists, and the
+   external-consumer contract. Ran `zig fmt --check build.zig src`,
+   `zig build test`, `zig build`, `git diff --check`,
+   `zig build test-live-api-batch-list`, and
+   `zig build test-live-api-batch-submit-status`.
+
 16. **Remove the legacy shared API namespace**
 
    **Depends on:** Items 8, 10, 12, and 15.
 
-   **Status:** Planned.
+   **Status:** Next.
 
    **Result:** `api.zig` remains an internal shared implementation module and
    is no longer part of the package contract.
@@ -1284,28 +1315,29 @@ outcome used by later typed operations.
    allowlists, external-consumer tests, the build graph, and actual root
    exports describe the same supported API.
 
-## Schema Baseline for Remaining Remote APIs
+## Schema Baseline for Remote Batch APIs
 
-Remaining remote Item 15 uses the current official
+Items 13 through 15 used the current official
 [Files API](https://ai.google.dev/api/files),
 [Batch API reference](https://ai.google.dev/api/batch-api), and
 [Batch guide](https://ai.google.dev/gemini-api/docs/batch-api) as their schema
-baseline. Recheck these sources when starting the item because File metadata,
-Batch operation wrappers, and state spellings are remote versioned behavior.
-Schema drift may require additive unknown variants or decoder compatibility,
-but must not silently expand the file-backed workflow scope selected above.
+baseline. Recheck these sources before future remote Batch or Files changes
+because File metadata, Batch operation wrappers, and state spellings are remote
+versioned behavior. Schema drift may require additive unknown variants or
+decoder compatibility, but must not silently expand the file-backed workflow
+scope selected above.
 The June 25, 2026 review confirmed that the REST reference documents the
 long-running `Operation` wrapper, `BATCH_STATE_*`, all four `BatchStats`
 counters, signed priority, timestamps, and file-backed
 `inputConfig.fileName`/`output.responsesFile`. Current REST guide examples
 place state under `metadata` and file output directly under
 `response.responsesFile`, while SDK guide examples still expose `JOB_STATE_*`
-and `dest.fileName`. Item 13 deliberately accepts all listed representations;
-Item 15 should preserve that compatibility. The REST reference states
-that file-backed output records are written in input order, which Item 14
-preserves through visitor order. The guide currently advertises a 2 GB Batch
-input-file maximum; this refactoring deliberately retains the repository's
-existing 512 MiB admission limit.
+and `dest.fileName`. Item 13 deliberately accepts all listed representations,
+and Item 15 preserved that compatibility. The REST reference states that
+file-backed output records are written in input order, which Item 14 preserves
+through visitor order. The guide currently advertises a 2 GB Batch input-file
+maximum; this refactoring deliberately retains the repository's existing
+512 MiB admission limit.
 Raising that resource bound is a separate design change, not an incidental
 API-refactoring side effect. The reference also documents Batch delete and
 update methods, but they remain outside this plan because the current CLI has
