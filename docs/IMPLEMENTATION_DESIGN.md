@@ -79,6 +79,9 @@ The code is split into eight source files:
   construction, upload/list/get response decoding, and
   Files API endpoint handling.
 
+For a visual dependency map and short per-module descriptions, see
+[Module Dependencies](MODULE_DEPENDENCIES.md).
+
 The public API namespace is intentionally split by command domain:
 
 ```zig
