@@ -1,0 +1,4 @@
+interface:
+  display_name: "Director Style Images"
+  short_description: "Generate director-style image sets with nbimg"
+  default_prompt: "Use $nbimg-director-styles to transform this prompt and reference images into director-style image sets."
