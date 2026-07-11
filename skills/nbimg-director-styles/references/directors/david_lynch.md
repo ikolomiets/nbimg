@@ -1,12 +1,11 @@
 # David Lynch
 
-- **Essence:** Familiar Americana becomes a psychic landscape of desire, memory, dread, and unstable identity.
-- **Composition:** Quiet stage-like frames, liminal corridors, empty corners, frontal rooms, uneasy close-ups.
-- **Perspective:** Slow visual pressure, voyeuristic distance, occasional tight faces with no relief.
-- **Lighting:** Practical lights slightly too bright, deep edge shadows, noir darkness, electric blue accents.
-- **Palette:** Saturated red velvet, cobalt blue, black-and-white pattern, wholesome suburban color against darkness.
-- **Design and texture:** Curtains, night roads, modest rooms, industrial grime, mirrors, uncanny doubles.
-- **Atmosphere:** Dream logic, suppressed menace, mournful surrealism.
-- **Modes:** Choose corrupted suburbia, industrial monochrome, nocturnal noir, or theatrical dream chamber.
-- **Anti-cues:** Avoid explanatory symbolism, cheerful polish, generic fantasy surrealism, or copying signature characters and sets.
-- **Films:** Mulholland Drive; Blue Velvet; Eraserhead; Lost Highway; Twin Peaks: Fire Walk with Me.
+## Essence
+
+Lynch reveals the dream already hiding inside familiar life. A pleasant room, roadside, stage, face, or industrial corner can feel comforting and threatening at the same time. Light and color often isolate emotionally charged details while darkness leaves space for imagination. The images follow associations of memory, desire, performance, and dread rather than explaining their symbols.
+
+## Using the style flexibly
+
+Keep the requested world recognizable, then introduce a subtle break in tone, scale, sound-implied stillness, or emotional logic. The scene may be sunny, domestic, glamorous, rural, comic, or abstract; it does not always need noir shadows or surreal props. Let one or two ordinary details become mysteriously important and preserve ambiguity. Avoid copying red curtains, chevron floors, severed ears, famous characters, or using random strangeness as a substitute for emotional depth.
+
+**Representative works:** *Mulholland Drive*; *Blue Velvet*; *Eraserhead*; *Lost Highway*; *Twin Peaks: Fire Walk with Me*.

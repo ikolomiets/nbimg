@@ -1,11 +1,11 @@
 # Bong Joon-ho
 
-- **Essence:** Physical space diagrams class, power, aspiration, and sudden tonal collapse.
-- **Composition:** Stairs, basements, hills, windows, tunnels, layered groups, precise entrances and exits.
-- **Perspective:** Readable wide architecture with strategically compressed observation.
-- **Lighting:** Naturalistic environments with strong thresholds between social zones.
-- **Palette:** Concrete gray, damp green, warm wealth interiors, cold institutional white.
-- **Design and texture:** Class-coded materials, clutter density, elevation changes, rainwater, infrastructure.
-- **Atmosphere:** Witty, suspenseful, humane, abruptly tragic.
-- **Anti-cues:** Avoid flattening all spaces into one social register, random tonal whimsy, vague backgrounds, or symbolism without usable geography.
-- **Films:** Parasite; Memories of Murder; The Host; Snowpiercer; Okja.
+## Essence
+
+Bong uses space as a social diagram. Stairs, windows, basements, corridors, streets, and changes in elevation reveal who has access, who is hidden, and who is exposed. His frames can be playful and precisely organized, then turn threatening without losing geographic clarity. Everyday environments carry class distinctions in their materials, light, clutter, and relationship to weather.
+
+## Using the style flexibly
+
+Arrange the scene so its physical layout quietly tells a second story about power, aspiration, dependence, or exclusion. Humor and danger may coexist, and an apparently ordinary detail can become important later. This works in any genre or setting if the social relationships remain legible through space. Avoid inserting symbolic stairs or rain mechanically, flattening every location into gloom, or treating abrupt tonal change as random quirkiness.
+
+**Representative works:** *Parasite*; *Memories of Murder*; *The Host*; *Mother*; *Snowpiercer*.

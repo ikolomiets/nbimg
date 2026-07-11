@@ -1,11 +1,11 @@
-# Pedro Almodovar
+# Pedro Almodóvar
 
-- **Essence:** Decor, costume, and saturated color externalize desire, grief, identity, and secrets.
-- **Composition:** Graphic interiors, theatrical blocking, expressive object placement, polished portrait groups.
-- **Perspective:** Clean medium-wide rooms and intimate close-ups with readable decor.
-- **Lighting:** Bright controlled interiors, rich practical warmth, glossy but emotionally charged surfaces.
-- **Palette:** Dominant red with cobalt, yellow, turquoise, black, and white.
-- **Design and texture:** Patterned walls, modern furniture, fashion-conscious clothing, flowers, polished kitchens and apartments.
-- **Atmosphere:** Melodramatic, sensual, humane, vivid.
-- **Anti-cues:** Avoid muted beige realism, gothic darkness, random color overload, or decor unrelated to emotional hierarchy.
-- **Films:** All About My Mother; Talk to Her; Volver; Women on the Verge of a Nervous Breakdown; Pain and Glory.
+## Essence
+
+Almodóvar uses color, décor, clothing, objects, and performance to make emotion visible. Homes, hospitals, stages, streets, and workspaces feel chosen by the characters yet also expose their desires, histories, and secrets. Bold visual pleasure coexists with grief and compassion; melodrama is treated as a truthful form of human intensity rather than something to hide.
+
+## Using the style flexibly
+
+Choose a few colors and designed details that express the relationships already present in the scene. The result may be restrained, rural, masculine, nocturnal, or historical as well as bright and domestic. Keep people warmer and more complex than the décor around them. Avoid automatically filling the frame with red, modern furniture, flowers, and fashionable clothes, or confusing expressive design with random saturation.
+
+**Representative works:** *Women on the Verge of a Nervous Breakdown*; *All About My Mother*; *Talk to Her*; *Volver*; *Pain and Glory*.

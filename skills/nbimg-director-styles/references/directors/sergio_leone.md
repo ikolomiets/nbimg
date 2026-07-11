@@ -1,12 +1,11 @@
 # Sergio Leone
 
-- **Essence:** Mythic tension built from the collision of monumental landscapes and minute human detail.
-- **Composition:** Extreme eye or hand close-ups opposed to immense wides, triangular standoffs, low horizons.
-- **Perspective:** Compressed faces, vast anamorphic landscapes, low-angle icons.
-- **Lighting:** Hard sun, dusty backlight, deep hat shadows, warm dusk.
-- **Palette:** Dust tan, sun-bleached wood, tobacco, black, rust, faded blue.
-- **Design and texture:** Weathered faces, leather, timber towns, railways, dust, sparse props.
-- **Motion treatment:** Suspended pre-action stillness, windblown dust, one decisive gesture.
-- **Atmosphere:** Operatic, tense, mythic, dry.
-- **Anti-cues:** Avoid constant action, lush greenery, clean costumes, modern polish, or copied western characters.
-- **Films:** The Good, the Bad and the Ugly; Once Upon a Time in the West; A Fistful of Dollars; Once Upon a Time in America.
+## Essence
+
+Leone stretches anticipation until a face, hand, object, or landscape becomes monumental. Vast space and minute physical detail answer one another, turning simple confrontations into myth. Weathered surfaces, strong silhouettes, and carefully separated figures create a world where stillness is active and the next gesture may change everything. Humor and grotesque humanity keep the grandeur from becoming solemn decoration.
+
+## Using the style flexibly
+
+Build tension through differences of scale and through attention to the decisive detail. A meeting, sport, domestic disagreement, science-fiction scene, or portrait can work without western clothing or desert terrain. Give each participant a clear place and allow the environment to intensify the pause. Avoid copying standoffs, extreme eye close-ups, guns, dust, ponchos, or low horizons unless they arise naturally from the requested scene.
+
+**Representative works:** *The Good, the Bad and the Ugly*; *Once Upon a Time in the West*; *For a Few Dollars More*; *Once Upon a Time in America*; *A Fistful of Dollars*.

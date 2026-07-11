@@ -1,13 +1,11 @@
 # Andrei Tarkovsky
 
-- **Essence:** Time, faith, memory, and loss become tactile through natural elements and decaying spaces.
-- **Composition:** Patient layered landscapes, reflections, ruins, solitary figures, visual paths through water or mist.
-- **Perspective:** Slow-probing observational distance; spacious frames with organic depth.
-- **Lighting:** Natural ambient light, misty dawn, dim interiors, no glossy theatrical fill.
-- **Palette:** Desaturated earth, oxidized green, wet gray, warm sepia, or deep monochrome.
-- **Motion treatment:** Ripples, dripping water, wind-bent reeds, rain on mud, drifting smoke, crackling fire.
-- **Design and texture:** Waterlogged floors, ruins, mud, vegetation, worn walls, imperfect analog softness.
-- **Atmosphere:** Meditative, haunted, spiritual, inward.
-- **Modes:** Choose muted color, sepia memory, or monochrome austerity.
-- **Anti-cues:** Avoid sterile sharpness, decorative symbolism, rapid-action cues, saturated spectacle, and artificial glamour.
-- **Films:** Stalker; Solaris; Mirror; Andrei Rublev; The Sacrifice.
+## Essence
+
+Tarkovsky's visual world feels remembered rather than simply recorded. Water, fire, wind, mist, worn rooms, vegetation, reflections, and traces of human use make time tangible. Figures often appear absorbed by a place whose history exceeds them, and ordinary objects can acquire emotional or spiritual gravity without becoming tidy symbols.
+
+## Using the style flexibly
+
+Let the scene breathe and allow texture, atmosphere, and spatial depth to suggest memory, loss, faith, or longing. The setting may be pristine or ruined, urban or natural, contemporary or fantastic; what matters is that it feels inhabited by time and that light seems to belong to the environment. Favor ambiguity and sensory presence over decorative surrealism. Avoid automatically adding rain, abandoned buildings, sepia, or mystical objects when they do not grow from the scene.
+
+**Representative works:** *Mirror*; *Stalker*; *Solaris*; *Andrei Rublev*; *The Sacrifice*.

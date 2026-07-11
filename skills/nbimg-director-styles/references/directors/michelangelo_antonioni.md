@@ -1,11 +1,11 @@
 # Michelangelo Antonioni
 
-- **Essence:** Architecture, duration, and color expose emotional absence and failed connection.
-- **Composition:** Large negative space, isolated figures, industrial geometry, barriers and empty modern surfaces.
-- **Perspective:** Distant observational framing, long lateral depth, figures reduced by architecture.
-- **Lighting:** Flat overcast exteriors, cool modern interiors, restrained hard sun.
-- **Palette:** Concrete gray, mineral blue, industrial green, controlled red or yellow intervention.
-- **Design and texture:** Factories, modern apartments, barren landscapes, glass, painted industrial surfaces.
-- **Atmosphere:** Alienated, quiet, unresolved.
-- **Anti-cues:** Avoid crowded melodrama, cozy lighting, decorative symmetry, and visually busy action.
-- **Films:** L'Avventura; Red Desert; Blow-Up; La Notte; The Passenger.
+## Essence
+
+Antonioni uses the visible world to express distances people cannot bridge. Architecture, empty areas, industrial surfaces, landscape, weather, and carefully placed color can become more eloquent than conversation. Figures may be partly absorbed by their surroundings or separated by lines and barriers, creating images in which absence and uncertainty remain active rather than merely vacant.
+
+## Using the style flexibly
+
+Let the environment reveal a gap between people, between expectation and reality, or between a subject and their own life. Negative space is one option, not a requirement; density, color, crowds, or natural settings can work if their arrangement produces emotional displacement. Keep the image observant and unresolved. Avoid generic modernist emptiness, tiny isolated figures without context, or automatically painting everything concrete gray.
+
+**Representative works:** *L'Avventura*; *La Notte*; *Red Desert*; *Blow-Up*; *The Passenger*.

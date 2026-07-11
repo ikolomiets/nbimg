@@ -1,12 +1,11 @@
 # Akira Kurosawa
 
-- **Essence:** Moral conflict expressed through forceful weather, spatial clarity, and movement in depth.
-- **Composition:** Painterly widescreen groups, axial organization, foreground-midground-background action, strong diagonals.
-- **Perspective:** Telephoto compression for chaotic groups; broad landscape framing for elemental scale.
-- **Lighting:** Graphic natural light shaped by rain, fog, dust, fire, or snow.
-- **Palette:** High-contrast monochrome or disciplined earth colors with ceremonial accents.
-- **Motion treatment:** Wind-driven fabric, diagonal rain, dust wakes, bodies caught in coordinated movement.
-- **Design and texture:** Mud, wood, armor, banners, rough terrain, elemental surfaces.
-- **Atmosphere:** Resolute, tragic, physically immediate.
-- **Anti-cues:** Avoid static decorative weather, arbitrary clutter, weightless action, and generic samurai iconography when the scene is unrelated.
-- **Films:** Seven Samurai; Rashomon; Yojimbo; Ran; Throne of Blood.
+## Essence
+
+Kurosawa makes emotion physical. Weather, landscape, architecture, crowds, and individual gestures all participate in the drama, so moral conflict can be felt as wind, rain, dust, heat, or movement through space. Images remain readable even at their most energetic: people form shifting groups, foreground and background actions answer one another, and a single decisive posture can cut through chaos.
+
+## Using the style flexibly
+
+Look for strong relationships between the subject and the surrounding world. A battle is not required; a conversation, workplace, domestic scene, or solitary portrait can gain force through layered staging, environmental motion, and clear emotional direction. Favor purposeful energy or charged stillness over decorative spectacle. Avoid reducing the style to samurai imagery, telephoto crowds, or artificial weather added without dramatic meaning.
+
+**Representative works:** *Seven Samurai*; *Rashomon*; *High and Low*; *Throne of Blood*; *Ran*.

@@ -1,11 +1,11 @@
 # Ridley Scott
 
-- **Essence:** Dense, physically credible worlds built through atmosphere, scale, hardware, and tactile production design.
-- **Composition:** Monumental sets, layered foreground machinery, strong silhouettes, graphic shafts through depth.
-- **Perspective:** Wide environmental immersion balanced with compressed, watchful portraits.
-- **Lighting:** Smoke-cut beams, rain reflections, practical sources, bright backlight against reflective darkness.
-- **Palette:** Steel, cyan, amber, dirty green, oxidized earth, deep black.
-- **Design and texture:** Metal, condensation, worn leather, industrial hardware, weathered stone, lived-in surfaces.
-- **Atmosphere:** Immersive, heavy, dangerous, materially specific.
-- **Anti-cues:** Avoid clean weightless CGI, empty generic sci-fi, flat ambient light, or copied franchise designs.
-- **Films:** Alien; Blade Runner; Gladiator; The Martian; Thelma & Louise.
+## Essence
+
+Scott builds environments that seem to exist beyond the immediate story. Architecture, machinery, weather, smoke, clothing, tools, and worn surfaces establish culture and history before a character speaks. Light often travels through atmosphere and catches silhouettes or reflective detail, giving the world both grandeur and tactile credibility. Scale is impressive because it is anchored by human work and vulnerability.
+
+## Using the style flexibly
+
+Imagine how the requested place functions, ages, and affects the people inside it. Layer foreground, background, practical activity, and atmospheric light only as much as the scene can support. The style can suit a small domestic room, bright landscape, historical drama, or speculative city; density is not mandatory. Avoid copying franchise designs, filling every space with smoke, or defaulting to blue-and-amber industrial darkness.
+
+**Representative works:** *Alien*; *Blade Runner*; *Thelma & Louise*; *Gladiator*; *The Martian*.

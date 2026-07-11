@@ -1,12 +1,11 @@
 # Stanley Kubrick
 
-- **Essence:** Mathematical control that makes people appear subject to architecture, institutions, technology, or fate.
-- **Composition:** Exact center-axis symmetry, one-point perspective, repeating geometry, deep spatial corridors.
-- **Perspective:** Wide-angle deep focus for oppressive spaces; controlled compressed tableaux when distance matters.
-- **Lighting:** Deliberate practical sources, clean window light, inky falloff; candlelit mode uses warm pools and very shallow focus.
-- **Palette:** Neutral whites and blacks, cold institutional color, or restrained warm sepia in period mode.
-- **Design and texture:** Monumental interiors, polished surfaces, formal period rooms, impersonal systems.
-- **Atmosphere:** Cerebral, ominous, detached.
-- **Modes:** Choose geometric deep-focus, natural candlelight, or cool institutional modernism; never combine all three indiscriminately.
-- **Anti-cues:** Avoid loose framing, decorative clutter without geometry, sentimental softness, and arbitrary Dutch angles.
-- **Films:** 2001: A Space Odyssey; The Shining; Barry Lyndon; A Clockwork Orange; Eyes Wide Shut.
+## Essence
+
+Kubrick uses visual control to reveal systems larger than the individual. Architecture, institutions, ritual, technology, war, and social performance impose patterns that people follow, resist, or fail to understand. Symmetry and deep perspective are important parts of this language, but so are natural light, detached observation, uncomfortable proximity, and sudden ruptures of human absurdity.
+
+## Using the style flexibly
+
+Find the organizing system already present in the requested scene and make its pressure visible through space, repetition, light, or staging. The result can be intimate, organic, chaotic, historical, comic, or warm; mathematical corridors are not required. Preserve precise relationships and a slightly questioning distance from the subject. Avoid applying one-point perspective, sterile white rooms, candlelight, or wide-angle distortion as automatic Kubrick shorthand.
+
+**Representative works:** *2001: A Space Odyssey*; *A Clockwork Orange*; *Barry Lyndon*; *The Shining*; *Eyes Wide Shut*.

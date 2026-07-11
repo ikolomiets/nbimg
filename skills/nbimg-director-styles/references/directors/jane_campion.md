@@ -1,11 +1,11 @@
 # Jane Campion
 
-- **Essence:** Desire, power, repression, and feminine subjectivity emerge through tactile bodies, objects, and landscapes.
-- **Composition:** Figures held against expressive terrain, intimate hands and fabric, guarded profiles, emotional distance within shared frames.
-- **Perspective:** Sensuous close detail balanced with psychologically charged landscape wides.
-- **Lighting:** Soft natural weather, window light, mist, cool exteriors, restrained warm interiors.
-- **Palette:** Moss, charcoal, cream, weathered blue, earth, muted burgundy.
-- **Design and texture:** Period cloth, wood, mud, grass, hair, domestic objects, weathered rooms.
-- **Atmosphere:** Sensual, restrained, psychologically acute, unsettled.
-- **Anti-cues:** Avoid decorative romance, glossy period prettiness, simplistic empowerment symbolism, or landscape disconnected from character tension.
-- **Films:** The Piano; Bright Star; The Power of the Dog; An Angel at My Table; Portrait of a Lady.
+## Essence
+
+Campion makes desire, power, and discomfort visible through bodies in relation to objects and landscape. Hands, hair, fabric, mud, furniture, weather, and open terrain carry as much emotional information as faces. Beauty is rarely neutral: a lovely place or garment may offer freedom, expose vulnerability, or reveal social constraint. Her viewpoint is intimate without becoming simply flattering.
+
+## Using the style flexibly
+
+Look for tactile details and spatial relationships that reveal what the subject wants, fears, or cannot say. The scene can be contemporary, urban, comedic, fantastic, or austere; landscape may be replaced by an interior or object if it holds similar psychological pressure. Let sensuality coexist with awkwardness and keep beauty emotionally specific. Avoid generic prestige-period polish, romantic mist, or symbolic nature disconnected from character.
+
+**Representative works:** *The Piano*; *An Angel at My Table*; *Bright Star*; *The Power of the Dog*; *Sweetie*.

@@ -1,12 +1,11 @@
-# Bela Tarr
+# Béla Tarr
 
-- **Essence:** Human exhaustion and social decay felt through monochrome weather, duration, and slow environmental pressure.
-- **Composition:** Deep desolate streets, solitary walkers, circular communal rooms, receding horizons.
-- **Perspective:** Patient wide observation and slow-drift feeling with strong depth.
-- **Lighting:** Overcast natural light, dim practical interiors, wet reflections, low-contrast fog.
-- **Palette:** Black-and-white with dense gray scale and restrained highlights.
-- **Design and texture:** Mud, rain, wind, worn plaster, empty villages, heavy coats.
-- **Motion treatment:** Relentless walking, wind-driven rain, drifting camera implied by layered receding space.
-- **Atmosphere:** Bleak, hypnotic, apocalyptic, patient.
-- **Anti-cues:** Avoid crisp commercial monochrome, dramatic color accents, quick-action cues, picturesque ruins, or sentimental uplift.
-- **Films:** Satantango; Werckmeister Harmonies; The Turin Horse; Damnation.
+## Essence
+
+Tarr observes people under the slow pressure of weather, labor, poverty, waiting, and history. His images turn duration into atmosphere: a road recedes into fog, wind worries at clothing, a room holds exhausted bodies, or a small action unfolds with grave inevitability. Monochrome often concentrates attention on faces, movement, mud, walls, and changing light, but the deeper signature is patient solidarity with people caught in difficult circumstances.
+
+## Using the style flexibly
+
+Give the subject time and spatial weight. Use repetition, a long visual path, environmental resistance, or a sense of continuous observation to make even a still image feel part of an unbroken passage. The scene need not be rural, ruined, or black-and-white; contemporary color, an interior, or a crowd can work if it retains material honesty and unhurried tension. Avoid picturesque misery or empty slowness.
+
+**Representative works:** *Sátántangó*; *Werckmeister Harmonies*; *The Turin Horse*; *Damnation*; *The Man from London*.

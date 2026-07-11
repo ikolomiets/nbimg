@@ -5,7 +5,7 @@ description: Use when agent needs to transform one input prompt and image refere
 
 # Nbimg Director Styles
 
-Create one `nbimg` Batch edit image set across the requested directors. Keep the user's subject and constraints intact while translating the scene through concrete visual principles from each selected director profile.
+Create one `nbimg` Batch edit image set across the requested directors. Keep the user's subject and constraints intact while translating the scene through the visual relationships, atmosphere, and storytelling instincts described in each selected director profile.
 
 ## Required Inputs
 
@@ -48,7 +48,7 @@ Reformulate rather than append generic style words. Preserve the requested subje
 
 First classify the user's text:
 
-- **Source prompt provided:** If the user supplied text that is already intended to work as an image-generation prompt, reformulate that prompt through the selected director profile. Preserve as many original details, relationships, constraints, intentional nuances, and concrete visual facts as possible. Include as much relevant, mutually compatible director-profile context as makes sense for creative interpretation and stylization across composition, perspective, lighting, palette, texture, production design, atmosphere, and visible motion treatment. Do not summarize away source-prompt detail, dump irrelevant profile content, or combine conflicting profile modes. Source-prompt fidelity takes precedence when a director cue conflicts with an explicit user detail.
+- **Source prompt provided:** If the user supplied text that is already intended to work as an image-generation prompt, reformulate that prompt through the selected director profile. Preserve as many original details, relationships, constraints, intentional nuances, and concrete visual facts as possible. Draw on the profile's broader visual logic rather than copying every example or forcing a fixed palette, lens, setting, or composition onto the scene. Do not summarize away source-prompt detail or dump irrelevant profile content. Source-prompt fidelity takes precedence when a director cue conflicts with an explicit user detail.
 - **General instructions only:** If the user supplied only high-level instructions, goals, or ideas about the future scene, compose the full scene prompt from those instructions and use the **Required In-Prompt Guidance** template below.
 
 When classification is ambiguous, treat detailed scene prose as a source prompt so its specifics are preserved.
@@ -57,19 +57,21 @@ Build each prompt in this semantic order, translated into the base prompt's lang
 
 1. **Rewritten scene:** Describe the intended final image clearly.
 2. **Aspect ratio:** State the requested aspect ratio or framing in natural language, preserving the exact ratio the user requested.
-3. **Visual direction:** For general instructions, select 4-6 compatible profile cues across composition, perspective, lighting, palette, texture, production design, atmosphere, and visible motion treatment. For a source prompt, include broader relevant compatible profile context when it meaningfully supports creative interpretation and stylization.
+3. **Visual direction:** Interpret the profile through the scene's own subject, setting, period, and emotional purpose. For general instructions, derive a small set of mutually reinforcing visible choices. For a source prompt, use only the profile ideas that meaningfully deepen the supplied scene.
 4. **Reference requirements:** State what must remain from `BASE_IMAGE` and what may be borrowed from every additional labeled reference.
-5. **Aesthetic context:** Name the director, summarize the concrete visual principles, and list representative films only as analytical context.
+5. **Aesthetic context:** Name the director, summarize the relevant visual essence in fresh language, and list representative films only as analytical context.
 
 Do not include section headings if they make the prompt unnatural in its language. Keep the requirements explicit even when rendered as continuous prose.
 Always put the requested aspect ratio in the prompt text. Never pass `--aspect-ratio` to `nbimg`; the Batch request should rely on prompt guidance for framing.
 
-### Cue Selection
+### Profile Interpretation
 
-- Describe visible outcomes, not production trivia. Use exact equipment only when it materially clarifies an image characteristic.
-- Translate temporal cinema techniques into still-image evidence: directional blur, layered movement, suspended gesture, static tension, compressed depth, or a dynamic instant.
-- Use one compatible mode when a profile offers alternatives. Do not combine conflicting lens, lighting, palette, period, or motion modes.
-- When reformulating a source prompt, include every relevant compatible profile cue that strengthens the creative interpretation without diluting the source prompt.
+- Treat a profile as a visual worldview, not a checklist. Re-create how the director tends to organize attention, emotion, space, light, texture, and movement without reproducing a specific shot or set.
+- Let the requested scene determine the practical palette, location, period, lens feeling, and composition. Adapt the profile's relationships to those facts instead of replacing them.
+- Prefer a few coherent choices over a dense inventory of signature traits. A result should remain plausible for a wide range of subjects, including scenes unlike the director's best-known films.
+- Translate temporal cinema techniques into still-image evidence when useful: layered movement, suspended gesture, static tension, environmental motion, spatial depth, or a decisive instant.
+- Do not automatically add iconic props, costumes, characters, genres, or locations from representative works. Do not recreate a recognizable shot.
+- Describe visible outcomes rather than production trivia. Mention exact equipment only when it materially clarifies an image characteristic.
 - Keep prompts below the `nbimg` 16 KiB limit.
 
 ### Required In-Prompt Guidance
@@ -154,36 +156,43 @@ Report prompt files, Batch JSONL path, batch keys, submitted `batches/...` name,
 
 | Slug | Director | Short essence | Profile |
 | --- | --- | --- | --- |
-| `wes_anderson` | Wes Anderson | Frontal symmetry, storybook sets, coded pastels, deadpan tableaux | `references/directors/wes_anderson.md` |
-| `stanley_kubrick` | Stanley Kubrick | One-point geometry, controlled light, oppressive spatial order | `references/directors/stanley_kubrick.md` |
-| `david_lynch` | David Lynch | Uncanny Americana, liminal rooms, saturated symbols, noir dread | `references/directors/david_lynch.md` |
-| `tim_burton` | Tim Burton | Crooked gothic silhouettes, macabre whimsy, theatrical fantasy | `references/directors/tim_burton.md` |
-| `wong_kar_wai` | Wong Kar-wai | Neon intimacy, obstructed frames, smeared time, romantic longing | `references/directors/wong_kar_wai.md` |
-| `quentin_tarantino` | Quentin Tarantino | Retro genre collage, graphic staging, pulp color and tension | `references/directors/quentin_tarantino.md` |
-| `akira_kurosawa` | Akira Kurosawa | Elemental weather, motion in depth, dynamic group geometry | `references/directors/akira_kurosawa.md` |
-| `federico_fellini` | Federico Fellini | Carnivalesque crowds, dream pageantry, theatrical excess | `references/directors/federico_fellini.md` |
-| `ridley_scott` | Ridley Scott | Atmospheric world-building, tactile surfaces, monumental environments | `references/directors/ridley_scott.md` |
-| `andrei_tarkovsky` | Andrei Tarkovsky | Organic elements, decayed spaces, contemplative spiritual time | `references/directors/andrei_tarkovsky.md` |
-| `denis_villeneuve` | Denis Villeneuve | Austere scale, brutalist geometry, silhouettes and muted space | `references/directors/denis_villeneuve.md` |
-| `christopher_nolan` | Christopher Nolan | Large-format clarity, practical scale, engineered visual momentum | `references/directors/christopher_nolan.md` |
-| `guillermo_del_toro` | Guillermo del Toro | Tactile gothic fantasy, cyan-amber light, wounded beauty | `references/directors/guillermo_del_toro.md` |
-| `park_chan_wook` | Park Chan-wook | Immaculate elegance, sensual surfaces, concealed violence | `references/directors/park_chan_wook.md` |
-| `gaspar_noe` | Gaspar Noe | Neon disorientation, overhead geometry, bodily subjectivity | `references/directors/gaspar_noe.md` |
-| `yorgos_lanthimos` | Yorgos Lanthimos | Wide-angle clinical absurdity, stiff ritualized blocking | `references/directors/yorgos_lanthimos.md` |
-| `nicolas_winding_refn` | Nicolas Winding Refn | Neon-noir minimalism, glossy symmetry, ritualized menace | `references/directors/nicolas_winding_refn.md` |
-| `sofia_coppola` | Sofia Coppola | Soft isolation, elegant interiors, pastel melancholy | `references/directors/sofia_coppola.md` |
-| `terrence_malick` | Terrence Malick | Golden naturalism, drifting intimacy, spiritual landscapes | `references/directors/terrence_malick.md` |
-| `pedro_almodovar` | Pedro Almodovar | Saturated melodrama, expressive decor, fashion-conscious color | `references/directors/pedro_almodovar.md` |
-| `baz_luhrmann` | Baz Luhrmann | Maximalist spectacle, decorative excess, pop-operatic energy | `references/directors/baz_luhrmann.md` |
-| `robert_eggers` | Robert Eggers | Period texture, ritual composition, archaic natural-light dread | `references/directors/robert_eggers.md` |
-| `ari_aster` | Ari Aster | Controlled wide-frame anxiety, ritual space, daylight horror | `references/directors/ari_aster.md` |
-| `bong_joon_ho` | Bong Joon-ho | Class-coded architecture, precise blocking, tonal collision | `references/directors/bong_joon_ho.md` |
-| `michelangelo_antonioni` | Michelangelo Antonioni | Alienated architecture, negative space, industrial color | `references/directors/michelangelo_antonioni.md` |
-| `ingmar_bergman` | Ingmar Bergman | Severe faces, spiritual chiaroscuro, ritual intimacy | `references/directors/ingmar_bergman.md` |
-| `sergio_leone` | Sergio Leone | Extreme close-ups, vast landscapes, operatic standoff tension | `references/directors/sergio_leone.md` |
-| `zhang_yimou` | Zhang Yimou | Ceremonial color blocks, painterly landscapes, choreographed spectacle | `references/directors/zhang_yimou.md` |
-| `hayao_miyazaki` | Hayao Miyazaki | Lyrical skies, ecological wonder, layered hand-drawn worlds | `references/directors/hayao_miyazaki.md` |
-| `john_woo` | John Woo | Balletic action, suspended debris, lyrical heroic melodrama | `references/directors/john_woo.md` |
-| `bela_tarr` | Bela Tarr | Monochrome desolation, slow drift, mud, wind, duration | `references/directors/bela_tarr.md` |
-| `jane_campion` | Jane Campion | Tactile landscapes, restrained desire, feminine subjectivity | `references/directors/jane_campion.md` |
-| `dario_argento` | Dario Argento | Giallo primaries, baroque space, theatrical POV dread | `references/directors/dario_argento.md` |
+| `jean_luc_godard` | Jean-Luc Godard | Everyday immediacy interrupted by graphic, reflective cinematic ideas | `references/directors/jean_luc_godard.md` |
+| `stanley_kubrick` | Stanley Kubrick | Human behavior measured against systems, ritual, and controlled space | `references/directors/stanley_kubrick.md` |
+| `federico_fellini` | Federico Fellini | Private memory and desire expanding into affectionate public theater | `references/directors/federico_fellini.md` |
+| `ingmar_bergman` | Ingmar Bergman | Faces and intimate spaces carrying existential and emotional pressure | `references/directors/ingmar_bergman.md` |
+| `michelangelo_antonioni` | Michelangelo Antonioni | Emotional distance expressed through environment, absence, and modern life | `references/directors/michelangelo_antonioni.md` |
+| `akira_kurosawa` | Akira Kurosawa | Moral and emotional force made physical through space and movement | `references/directors/akira_kurosawa.md` |
+| `sergio_leone` | Sergio Leone | Mythic anticipation built from vast scale and decisive human detail | `references/directors/sergio_leone.md` |
+| `andrei_tarkovsky` | Andrei Tarkovsky | Memory and spiritual longing made tangible through time-worn environments | `references/directors/andrei_tarkovsky.md` |
+| `francis_ford_coppola` | Francis Ford Coppola | Operatic scale joined to intimate consequence and visual reinvention | `references/directors/francis_ford_coppola.md` |
+| `martin_scorsese` | Martin Scorsese | Subjective energy, moral tension, and lived social worlds | `references/directors/martin_scorsese.md` |
+| `steven_spielberg` | Steven Spielberg | Fluid visual discovery, emotional clarity, and human reaction to scale | `references/directors/steven_spielberg.md` |
+| `brian_de_palma` | Brian De Palma | Suspense shaped through looking, divided attention, and cinematic artifice | `references/directors/brian_de_palma.md` |
+| `terrence_malick` | Terrence Malick | Fleeting human experience held inside a larger living world | `references/directors/terrence_malick.md` |
+| `ridley_scott` | Ridley Scott | Tactile, functional worlds carrying history, atmosphere, and scale | `references/directors/ridley_scott.md` |
+| `david_lynch` | David Lynch | Familiar life opening into emotionally charged dream and uncertainty | `references/directors/david_lynch.md` |
+| `david_cronenberg` | David Cronenberg | Identity and technology made physical through credible material unease | `references/directors/david_cronenberg.md` |
+| `michael_mann` | Michael Mann | Procedural precision meeting romantic light, solitude, and sudden action | `references/directors/michael_mann.md` |
+| `george_miller` | George Miller | Mythic visual storytelling through lucid movement and expressive scale | `references/directors/george_miller.md` |
+| `peter_greenaway` | Peter Greenaway | Painterly systems of bodies, objects, pattern, sensuality, and decay | `references/directors/peter_greenaway.md` |
+| `chantal_akerman` | Chantal Akerman | Everyday space and duration observed with directness and quiet intensity | `references/directors/chantal_akerman.md` |
+| `abbas_kiarostami` | Abbas Kiarostami | Ordinary life and landscape revealing open-ended philosophical mystery | `references/directors/abbas_kiarostami.md` |
+| `hou_hsiao_hsien` | Hou Hsiao-hsien | Intimate and historical life unfolding across layered, patient spaces | `references/directors/hou_hsiao_hsien.md` |
+| `wong_kar_wai` | Wong Kar-wai | Intimacy and missed connection experienced as subjective time and place | `references/directors/wong_kar_wai.md` |
+| `zhang_yimou` | Zhang Yimou | Private feeling magnified through color, landscape, ritual, and groups | `references/directors/zhang_yimou.md` |
+| `hayao_miyazaki` | Hayao Miyazaki | Humane wonder grounded in ecology, labor, weather, and everyday life | `references/directors/hayao_miyazaki.md` |
+| `dario_argento` | Dario Argento | Fear transformed into sensuous color, viewpoint, and spatial performance | `references/directors/dario_argento.md` |
+| `john_woo` | John Woo | Emotional relationships expressed through clear, lyrical movement | `references/directors/john_woo.md` |
+| `pedro_almodovar` | Pedro Almodóvar | Emotion externalized through color, décor, performance, and compassion | `references/directors/pedro_almodovar.md` |
+| `spike_lee` | Spike Lee | Expressive viewpoint and color joining personal experience to public space | `references/directors/spike_lee.md` |
+| `tim_burton` | Tim Burton | Outsider emotion embodied by handmade, theatrical visual worlds | `references/directors/tim_burton.md` |
+| `jane_campion` | Jane Campion | Desire and power revealed through tactile bodies, objects, and place | `references/directors/jane_campion.md` |
+| `bela_tarr` | Béla Tarr | Human endurance observed through patient space, weather, and material time | `references/directors/bela_tarr.md` |
+| `quentin_tarantino` | Quentin Tarantino | Genre memory turned into confident staging, tension, and performance | `references/directors/quentin_tarantino.md` |
+| `paul_thomas_anderson` | Paul Thomas Anderson | Restless characters moving through richly specific American worlds | `references/directors/paul_thomas_anderson.md` |
+| `wes_anderson` | Wes Anderson | Crafted visual order containing unruly feeling and relationship | `references/directors/wes_anderson.md` |
+| `bong_joon_ho` | Bong Joon-ho | Social power and tonal change made legible through physical space | `references/directors/bong_joon_ho.md` |
+| `park_chan_wook` | Park Chan-wook | Desire and secrecy arranged through sensuous detail and visual rhyme | `references/directors/park_chan_wook.md` |
+| `guillermo_del_toro` | Guillermo del Toro | Wounded beauty inhabiting tactile worlds of history and fantasy | `references/directors/guillermo_del_toro.md` |
+| `christopher_nolan` | Christopher Nolan | Abstract ideas grounded in physical scale, structure, and consequence | `references/directors/christopher_nolan.md` |
+| `alfonso_cuaron` | Alfonso Cuarón | Human vulnerability immersed in continuous, socially alive environments | `references/directors/alfonso_cuaron.md` |

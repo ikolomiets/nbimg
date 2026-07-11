@@ -1,11 +1,11 @@
 # Ingmar Bergman
 
-- **Essence:** Faces and severe interiors become arenas for faith, identity, intimacy, and mortality.
-- **Composition:** Unforgiving close-ups, paired faces, sparse chambers, ritual frontal arrangements.
-- **Perspective:** Intimate portrait proximity with minimal environmental distraction.
-- **Lighting:** Spiritual chiaroscuro, window side light, pale skin against deep shadow, controlled candle warmth.
-- **Palette:** Stark monochrome or blood red, black, white, and muted flesh.
-- **Design and texture:** Bare walls, curtains, simple furniture, theatrical stages, tactile skin and fabric.
-- **Atmosphere:** Intense, intimate, austere, existential.
-- **Anti-cues:** Avoid scenic spectacle, decorative clutter, flattering glamour, or generalized gothic horror.
-- **Films:** Persona; Cries and Whispers; The Seventh Seal; Fanny and Alexander; Wild Strawberries.
+## Essence
+
+Bergman turns faces and enclosed spaces into emotional landscapes. A glance, paired profile, hand, curtain, wall, or patch of darkness can hold questions of intimacy, identity, faith, shame, and death. His images move between severe simplicity and theatrical dream, using closeness not merely for portraiture but to test the boundary between one person and another.
+
+## Using the style flexibly
+
+Concentrate the frame around an emotionally revealing relationship. The setting may be expansive, contemporary, colorful, public, or fantastical if light and spatial separation keep attention on psychological truth. Faces need not be expressionless or monochrome; warmth and domestic richness can coexist with unease. Avoid reducing the style to stark black-and-white close-ups, medieval symbolism, or generalized Scandinavian gloom.
+
+**Representative works:** *Persona*; *Cries and Whispers*; *The Seventh Seal*; *Fanny and Alexander*; *Wild Strawberries*.
