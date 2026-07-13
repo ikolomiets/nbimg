@@ -1,6 +1,6 @@
 ---
 name: nbimg-director-styles
-description: Use when agent needs to transform one input prompt and image references into nbimg batch edit image sets across film-director visual aesthetics. Creates one same-language rewritten prompt per selected director, embeds preservation and reference boundaries in the prompt, appends all requested outputs to one nbimg Batch JSONL file, submits it, polls status, and downloads results.
+description: Use when agent needs to transform one input prompt and image references into nbimg batch edit image sets across film-director visual aesthetics. Creates one same-language rewritten prompt per selected director, embeds role-scoped reference boundaries in the prompt, appends all requested outputs to one nbimg Batch JSONL file, submits it, polls status, and downloads results.
 ---
 
 # Nbimg Director Styles
@@ -19,10 +19,11 @@ Confirm:
 - Output directory for downloaded Batch results. Default to `images/`.
 
 Default to all directors below unless the user selects a subset. Treat the first reference as `BASE_IMAGE`.
+Infer every reference role from the user's stated intent and surrounding request. Ask only when two or more roles remain genuinely plausible and choosing one would materially change the permitted contribution. Never infer a role from visible reference attributes.
 
 ## Language Consistency
 
-Write every rewritten prompt in the same language as the original base prompt. This applies to the scene rewrite, visual direction, preservation rules, reference boundaries, aesthetic context, and exclusions.
+Write every rewritten prompt in the same language as the original base prompt. This applies to the scene rewrite, visual direction, reference boundaries, aesthetic context, and user-requested exclusions.
 
 - Do not switch to English because profiles are written in English.
 - Preserve intentional mixed-language user text.
@@ -44,22 +45,22 @@ The supported-director index is authoritative and visible below without loading 
 
 ## Prompt Construction
 
-Reformulate rather than append generic style words. Preserve the requested subject, action, setting, identity, relationships, and explicit constraints.
+Reformulate rather than append generic style words. Preserve the requested subject, action, setting, identity, relationships, and explicit constraints. Compose the rewritten scene from the user's text and the selected director profile before writing any reference boundary. Reference image must never affect prompt language.
 
 First classify the user's text:
 
 - **Source prompt provided:** If the user supplied text that is already intended to work as an image-generation prompt, reformulate that prompt through the selected director profile. Preserve as many original details, relationships, constraints, intentional nuances, and concrete visual facts as possible. Draw on the profile's broader visual logic rather than copying every example or forcing a fixed palette, lens, setting, or composition onto the scene. Do not summarize away source-prompt detail or dump irrelevant profile content. Source-prompt fidelity takes precedence when a director cue conflicts with an explicit user detail.
-- **General instructions only:** If the user supplied only high-level instructions, goals, or ideas about the future scene, compose the full scene prompt from those instructions and use the **Required In-Prompt Guidance** template below.
+- **General instructions only:** If the user supplied only high-level instructions, goals, or ideas about the future scene, compose the full scene prompt from those instructions and the selected director profile before adding the required role boundaries.
 
 When classification is ambiguous, treat detailed scene prose as a source prompt so its specifics are preserved.
 
-Build each prompt in this semantic order, translated into the base prompt's language:
+Build each prompt in this semantic order, translated into the base prompt's language. Complete steps 1 through 4 without using reference-image content:
 
 1. **Rewritten scene:** Describe the intended final image clearly.
 2. **Aspect ratio:** State the requested aspect ratio or framing in natural language, preserving the exact ratio the user requested.
 3. **Visual direction:** Interpret the profile through the scene's own subject, setting, period, and emotional purpose. For general instructions, derive a small set of mutually reinforcing visible choices. For a source prompt, use only the profile ideas that meaningfully deepen the supplied scene.
-4. **Reference requirements:** State what must remain from `BASE_IMAGE` and what may be borrowed from every additional labeled reference.
-5. **Aesthetic context:** Name the director, summarize the relevant visual essence in fresh language, and list representative films only as analytical context.
+4. **Aesthetic context:** Name the director, summarize the relevant visual essence in fresh language, and list representative films only as analytical context.
+5. **Reference boundaries:** Add only the symbolic label, assigned role, and role-scoped allowed contribution for `BASE_IMAGE` and every additional reference.
 
 Do not include section headings if they make the prompt unnatural in its language. Keep the requirements explicit even when rendered as continuous prose.
 Always put the requested aspect ratio in the prompt text. Never pass `--aspect-ratio` to `nbimg`; the Batch request should rely on prompt guidance for framing.
@@ -74,23 +75,52 @@ Always put the requested aspect ratio in the prompt text. Never pass `--aspect-r
 - Describe visible outcomes rather than production trivia. Mention exact equipment only when it materially clarifies an image characteristic.
 - Keep prompts below the `nbimg` 16 KiB limit.
 
-### Required In-Prompt Guidance
+### Reference Content Firewall
 
-Use this template only when the user did not provide a source prompt and instead provided general instructions or ideas about the future scene. When reformulating a supplied source prompt, do not use this stock template; add only task-specific reference boundaries and necessary exclusions.
+Treat each reference as an opaque input whose assigned role grants one limited contribution. Do not inspect a reference to mine prompt details, exclusions, or descriptive language. Use visible content only as image input to the model, never as a source for the rewritten text.
 
-Express the following meaning in the source language and adapt it to the task:
+Include a neutral boundary for every reference in every generated prompt. Express the following meaning in the source language:
 
 ```text
-Preserve BASE_IMAGE's recognizable subject or identity, composition, camera angle, proportions, and core user-requested details unless the rewritten scene explicitly changes them.
-
-Use CHARACTER_HERO only for the requested identity traits. Do not inherit its background, pose, clothing, lighting, framing, or unrelated details unless explicitly requested.
-
-Use the visual principles associated with [Director]: [concise profile-derived summary]. Representative works for analytical context: [films].
+Use BASE_IMAGE only for [allowed role contribution]. The rewritten scene determines every other visual property.
 ```
 
-Generate one boundary for every additional reference using its exact label and actual role. Cover identity, pose, clothing, object markings, background, lighting, composition, and styling when relevant.
+For every additional reference, include only its symbolic label, assigned role, and allowed contribution:
 
-Never pass `--preserve` or `--do-not`; all such guidance belongs in the prompt file.
+```text
+Use [LABEL] only as a [role] reference for [allowed role contribution]. The rewritten scene determines every other visual property.
+```
+
+Use these generic role contracts:
+
+- `character`: recognizable identity.
+- `scene`: scene structure and setting.
+- `object`: the referenced object's recognizable identity.
+- `style`: visual style.
+- `pose`: pose.
+- `composition`: composition.
+- `background`: background.
+- `texture`: texture.
+- `image`: the general visual contribution explicitly assigned by the user. Use this broad role only when that contribution is intentional and can be stated without inspecting the reference; otherwise choose a more specific role or ask.
+
+For a `character` reference, state only that it preserves recognizable identity, except for user-named opt-ins as described below. Never enumerate inferred facial features, age, hair, eyes, skin, clothing, pose, or any other visible property. Apply the same rule to every role: never describe, list, negate, or react to attributes found only in a reference. Do not turn an observation into an exclusion such as "do not inherit" or "do not copy."
+
+Permit a reference attribute in prompt text only when the user explicitly names that attribute. Add each user-named property to that reference's allowed contribution inside the neutral boundary; mentioning it elsewhere in the scene is not sufficient. Preserve only the named property and only at the specificity supplied by the user. For example, a request to preserve the earrings may produce "Use BASE_IMAGE only for recognizable identity and the earrings," while a request to use the dress may add only "the dress"; neither request authorizes any neighboring reference detail.
+
+Keep boundary wording invariant when a reference is replaced by a visually different image with the same role and the same explicit user request.
+
+### Preflight Prompt Provenance Audit
+
+Before saving each prompt, audit every detail. Each detail must originate from one of these sources:
+
+- The user's text or an attribute the user explicitly named.
+- The selected director profile.
+- A newly invented part of the rewritten scene.
+- A generic role contract, symbolic reference label, or assigned role.
+
+Remove or rewrite any detail whose only source is inspecting reference pixels. Replacing a reference with a visually different image under the same role and user instructions must not change the boundary wording or introduce different prompt details.
+
+Never pass `--preserve` or `--do-not` for reference handling. Keep reference guidance inside the prompt file and limit it to the neutral role boundaries above plus explicit user-named opt-ins.
 
 ## Reference Handling
 
@@ -102,7 +132,7 @@ Follow the `nbimg` skill contract.
 4. Give later references clear ASCII `SCREAMING_SNAKE_CASE` labels when useful.
 5. Track purpose, path, role, label, file ID, MIME type, and expiration.
 
-Choose `scene`, `character`, `object`, `style`, `pose`, `composition`, `background`, `texture`, or `image` according to the reference's permitted contribution.
+Choose `scene`, `character`, `object`, `style`, `pose`, `composition`, `background`, `texture`, or `image` according to the contribution permitted by user intent. Assign the role before considering reference-image content.
 
 For Batch execution, repeat the exact same resolved reference arguments on every appended entry: the same first base `ROLE=files/ID,MIME` reference, the same later `ROLE:LABEL=files/ID,MIME` references, and the same labels.
 
