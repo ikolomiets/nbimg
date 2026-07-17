@@ -1,6 +1,9 @@
-# Advanced Image References
+# Image References
 
-Use this reference before complex `nbimg edit` work: multiple non-base references, character consistency, product fidelity, style transfer, pose/composition/background/texture binding, or prompts that need strong preserve and do-not-copy boundaries.
+Use this reference before every `nbimg edit` operation. It covers reference
+setup for simple edits and the stronger boundaries needed for multiple
+references, character consistency, product fidelity, style transfer, and
+pose/composition/background/texture binding.
 
 For failed references or request logging, also read [Debugging Patterns](debugging-patterns.md). For `--batch-file` validation and Batch JSONL workflows, also read [Batch Operations](batch-operations.md).
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "nbimg CLI"
-  short_description: "Generate and edit images with nbimg"
-  default_prompt: "Use $nbimg to generate or edit images with Gemini file references."
+  short_description: "Operate Gemini image workflows with nbimg"
+  default_prompt: "Use $nbimg to run a Gemini image workflow and verify its result."
